@@ -84,15 +84,56 @@ struct ConversationTests {
         let contactID = UUID()
         let firstOwner = "owner-a-\(UUID().uuidString)"
         let secondOwner = "owner-b-\(UUID().uuidString)"
+        let suiteName = "TurboTests.contact-aliases.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
 
-        let stored = TurboContactAliasStore.storeLocalName("  Harbor Blake  ", for: contactID, ownerKey: firstOwner)
+        let stored = TurboContactAliasStore.storeLocalName(
+            "  Harbor Blake  ",
+            for: contactID,
+            ownerKey: firstOwner,
+            defaults: defaults
+        )
         #expect(stored == "Harbor Blake")
-        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: firstOwner) == "Harbor Blake")
-        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: secondOwner) == nil)
+        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: firstOwner, defaults: defaults) == "Harbor Blake")
+        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: secondOwner, defaults: defaults) == nil)
 
-        let cleared = TurboContactAliasStore.storeLocalName(nil, for: contactID, ownerKey: firstOwner)
+        let cleared = TurboContactAliasStore.storeLocalName(
+            nil,
+            for: contactID,
+            ownerKey: firstOwner,
+            defaults: defaults
+        )
         #expect(cleared == nil)
-        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: firstOwner) == nil)
+        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: firstOwner, defaults: defaults) == nil)
+    }
+
+    @Test func contactAliasStoreIgnoresStaleNonDictionaryValue() {
+        let contactID = UUID()
+        let owner = "owner-\(UUID().uuidString)"
+        let suiteName = "TurboTests.contact-aliases-stale.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        defaults.set(Date(timeIntervalSinceReferenceDate: 0), forKey: "TurboContactAliasesByOwner")
+
+        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: owner, defaults: defaults) == nil)
+
+        let stored = TurboContactAliasStore.storeLocalName(
+            "  Harbor Blake  ",
+            for: contactID,
+            ownerKey: owner,
+            defaults: defaults
+        )
+
+        #expect(stored == "Harbor Blake")
+        #expect(TurboContactAliasStore.localName(for: contactID, ownerKey: owner, defaults: defaults) == "Harbor Blake")
     }
 
     @MainActor
