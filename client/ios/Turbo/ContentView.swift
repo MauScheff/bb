@@ -45,6 +45,11 @@ struct CallScreenDismissalPresentationState: Equatable {
     let minimizedCallContactID: UUID?
 }
 
+private struct AddContactConfirmation: Equatable, Identifiable {
+    let id = UUID()
+    let message: String
+}
+
 struct ContentView: View {
     @State private var viewModel: PTTViewModel
     @State private var route: ContentRoute = .launchSplash
@@ -76,6 +81,10 @@ struct ContentView: View {
     @State private var isRequestingLocalNetworkPermission: Bool = false
     @State private var isRequestingNotificationPermission: Bool = false
     @State private var isRunningDirectQuicDebugAction: Bool = false
+    @State private var addContactBaselineContactIDs: Set<UUID> = []
+    @State private var isWatchingReciprocalAddContact: Bool = false
+    @State private var addContactRefreshTask: Task<Void, Never>?
+    @State private var addContactConfirmation: AddContactConfirmation?
     @State private var diagnosticsUploadStatus: String?
     @State private var shakeReportPresentation: ShakeReportPresentation?
     @State private var lastShakeReportStartedAt: Date?
@@ -131,6 +140,14 @@ struct ContentView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .overlay(alignment: .bottom) {
+            if let addContactConfirmation {
+                TurboAddContactToast(message: addContactConfirmation.message)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .overlay {
             if isShowingTransportPathInfo {
                 ZStack(alignment: .top) {
@@ -149,6 +166,7 @@ struct ContentView: View {
             }
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: viewModel.activeIncomingBeep?.id)
+        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: addContactConfirmation?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: isShowingTransportPathInfo)
         .background {
             ShakeReportDetector {
@@ -159,7 +177,19 @@ struct ContentView: View {
         }
         .onChange(of: viewModel.selectedContactId) { _, _ in
             route = .live
-            isShowingAddContactSheet = false
+            if isShowingAddContactSheet && !isOpeningFriend {
+                closeAddContactFlow()
+            }
+        }
+        .onChange(of: contactIDSnapshot) { _, _ in
+            handleAddContactSnapshotChanged()
+        }
+        .onChange(of: isShowingAddContactSheet) { _, isPresented in
+            if isPresented {
+                addContactBaselineContactIDs = currentContactIDs
+            } else {
+                stopWatchingReciprocalAddContact()
+            }
         }
         .onChange(of: callScreenContact?.id) { _, newValue in
             if newValue == nil {
@@ -190,6 +220,7 @@ struct ContentView: View {
                 isResettingDevState: isResettingDevState,
                 statusMessage: addContactStatusMessage,
                 onClose: { isShowingAddContactSheet = false },
+                onShowShareIdentity: beginWatchingReciprocalAddContact,
                 onOpenReference: openFriend
             )
         }
@@ -384,7 +415,7 @@ struct ContentView: View {
                     showsDebugPermissionControls: false,
                     showsAddContactButton: !viewModel.contacts.isEmpty,
                     onAddContact: {
-                        isShowingAddContactSheet = true
+                        presentAddContactSheet()
                     },
                     onShowProfile: {
                         draftProfileName = viewModel.currentProfileName
@@ -410,7 +441,7 @@ struct ContentView: View {
                     TurboContactsLoadingView()
                 } else if shouldShowEmptyContactsSurface() {
                     TurboEmptyContactsView(onAddContact: {
-                        isShowingAddContactSheet = true
+                        presentAddContactSheet()
                     })
                 } else {
                     TurboContactListView(
@@ -858,6 +889,78 @@ struct ContentView: View {
         beginOpeningFriend(handle)
     }
 
+    private var currentContactIDs: Set<UUID> {
+        Set(viewModel.contacts.map(\.id))
+    }
+
+    private var contactIDSnapshot: [UUID] {
+        viewModel.contacts
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
+    private func presentAddContactSheet() {
+        addContactBaselineContactIDs = currentContactIDs
+        isWatchingReciprocalAddContact = false
+        isShowingAddContactSheet = true
+    }
+
+    private func beginWatchingReciprocalAddContact() {
+        addContactBaselineContactIDs = currentContactIDs
+        isWatchingReciprocalAddContact = true
+        addContactRefreshTask?.cancel()
+        addContactRefreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await viewModel.refreshContactSummaries()
+            }
+        }
+    }
+
+    private func stopWatchingReciprocalAddContact() {
+        isWatchingReciprocalAddContact = false
+        addContactRefreshTask?.cancel()
+        addContactRefreshTask = nil
+    }
+
+    private func handleAddContactSnapshotChanged() {
+        guard isShowingAddContactSheet, isWatchingReciprocalAddContact,
+              let contact = firstContactAddedSinceBaseline() else { return }
+        finishAddContactFlow(contact: contact)
+    }
+
+    private func firstContactAddedSinceBaseline() -> Contact? {
+        viewModel.contacts.first { !addContactBaselineContactIDs.contains($0.id) }
+    }
+
+    private func finishAddContactFlow(contact: Contact?) {
+        closeAddContactFlow()
+        route = .live
+        if let contact {
+            showAddContactConfirmation(for: contact)
+        }
+    }
+
+    private func closeAddContactFlow() {
+        isShowingAddContactSheet = false
+        stopWatchingReciprocalAddContact()
+    }
+
+    private func showAddContactConfirmation(for contact: Contact) {
+        let name = contact.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = contact.handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = name.isEmpty ? fallback : name
+        let confirmation = AddContactConfirmation(message: "\(displayName) added")
+        addContactConfirmation = confirmation
+        Task {
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            await MainActor.run {
+                guard addContactConfirmation?.id == confirmation.id else { return }
+                addContactConfirmation = nil
+            }
+        }
+    }
+
     private func showContactDetails(for contact: Contact) {
         ensureContactSelected(contact, reason: "contact-details")
         contactDetailsContactID = contact.id
@@ -1004,9 +1107,9 @@ struct ContentView: View {
             await MainActor.run {
                 isOpeningFriend = false
                 if viewModel.backendCommandCoordinator.state.lastError == nil {
+                    let contact = viewModel.selectedContact ?? firstContactAddedSinceBaseline()
                     draftFriendReference = ""
-                    isShowingAddContactSheet = false
-                    route = .live
+                    finishAddContactFlow(contact: contact)
                 }
             }
         }
@@ -1588,6 +1691,32 @@ struct ContentView: View {
         case .busy:
             return ContactStatusPillModel(text: presentation.statusPillText(), tint: .orange)
         }
+    }
+}
+
+private struct TurboAddContactToast: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.green)
+
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.14), radius: 12, y: 5)
+        .accessibilityElement(children: .combine)
     }
 }
 

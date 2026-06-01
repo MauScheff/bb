@@ -17,6 +17,7 @@ struct TurboAddContactSheet: View {
     let isResettingDevState: Bool
     let statusMessage: String?
     let onClose: () -> Void
+    let onShowShareIdentity: () -> Void
     let onOpenReference: (String) -> Void
 
     @State private var copiedStatus: String?
@@ -86,6 +87,7 @@ struct TurboAddContactSheet: View {
                 .disabled(isBusy)
 
                 Button("Show My QR") {
+                    onShowShareIdentity()
                     isShowingShareSheet = true
                 }
                 .buttonStyle(.bordered)

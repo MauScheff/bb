@@ -1098,9 +1098,11 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     }
 
     var currentIdentityHandle: String {
-        backendRuntime.currentShareCode
+        let rawHandle =
+            backendRuntime.currentShareCode
             ?? backendRuntime.currentPublicID
             ?? currentDevUserHandle
+        return Contact.normalizedHandle(rawHandle)
     }
 
     var currentContactAliasOwnerKey: String {
