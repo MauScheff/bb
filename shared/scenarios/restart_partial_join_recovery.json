@@ -1,0 +1,104 @@
+{
+  "name": "restart_partial_join_recovery",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "friendReady",
+          "isJoined": false,
+          "backend": {
+            "readiness": "waiting-for-self",
+            "selfJoined": true,
+            "peerJoined": true,
+            "peerDeviceConnected": true
+          }
+        },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "sender restarts during the partial join window and reopens the Friend",
+      "actions": [
+        { "actor": "a", "type": "restartApp" },
+        { "actor": "a", "type": "openFriend", "friend": "b" }
+      ]
+    },
+    {
+      "description": "refresh and reconciliation restore friendReady after restart",
+      "actions": [
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "a", "type": "reconcileSelectedConversation" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" },
+        { "actor": "b", "type": "reconcileSelectedConversation" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "friendReady",
+          "isJoined": false,
+          "contacts": [
+            { "handle": "@blake", "listState": "ready", "badgeStatus": "ready" }
+          ],
+          "backend": {
+            "readiness": "waiting-for-self",
+            "selfJoined": true,
+            "peerJoined": true,
+            "peerDeviceConnected": true
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "waitingForPeer",
+          "isJoined": true
+        }
+      }
+    },
+    {
+      "description": "sender finishes the second join and both sides converge to ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    }
+  ]
+}

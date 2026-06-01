@@ -1,0 +1,514 @@
+{
+  "schemaVersion": 1,
+  "description": "Backend channel contract variants consumed by the iOS client.",
+  "contracts": {
+    "beepThreadProjection": {
+      "path": "beepThreadProjection.kind",
+      "variants": ["none", "incoming", "outgoing", "mutual"]
+    },
+    "membership": {
+      "path": "membership.kind",
+      "variants": ["absent", "self-only", "peer-only", "both"],
+      "requiredByVariant": {
+        "peer-only": ["peerDeviceConnected"],
+        "both": ["peerDeviceConnected"]
+      }
+    },
+    "conversationStatus": {
+      "path": "conversationStatus.kind",
+      "variants": [
+        "idle",
+        "outgoing-beep",
+        "incoming-beep",
+        "connecting",
+        "waiting-for-peer",
+        "ready",
+        "self-transmitting",
+        "peer-transmitting"
+      ]
+    },
+    "readiness": {
+      "path": "readiness.kind",
+      "variants": [
+        "inactive",
+        "waiting-for-self",
+        "waiting-for-peer",
+        "ready",
+        "self-transmitting",
+        "peer-transmitting"
+      ]
+    },
+    "audioReadiness": {
+      "path": "audioReadiness.{self,peer}.kind",
+      "variants": ["unknown", "waiting", "wake-capable", "ready"]
+    },
+    "wakeReadiness": {
+      "path": "wakeReadiness.{self,peer}.kind",
+      "variants": ["unavailable", "wake-capable"],
+      "requiredByVariant": {
+        "wake-capable": ["targetDeviceId"]
+      }
+    }
+  },
+  "responseExamples": {
+    "channelState": [
+      {
+        "name": "absent-none-idle",
+        "payload": {
+          "channelId": "channel-absent",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": false,
+          "stateEpoch": "2026-05-10T10:00:00Z",
+          "serverTimestamp": "2026-05-10T10:00:00Z",
+          "activeTransmitId": null,
+          "selfJoined": false,
+          "peerJoined": false,
+          "peerDeviceConnected": false,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": false,
+          "requestCount": 0,
+          "membership": { "kind": "absent" },
+          "beepThreadProjection": { "kind": "none" },
+          "conversationStatus": { "kind": "idle" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "idle",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "self-only-outgoing-beep",
+        "payload": {
+          "channelId": "channel-self",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:01Z",
+          "serverTimestamp": "2026-05-10T10:00:01Z",
+          "activeTransmitId": null,
+          "selfJoined": true,
+          "peerJoined": false,
+          "peerDeviceConnected": false,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": true,
+          "requestCount": 1,
+          "membership": { "kind": "self-only" },
+          "beepThreadProjection": { "kind": "outgoing", "requestCount": 1 },
+          "conversationStatus": { "kind": "outgoing-beep" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "outgoing-beep",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "peer-only-incoming-connectable",
+        "payload": {
+          "channelId": "channel-peer",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:02Z",
+          "serverTimestamp": "2026-05-10T10:00:02Z",
+          "activeTransmitId": null,
+          "selfJoined": false,
+          "peerJoined": true,
+          "peerDeviceConnected": true,
+          "hasIncomingBeep": true,
+          "hasOutgoingBeep": false,
+          "requestCount": 2,
+          "membership": { "kind": "peer-only", "peerDeviceConnected": true },
+          "beepThreadProjection": { "kind": "incoming", "requestCount": 2 },
+          "conversationStatus": { "kind": "incoming-beep" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "incoming-beep",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "both-mutual-waiting",
+        "payload": {
+          "channelId": "channel-both-waiting",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:03Z",
+          "serverTimestamp": "2026-05-10T10:00:03Z",
+          "activeTransmitId": null,
+          "selfJoined": true,
+          "peerJoined": true,
+          "peerDeviceConnected": true,
+          "hasIncomingBeep": true,
+          "hasOutgoingBeep": true,
+          "requestCount": 3,
+          "membership": { "kind": "both", "peerDeviceConnected": true },
+          "beepThreadProjection": { "kind": "mutual", "requestCount": 3 },
+          "conversationStatus": { "kind": "waiting-for-peer" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "waiting-for-peer",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "both-ready",
+        "payload": {
+          "channelId": "channel-ready",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:04Z",
+          "serverTimestamp": "2026-05-10T10:00:04Z",
+          "activeTransmitId": null,
+          "selfJoined": true,
+          "peerJoined": true,
+          "peerDeviceConnected": true,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": false,
+          "requestCount": 0,
+          "membership": { "kind": "both", "peerDeviceConnected": true },
+          "beepThreadProjection": { "kind": "none" },
+          "conversationStatus": { "kind": "ready" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "ready",
+          "canTransmit": true
+        }
+      },
+      {
+        "name": "both-self-transmitting",
+        "payload": {
+          "channelId": "channel-self-transmitting",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:05Z",
+          "serverTimestamp": "2026-05-10T10:00:05Z",
+          "activeTransmitId": "transmit-self",
+          "selfJoined": true,
+          "peerJoined": true,
+          "peerDeviceConnected": true,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": false,
+          "requestCount": 0,
+          "membership": { "kind": "both", "peerDeviceConnected": true },
+          "beepThreadProjection": { "kind": "none" },
+          "conversationStatus": { "kind": "self-transmitting", "activeTransmitterUserId": "self" },
+          "activeTransmitterUserId": "self",
+          "transmitLeaseExpiresAt": "2026-05-10T10:00:35Z",
+          "status": "self-transmitting",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "both-peer-transmitting",
+        "payload": {
+          "channelId": "channel-peer-transmitting",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:06Z",
+          "serverTimestamp": "2026-05-10T10:00:06Z",
+          "activeTransmitId": "transmit-peer",
+          "selfJoined": true,
+          "peerJoined": true,
+          "peerDeviceConnected": true,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": false,
+          "requestCount": 0,
+          "membership": { "kind": "both", "peerDeviceConnected": true },
+          "beepThreadProjection": { "kind": "none" },
+          "conversationStatus": { "kind": "peer-transmitting", "activeTransmitterUserId": "peer" },
+          "activeTransmitterUserId": "peer",
+          "transmitLeaseExpiresAt": "2026-05-10T10:00:36Z",
+          "status": "peer-transmitting",
+          "canTransmit": false
+        }
+      },
+      {
+        "name": "connecting",
+        "payload": {
+          "channelId": "channel-connecting",
+          "selfUserId": "self",
+          "peerUserId": "peer",
+          "peerHandle": "@blake",
+          "selfOnline": true,
+          "peerOnline": true,
+          "stateEpoch": "2026-05-10T10:00:07Z",
+          "serverTimestamp": "2026-05-10T10:00:07Z",
+          "activeTransmitId": null,
+          "selfJoined": true,
+          "peerJoined": false,
+          "peerDeviceConnected": false,
+          "hasIncomingBeep": false,
+          "hasOutgoingBeep": false,
+          "requestCount": 0,
+          "membership": { "kind": "self-only" },
+          "beepThreadProjection": { "kind": "none" },
+          "conversationStatus": { "kind": "connecting" },
+          "activeTransmitterUserId": null,
+          "transmitLeaseExpiresAt": null,
+          "status": "connecting",
+          "canTransmit": false
+        }
+      }
+    ],
+    "channelReadiness": [
+      {
+        "name": "inactive-unknown-unavailable",
+        "payload": {
+          "channelId": "channel-inactive",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": false,
+          "peerHasActiveDevice": false,
+          "stateEpoch": "2026-05-10T10:01:00Z",
+          "serverTimestamp": "2026-05-10T10:01:00Z",
+          "activeTransmitId": null,
+          "readiness": { "kind": "inactive" },
+          "audioReadiness": {
+            "self": { "kind": "unknown" },
+            "peer": { "kind": "unknown" }
+          },
+          "wakeReadiness": {
+            "self": { "kind": "unavailable" },
+            "peer": { "kind": "unavailable" }
+          },
+          "activeTransmitterUserId": null,
+          "activeTransmitExpiresAt": null,
+          "status": "inactive"
+        }
+      },
+      {
+        "name": "waiting-for-self-waiting",
+        "payload": {
+          "channelId": "channel-waiting-self",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": false,
+          "peerHasActiveDevice": true,
+          "stateEpoch": "2026-05-10T10:01:01Z",
+          "serverTimestamp": "2026-05-10T10:01:01Z",
+          "activeTransmitId": null,
+          "readiness": { "kind": "waiting-for-self" },
+          "audioReadiness": {
+            "self": { "kind": "waiting" },
+            "peer": { "kind": "waiting" }
+          },
+          "wakeReadiness": {
+            "self": { "kind": "unavailable" },
+            "peer": { "kind": "unavailable" }
+          },
+          "activeTransmitterUserId": null,
+          "activeTransmitExpiresAt": null,
+          "status": "waiting-for-self"
+        }
+      },
+      {
+        "name": "waiting-for-peer-wake-capable",
+        "payload": {
+          "channelId": "channel-waiting-peer",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": true,
+          "peerHasActiveDevice": false,
+          "stateEpoch": "2026-05-10T10:01:02Z",
+          "serverTimestamp": "2026-05-10T10:01:02Z",
+          "activeTransmitId": null,
+          "readiness": { "kind": "waiting-for-peer" },
+          "audioReadiness": {
+            "self": { "kind": "ready" },
+            "peer": { "kind": "wake-capable" },
+            "peerTargetDeviceId": "peer-device"
+          },
+          "wakeReadiness": {
+            "self": { "kind": "wake-capable", "targetDeviceId": "self-device" },
+            "peer": { "kind": "wake-capable", "targetDeviceId": "peer-device" }
+          },
+          "activeTransmitterUserId": null,
+          "activeTransmitExpiresAt": null,
+          "status": "waiting-for-peer"
+        }
+      },
+      {
+        "name": "ready",
+        "payload": {
+          "channelId": "channel-ready",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": true,
+          "peerHasActiveDevice": true,
+          "stateEpoch": "2026-05-10T10:01:03Z",
+          "serverTimestamp": "2026-05-10T10:01:03Z",
+          "activeTransmitId": null,
+          "readiness": { "kind": "ready" },
+          "audioReadiness": {
+            "self": { "kind": "ready" },
+            "peer": { "kind": "ready" }
+          },
+          "wakeReadiness": {
+            "self": { "kind": "unavailable" },
+            "peer": { "kind": "unavailable" }
+          },
+          "activeTransmitterUserId": null,
+          "activeTransmitExpiresAt": null,
+          "status": "ready"
+        }
+      },
+      {
+        "name": "self-transmitting",
+        "payload": {
+          "channelId": "channel-self-transmitting",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": true,
+          "peerHasActiveDevice": true,
+          "stateEpoch": "2026-05-10T10:01:04Z",
+          "serverTimestamp": "2026-05-10T10:01:04Z",
+          "activeTransmitId": "transmit-self",
+          "readiness": { "kind": "self-transmitting", "activeTransmitterUserId": "self" },
+          "audioReadiness": {
+            "self": { "kind": "ready" },
+            "peer": { "kind": "ready" }
+          },
+          "wakeReadiness": {
+            "self": { "kind": "unavailable" },
+            "peer": { "kind": "unavailable" }
+          },
+          "activeTransmitterUserId": "self",
+          "activeTransmitExpiresAt": "2026-05-10T10:01:34Z",
+          "status": "self-transmitting"
+        }
+      },
+      {
+        "name": "peer-transmitting",
+        "payload": {
+          "channelId": "channel-peer-transmitting",
+          "peerUserId": "peer",
+          "selfHasActiveDevice": true,
+          "peerHasActiveDevice": true,
+          "stateEpoch": "2026-05-10T10:01:05Z",
+          "serverTimestamp": "2026-05-10T10:01:05Z",
+          "activeTransmitId": "transmit-peer",
+          "readiness": { "kind": "peer-transmitting", "activeTransmitterUserId": "peer" },
+          "audioReadiness": {
+            "self": { "kind": "ready" },
+            "peer": { "kind": "ready" }
+          },
+          "wakeReadiness": {
+            "self": { "kind": "unavailable" },
+            "peer": { "kind": "unavailable" }
+          },
+          "activeTransmitterUserId": "peer",
+          "activeTransmitExpiresAt": "2026-05-10T10:01:35Z",
+          "status": "peer-transmitting"
+        }
+      }
+    ]
+  },
+  "invalidExamples": [
+    {
+      "name": "channel-state-unknown-request-relationship",
+      "target": "channelState",
+      "payload": {
+        "channelId": "channel-invalid-request",
+        "selfUserId": "self",
+        "peerUserId": "peer",
+        "peerHandle": "@blake",
+        "selfOnline": true,
+        "peerOnline": true,
+        "selfJoined": false,
+        "peerJoined": false,
+        "peerDeviceConnected": false,
+        "hasIncomingBeep": false,
+        "hasOutgoingBeep": false,
+        "requestCount": 0,
+        "membership": { "kind": "absent" },
+        "beepThreadProjection": { "kind": "sideways" },
+        "conversationStatus": { "kind": "idle" },
+        "activeTransmitterUserId": null,
+        "transmitLeaseExpiresAt": null,
+        "status": "idle",
+        "canTransmit": false
+      }
+    },
+    {
+      "name": "channel-state-peer-only-missing-connectivity",
+      "target": "channelState",
+      "payload": {
+        "channelId": "channel-invalid-membership",
+        "selfUserId": "self",
+        "peerUserId": "peer",
+        "peerHandle": "@blake",
+        "selfOnline": true,
+        "peerOnline": true,
+        "selfJoined": false,
+        "peerJoined": true,
+        "peerDeviceConnected": false,
+        "hasIncomingBeep": false,
+        "hasOutgoingBeep": false,
+        "requestCount": 0,
+        "membership": { "kind": "peer-only" },
+        "beepThreadProjection": { "kind": "none" },
+        "conversationStatus": { "kind": "idle" },
+        "activeTransmitterUserId": null,
+        "transmitLeaseExpiresAt": null,
+        "status": "idle",
+        "canTransmit": false
+      }
+    },
+    {
+      "name": "channel-readiness-unknown-readiness",
+      "target": "channelReadiness",
+      "payload": {
+        "channelId": "channel-invalid-readiness",
+        "peerUserId": "peer",
+        "selfHasActiveDevice": true,
+        "peerHasActiveDevice": true,
+        "readiness": { "kind": "sideways" },
+        "audioReadiness": {
+          "self": { "kind": "ready" },
+          "peer": { "kind": "ready" }
+        },
+        "wakeReadiness": {
+          "self": { "kind": "unavailable" },
+          "peer": { "kind": "unavailable" }
+        },
+        "activeTransmitExpiresAt": null,
+        "status": "ready"
+      }
+    },
+    {
+      "name": "channel-readiness-unknown-audio-readiness",
+      "target": "channelReadiness",
+      "payload": {
+        "channelId": "channel-invalid-audio",
+        "peerUserId": "peer",
+        "selfHasActiveDevice": true,
+        "peerHasActiveDevice": true,
+        "readiness": { "kind": "ready" },
+        "audioReadiness": {
+          "self": { "kind": "sideways" },
+          "peer": { "kind": "ready" }
+        },
+        "wakeReadiness": {
+          "self": { "kind": "unavailable" },
+          "peer": { "kind": "unavailable" }
+        },
+        "activeTransmitExpiresAt": null,
+        "status": "ready"
+      }
+    }
+  ]
+}

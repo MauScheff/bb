@@ -1,0 +1,260 @@
+{
+  "baseURL": "http://localhost:8090/s/turbo",
+  "name": "receiver_readiness_pending_leave_regression",
+  "participants": {
+    "a": {
+      "deviceId": "sim-fuzz-20260573-avery",
+      "handle": "@avery"
+    },
+    "b": {
+      "deviceId": "sim-fuzz-20260573-blake",
+      "handle": "@blake"
+    }
+  },
+  "requiresLocalBackend": true,
+  "steps": [
+    {
+      "actions": [
+        {
+          "actor": "a",
+          "friend": "b",
+          "type": "openFriend"
+        },
+        {
+          "actor": "b",
+          "friend": "a",
+          "type": "openFriend"
+        }
+      ],
+      "description": "both Friends open each other"
+    },
+    {
+      "actions": [
+        {
+          "actor": "a",
+          "delayMilliseconds": 150,
+          "type": "refreshBeeps"
+        },
+        {
+          "actor": "b",
+          "delayMilliseconds": 50,
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "pre-Beep refresh noise"
+    },
+    {
+      "actions": [
+        {
+          "actor": "b",
+          "count": 2,
+          "milliseconds": 300,
+          "route": "incoming-beeps",
+          "type": "setHTTPDelay"
+        },
+        {
+          "actor": "a",
+          "type": "connect"
+        },
+        {
+          "actor": "a",
+          "delayMilliseconds": 300,
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "Beep reaches recipient",
+      "expectEventually": {
+        "a": {
+          "isJoined": false,
+          "phase": "outgoingBeep",
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "isJoined": false,
+          "phase": "incomingBeep",
+          "selectedHandle": "@avery"
+        }
+      }
+    },
+    {
+      "actions": [
+        {
+          "actor": "b",
+          "type": "connect"
+        },
+        {
+          "actor": "a",
+          "type": "refreshContactSummaries"
+        },
+        {
+          "actor": "a",
+          "type": "refreshChannelState"
+        },
+        {
+          "actor": "b",
+          "delayMilliseconds": 300,
+          "type": "refreshBeeps"
+        },
+        {
+          "actor": "b",
+          "repeatCount": 2,
+          "repeatIntervalMilliseconds": 25,
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "recipient joins and sender becomes friendReady",
+      "expectEventually": {
+        "a": {
+          "isJoined": false,
+          "phase": "friendReady",
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "isJoined": true,
+          "phase": "waitingForPeer",
+          "selectedHandle": "@avery"
+        }
+      }
+    },
+    {
+      "actions": [
+        {
+          "actor": "a",
+          "count": 2,
+          "milliseconds": 150,
+          "route": "channel-state",
+          "type": "setHTTPDelay"
+        },
+        {
+          "actor": "a",
+          "type": "connect"
+        },
+        {
+          "actor": "a",
+          "delayMilliseconds": 50,
+          "type": "refreshChannelState"
+        },
+        {
+          "actor": "b",
+          "type": "refreshContactSummaries"
+        },
+        {
+          "actor": "b",
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "both sides become ready",
+      "expectEventually": {
+        "a": {
+          "canTransmitNow": true,
+          "isJoined": true,
+          "phase": "ready",
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "canTransmitNow": true,
+          "isJoined": true,
+          "phase": "ready",
+          "selectedHandle": "@avery"
+        }
+      }
+    },
+    {
+      "actions": [
+        {
+          "actor": "b",
+          "count": 1,
+          "signalKind": "transmit-start",
+          "type": "dropNextWebSocketSignals"
+        },
+        {
+          "actor": "a",
+          "type": "beginTransmit"
+        },
+        {
+          "actor": "b",
+          "delayMilliseconds": 600,
+          "type": "refreshContactSummaries"
+        },
+        {
+          "actor": "b",
+          "repeatCount": 3,
+          "repeatIntervalMilliseconds": 150,
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "a begins transmitting",
+      "expectEventually": {
+        "a": {
+          "isJoined": true,
+          "isTransmitting": true,
+          "phase": "transmitting",
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "isJoined": true,
+          "phase": "receiving",
+          "selectedHandle": "@avery"
+        }
+      }
+    },
+    {
+      "actions": [
+        {
+          "actor": "a",
+          "type": "endTransmit"
+        },
+        {
+          "actor": "a",
+          "type": "refreshBeeps"
+        }
+      ],
+      "description": "a ends transmitting",
+      "expectEventually": {
+        "a": {
+          "isJoined": true,
+          "isTransmitting": false,
+          "phase": "ready",
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "isJoined": true,
+          "isTransmitting": false,
+          "phase": "ready",
+          "selectedHandle": "@avery"
+        }
+      }
+    },
+    {
+      "actions": [
+        {
+          "actor": "a",
+          "type": "disconnect"
+        },
+        {
+          "actor": "a",
+          "delayMilliseconds": 600,
+          "type": "refreshContactSummaries"
+        },
+        {
+          "actor": "b",
+          "delayMilliseconds": 300,
+          "type": "refreshChannelState"
+        }
+      ],
+      "description": "disconnect clears joined state",
+      "expectEventually": {
+        "a": {
+          "isJoined": false,
+          "isTransmitting": false,
+          "selectedHandle": "@blake"
+        },
+        "b": {
+          "isJoined": false,
+          "isTransmitting": false,
+          "selectedHandle": "@avery"
+        }
+      }
+    }
+  ]
+}

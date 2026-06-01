@@ -1,0 +1,15 @@
+{
+  "name": "turbo-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-04-23",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "TURBO_TELEMETRY",
+      "dataset": "turbo_telemetry_events_v1"
+    }
+  ]
+}

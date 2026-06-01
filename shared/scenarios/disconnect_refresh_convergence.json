@@ -1,0 +1,87 @@
+{
+  "name": "disconnect_refresh_convergence",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "disconnect and explicit refresh converge both sides back to idle",
+      "actions": [
+        { "actor": "a", "type": "disconnect" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "a", "type": "reconcileSelectedConversation" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" },
+        { "actor": "b", "type": "reconcileSelectedConversation" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "contacts": [
+            { "handle": "@blake", "listState": "idle", "isOnline": true }
+          ]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "contacts": [
+            { "handle": "@avery", "listState": "idle", "isOnline": true }
+          ]
+        }
+      }
+    }
+  ]
+}

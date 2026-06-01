@@ -1,0 +1,135 @@
+{
+  "name": "foreground-ptt",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false, "noInvariantViolations": true },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false, "noInvariantViolations": true }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false, "noInvariantViolations": true },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true, "noInvariantViolations": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true, "pttTokenRegistrationKind": "registered", "noInvariantViolations": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true, "pttTokenRegistrationKind": "registered", "noInvariantViolations": true }
+      }
+    },
+    {
+      "description": "avery transmits to blake",
+      "actions": [
+        { "actor": "a", "type": "beginTransmit" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "noInvariantViolations": true,
+          "eventuallyNoInvariant": [
+            "ptt.foreground_system_begin_without_local_press",
+            "transmit.stale_startup_side_effect"
+          ]
+        },
+        "b": { "selectedHandle": "@avery", "phase": "receiving", "isJoined": true, "noInvariantViolations": true }
+      }
+    },
+    {
+      "description": "avery stops transmitting and both return ready",
+      "actions": [
+        { "actor": "a", "type": "endTransmit" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "isTransmitting": false,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "eventuallyNoInvariant": [
+            "ptt.foreground_system_begin_without_local_press",
+            "transmit.stale_startup_side_effect"
+          ]
+        },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true, "noInvariantViolations": true }
+      }
+    },
+    {
+      "description": "blake transmits back to avery",
+      "actions": [
+        { "actor": "b", "type": "beginTransmit" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "receiving", "isJoined": true, "noInvariantViolations": true },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "noInvariantViolations": true,
+          "eventuallyNoInvariant": [
+            "ptt.foreground_system_begin_without_local_press",
+            "transmit.stale_startup_side_effect"
+          ]
+        }
+      }
+    },
+    {
+      "description": "blake stops transmitting and both remain ready",
+      "actions": [
+        { "actor": "b", "type": "endTransmit" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true, "noInvariantViolations": true },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "isTransmitting": false,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "eventuallyNoInvariant": [
+            "ptt.foreground_system_begin_without_local_press",
+            "transmit.stale_startup_side_effect"
+          ]
+        }
+      }
+    }
+  ]
+}

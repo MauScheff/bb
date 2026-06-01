@@ -1,0 +1,117 @@
+{
+  "name": "wake_token_revocation_clears_active_transmit",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "receiver backgrounds and sender sees a wake-capable target",
+      "actions": [
+        { "actor": "a", "type": "backgroundApp" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "eventuallyNoInvariant": ["channel.active_transmit_without_addressable_receiver"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "wakeReady",
+          "isJoined": true,
+          "canTransmitNow": false,
+          "backend": {
+            "remoteWakeCapabilityKind": "wake-capable"
+          },
+          "eventuallyNoInvariant": ["channel.active_transmit_without_addressable_receiver"]
+        }
+      }
+    },
+    {
+      "description": "sender starts transmit through the receiver wake token",
+      "actions": [
+        { "actor": "b", "type": "beginTransmit" }
+      ],
+      "expectEventually": {
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "eventuallyNoInvariant": ["channel.active_transmit_without_addressable_receiver"]
+        }
+      }
+    },
+    {
+      "description": "receiver token revocation clears the backend active transmit",
+      "actions": [
+        { "actor": "a", "type": "revokeEphemeralToken" },
+        { "actor": "b", "type": "refreshChannelState", "delayMilliseconds": 500 },
+        { "actor": "a", "type": "captureDiagnostics", "delayMilliseconds": 800 },
+        { "actor": "b", "type": "captureDiagnostics", "delayMilliseconds": 800 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "eventuallyNoInvariant": ["channel.active_transmit_without_addressable_receiver"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "waitingForPeer",
+          "isJoined": true,
+          "isTransmitting": false,
+          "canTransmitNow": false,
+          "backend": {
+            "remoteWakeCapabilityKind": "unavailable"
+          },
+          "eventuallyNoInvariant": ["channel.active_transmit_without_addressable_receiver"]
+        }
+      }
+    }
+  ]
+}

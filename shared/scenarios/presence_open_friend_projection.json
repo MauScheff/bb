@@ -1,0 +1,36 @@
+{
+  "name": "presence_open_friend_projection",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "avery opens blake without creating a direct channel first",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selected": {
+            "handle": "@blake",
+            "phase": "idle",
+            "isJoined": false,
+            "isTransmitting": false,
+            "canTransmitNow": false
+          },
+          "contacts": [
+            { "handle": "@blake", "isOnline": true, "listState": "idle" }
+          ]
+        }
+      }
+    }
+  ]
+}

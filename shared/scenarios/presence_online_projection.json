@@ -1,0 +1,60 @@
+{
+  "name": "presence_online_projection",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "both peers establish a direct channel and refresh online projections",
+      "actions": [
+        { "actor": "a", "type": "ensureDirectChannel", "friend": "b" },
+        { "actor": "b", "type": "ensureDirectChannel", "friend": "a" },
+        { "actor": "a", "type": "heartbeatPresence" },
+        { "actor": "b", "type": "heartbeatPresence" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshContactSummaries" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selected": {
+            "handle": "@blake",
+            "phase": "idle",
+            "isJoined": false,
+            "isTransmitting": false,
+            "canTransmitNow": false
+          },
+          "contacts": [
+            { "handle": "@blake", "isOnline": true, "listState": "idle", "badgeStatus": "online" }
+          ]
+        },
+        "b": {
+          "selected": {
+            "handle": "@avery",
+            "phase": "idle",
+            "isJoined": false,
+            "isTransmitting": false,
+            "canTransmitNow": false
+          },
+          "contacts": [
+            { "handle": "@avery", "isOnline": true, "listState": "idle", "badgeStatus": "online" }
+          ]
+        }
+      }
+    }
+  ]
+}

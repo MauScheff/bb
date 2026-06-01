@@ -1,0 +1,103 @@
+{
+  "baseUrl": "http://localhost:8090/s/turbo",
+  "checks": [
+    {
+      "detail": "ok",
+      "durationMs": 8,
+      "name": "config",
+      "ok": true,
+      "payload": {
+        "supportsWebSocket": true
+      }
+    },
+    {
+      "detail": "both websocket endpoints acknowledged the expected device id and stayed connected for readiness checks",
+      "durationMs": 0,
+      "name": "websocket-register",
+      "ok": true,
+      "payload": {
+        "calleeAck": {
+          "deviceId": "synthetic-callee",
+          "status": "connected"
+        },
+        "callerAck": {
+          "deviceId": "synthetic-caller",
+          "status": "connected"
+        }
+      }
+    },
+    {
+      "detail": "ok",
+      "durationMs": 12,
+      "name": "channel-readiness:caller:receiver-ready",
+      "ok": true,
+      "payload": {
+        "audioReadiness": {
+          "peer": {
+            "kind": "ready"
+          }
+        },
+        "readiness": {
+          "kind": "ready"
+        },
+        "wakeReadiness": {
+          "peer": {
+            "kind": "wake-capable",
+            "targetDeviceId": "synthetic-callee"
+          }
+        }
+      }
+    },
+    {
+      "detail": "ok",
+      "durationMs": 10,
+      "name": "channel-readiness:callee:receiver-ready",
+      "ok": true,
+      "payload": {
+        "audioReadiness": {
+          "peer": {
+            "kind": "ready"
+          }
+        },
+        "readiness": {
+          "kind": "ready"
+        },
+        "wakeReadiness": {
+          "self": {
+            "kind": "wake-capable",
+            "targetDeviceId": "synthetic-callee"
+          }
+        }
+      }
+    },
+    {
+      "detail": "ok",
+      "durationMs": 25,
+      "name": "channel-begin-transmit",
+      "ok": true,
+      "payload": {
+        "startedAt": "2026-05-10T10:00:00Z",
+        "status": "transmitting"
+      }
+    },
+    {
+      "detail": "ok",
+      "durationMs": 9,
+      "name": "channel-ptt-push-target",
+      "ok": true,
+      "payload": {
+        "targetDeviceId": "synthetic-callee"
+      }
+    },
+    {
+      "detail": "ok",
+      "durationMs": 13,
+      "name": "channel-end-transmit",
+      "ok": true,
+      "payload": {
+        "status": "idle"
+      }
+    }
+  ],
+  "ok": true
+}

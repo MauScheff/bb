@@ -1,0 +1,155 @@
+{
+  "generatedAt": "2026-05-28T15:34:17.143322+00:00",
+  "incidents": [
+    {
+      "name": "device_no_audio_reorder_ipad_20260528",
+      "outboundTransportIncidents": [],
+      "packetDeliveries": [
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 0,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 3,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 6,
+          "sequenceNumber": 2,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 2,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 1,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 1,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 6,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 2,
+          "sequenceNumber": 4,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 4,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 8,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 4,
+          "sequenceNumber": 5,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 5,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 7,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 7,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 9,
+          "transport": "directQuic"
+        }
+      ],
+      "schedulerOperations": [
+        {
+          "available": true,
+          "type": "setIOCycleAvailable"
+        },
+        {
+          "cushionPolicy": "alreadyCushioned",
+          "playbackProfile": "lowLatency",
+          "type": "receive"
+        },
+        {
+          "type": "playbackNodeStarted"
+        }
+      ],
+      "subject": "device-direct-quic-no-audio-reorder",
+      "voiceFrameDeliveries": [
+        {
+          "deltaFrames": 1,
+          "frameIndex": 1,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 1,
+          "frameIndex": 0,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 6,
+          "frameIndex": 3,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 0,
+          "frameIndex": 2,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 1,
+          "frameIndex": 6,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 2,
+          "frameIndex": 4,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 0,
+          "frameIndex": 8,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 4,
+          "frameIndex": 5,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 0,
+          "frameIndex": 7,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 1,
+          "frameIndex": 9,
+          "isFlushFrame": false
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 1,
+  "source": "/tmp/turbo-device-diagnostics-20260528-172658/iPad/app-diagnostics/beepbeep-diagnostics.log"
+}

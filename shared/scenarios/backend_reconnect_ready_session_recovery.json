@@ -1,0 +1,129 @@
+{
+  "name": "backend_reconnect_ready_session_recovery",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "membership": "both(peerDeviceConnected: true)",
+            "beepThreadProjection": "none",
+            "canTransmit": true
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "membership": "both(peerDeviceConnected: true)",
+            "beepThreadProjection": "none",
+            "canTransmit": true
+          }
+        }
+      }
+    },
+    {
+      "description": "initiator reconnects backend and both sides reconverge to ready",
+      "actions": [
+        { "actor": "a", "type": "reconnectBackend" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "a", "type": "reconcileSelectedConversation" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" },
+        { "actor": "b", "type": "reconcileSelectedConversation" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "membership": "both(peerDeviceConnected: true)",
+            "beepThreadProjection": "none",
+            "canTransmit": true,
+            "webSocketConnected": true
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "noInvariantViolations": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "membership": "both(peerDeviceConnected: true)",
+            "beepThreadProjection": "none",
+            "canTransmit": true,
+            "webSocketConnected": true
+          }
+        }
+      }
+    }
+  ]
+}

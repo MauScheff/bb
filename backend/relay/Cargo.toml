@@ -1,0 +1,28 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+quinn-probe = ["dep:quinn"]
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+required-features = ["quinn-probe"]
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+quiche = "0.29.1"
+quinn = { version = "0.11", optional = true }
+rustls = "0.23"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
+tokio-rustls = "0.26"
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

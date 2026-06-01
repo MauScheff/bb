@@ -1,0 +1,670 @@
+{
+  "schemaVersion": 1,
+  "description": "Runtime diagnostic contract annotations emitted by the iOS app and consumed by strict diagnostics/fuzzing.",
+  "contracts": [
+        {
+            "name": "selected.inactive_backend_readiness_clears_membership",
+            "invariantID": "selected.backend_inactive_ui_still_joined",
+            "kind": "postcondition",
+      "scope": "backend",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+BackendSyncTransportFaultsAndSignals.swift",
+      "predicate": "After backend readiness is inactive and channel membership is absent, the app must not preserve an effective joined membership or readiness projection.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "existingMembership",
+        "incomingMembership",
+        "effectiveMembership",
+        "backendReadiness",
+        "effectiveReadiness",
+        "localDevicePTTEvidenceEstablished",
+                "reconnectGraceActive"
+            ]
+        },
+        {
+            "name": "selected.hold_to_talk_requires_transmit_capability",
+            "invariantID": "selected.hold_to_talk_requires_transmit_capability",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "The selected Conversation Hold To Talk affordance may be enabled only with current transmit capability or a named wake/start/transmitting exception phase.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationPhaseDetail",
+                "selectedConversationCanTransmit",
+                "selectedConversationAllowsHoldToTalk",
+                "backendCanTransmit",
+                "backendReadiness",
+                "remoteAudioReadiness",
+                "remoteWakeCapabilityKind"
+            ]
+        },
+        {
+            "name": "selected.wake_ready_requires_aligned_apple_session",
+            "invariantID": "selected.wake_ready_requires_aligned_apple_session",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "The wake-ready affordance requires aligned local Apple PushToTalk session evidence before the app can show Hold to talk to wake.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationPhaseDetail",
+                "isJoined",
+                "systemSession",
+                "backendReadiness",
+                "backendSelfJoined",
+                "backendPeerJoined",
+                "backendPeerDeviceConnected",
+                "remoteWakeCapabilityKind"
+            ]
+        },
+        {
+            "name": "selected.control_plane_reconnect_grace_disables_hold_to_talk",
+            "invariantID": "selected.control_plane_reconnect_grace_disables_hold_to_talk",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/PTTViewModel+BackendLifecycleIdentityAndSession.swift",
+            "predicate": "Control-plane reconnect grace may preserve live UI continuity, but it must not leave the normal Hold To Talk affordance enabled.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationPhaseDetail",
+                "selectedConversationCanTransmit",
+                "selectedConversationAllowsHoldToTalk",
+                "controlPlaneReconnectGraceActive",
+                "backendCanTransmit",
+                "backendReadiness"
+            ]
+        },
+        {
+            "name": "selected.backend_ready_stale_backend_connect",
+            "invariantID": "selected.backend_ready_stale_backend_connect",
+            "kind": "invariant",
+            "scope": "convergence",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "Backend and local Device PTT evidence may not remain blocked by an obsolete backend-connect pending action after readiness has converged.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationPhaseDetail",
+                "pendingAction",
+                "isJoined",
+                "systemSession",
+                "backendChannelStatus",
+                "backendReadiness",
+                "backendCanTransmit",
+                "backendSelfJoined",
+                "backendPeerJoined",
+                "backendPeerDeviceConnected"
+            ]
+        },
+        {
+            "name": "selected.backend_absent_pending_local_action_without_device_ptt_evidence",
+            "invariantID": "selected.backend_absent_pending_local_action_without_device_ptt_evidence",
+            "kind": "invariant",
+            "scope": "convergence",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/PTTViewModel+Selection.swift",
+            "predicate": "Absent backend membership must converge any stale pending local Device PTT join or leave action unless an unresolved local join is still explicitly preserved.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationRelationship",
+                "pendingAction",
+                "localJoinAttempt",
+                "localJoinAttemptIssuedCount",
+                "isJoined",
+                "systemSession",
+                "backendJoinSettling",
+                "backendChannelStatus",
+                "backendReadiness",
+                "backendSelfJoined",
+                "backendPeerJoined"
+            ]
+        },
+        {
+            "name": "selected.stale_backend_membership_without_local_device_ptt_evidence",
+            "invariantID": "selected.stale_backend_membership_without_local_device_ptt_evidence",
+            "kind": "invariant",
+            "scope": "backend",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "Inactive durable backend membership without local Device PTT, pending, or Beep evidence must not enable call UI; it must be surfaced for idempotent cleanup.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationRelationship",
+                "pendingAction",
+                "isJoined",
+                "systemSession",
+                "backendReadiness",
+                "backendSelfJoined",
+                "backendPeerJoined",
+                "backendPeerDeviceConnected"
+            ]
+        },
+        {
+            "name": "selected.stale_membership_friend_ready_without_local_device_ptt_evidence",
+            "invariantID": "selected.stale_membership_friend_ready_without_local_device_ptt_evidence",
+            "kind": "invariant",
+            "scope": "backend",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "Durable channel membership must not leave the selected Conversation friend-ready when the local app has no local Device PTT evidence.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationRelationship",
+                "pendingAction",
+                "isJoined",
+                "systemSession",
+                "backendChannelStatus",
+                "backendReadiness",
+                "backendSelfJoined",
+                "backendPeerJoined",
+                "backendPeerDeviceConnected"
+            ]
+        },
+        {
+            "name": "selected.ready_while_backend_cannot_transmit",
+            "invariantID": "selected.ready_while_backend_cannot_transmit",
+            "kind": "invariant",
+            "scope": "backend",
+            "owner": "mixed",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> tools/scripts/merged_diagnostics.py",
+            "predicate": "The selected Conversation may not project ready/hold-to-talk from stale backend peer device state when backend says this device cannot transmit.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "backendCanTransmit",
+                "backendChannelStatus",
+                "backendReadiness"
+            ]
+        },
+        {
+            "name": "selected.receiving_after_remote_transmit_stop",
+            "invariantID": "selected.receiving_after_remote_transmit_stop",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/ConversationDomain.swift",
+            "predicate": "The selected Conversation must not remain in receiving after a remote transmit stop has settled outside the projection grace window.",
+            "evidenceFields": [
+                "selectedConversationPhase",
+                "selectedConversationPhaseDetail",
+                "remoteReceiveActive",
+                "remoteTransmitStopObserved",
+                "remoteTransmitStopProjectionGraceActive",
+                "backendChannelStatus",
+                "backendReadiness"
+            ]
+        },
+        {
+            "name": "receiver.readiness_duplicate_publish_without_recovery_boundary",
+            "invariantID": "receiver.readiness_duplicate_publish_without_recovery_boundary",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/ControlPlaneCoordinator.swift -> Turbo/PTTViewModel+Transmit.swift -> tools/scripts/merged_diagnostics.py",
+            "predicate": "Receiver audio readiness may publish the same semantic state only once per contact/channel/device control-plane epoch unless a reconnect recovery boundary requires a repair publish.",
+            "evidenceFields": [
+                "contactId",
+                "channelId",
+                "state",
+                "count",
+                "spanMs",
+                "reasons"
+            ]
+        },
+        {
+            "name": "receiver.readiness_ready_requires_stable_evidence",
+            "invariantID": "receiver.readiness_ready_requires_stable_evidence",
+            "kind": "precondition",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/PTTViewModel+Transmit.swift -> Turbo/ControlPlaneCoordinator.swift -> tools/scripts/merged_diagnostics.py",
+            "predicate": "Receiver-ready may only be published from stable receiver evidence; transitional media states such as idle, preparing, failed, or closed must not publish ready, and superseded media-state sync requests must be no-ops.",
+            "evidenceFields": [
+                "contactId",
+                "channelId",
+                "reason",
+                "blocker",
+                "source",
+                "mediaState",
+                "applicationState",
+                "backendReadiness",
+                "localAudioReadiness"
+            ]
+        },
+        {
+            "name": "receiver.readiness_ready_forbidden_during_pending_leave",
+            "invariantID": "receiver.readiness_ready_forbidden_during_pending_leave",
+            "kind": "precondition",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "Turbo/PTTViewModel+Transmit.swift -> Turbo/PTTViewModel+ControlPlane.swift",
+            "predicate": "Receiver-ready must not be published while an explicit leave or reconciled teardown is in flight for the contact.",
+            "evidenceFields": [
+                "contactId",
+                "channelId",
+                "reason",
+                "source",
+                "mediaState",
+                "applicationState",
+                "pendingAction",
+                "backendReadiness",
+                "localAudioReadiness"
+            ]
+        },
+        {
+            "name": "engine.transmit_capture_requires_backend_lease_and_system_begin",
+            "invariantID": "engine.transmit_capture_requires_backend_lease_and_system_begin",
+            "kind": "invariant",
+            "scope": "local",
+            "owner": "app",
+            "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift",
+            "predicate": "TurboEngine may emit local audio capture only after it has both backend transmit lease evidence and Apple system-transmit-began evidence.",
+            "evidenceFields": [
+                "channelID",
+                "backendTransmitID",
+                "systemTransmitID",
+                "backendAcceptedAtTick",
+                "systemStartedAtTick",
+                "transmitPhase"
+            ]
+        },
+        {
+            "name": "media.first_audio_ack_requires_pending_expectation",
+            "invariantID": "transmit.first_audio_ack_without_expectation",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "A received first-audio playback ACK must match a pending expectation for the current transmit epoch unless it is a duplicate completed ACK.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "senderDeviceId",
+        "receiverDeviceId",
+        "transportDigest",
+        "ackId",
+        "source"
+      ]
+    },
+    {
+      "name": "media.first_audio_ack_matches_pending_expectation",
+      "invariantID": "media.audio_playback_ack_mismatch",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "A first-audio playback ACK must match the pending channel, sender device, receiver device, transport, and packet epoch expectation.",
+      "evidenceFields": [
+        "contactId",
+        "expectedChannelId",
+        "receivedChannelId",
+        "expectedSenderDeviceId",
+        "receivedSenderDeviceId",
+        "expectedReceiverDeviceId",
+        "receivedReceiverDeviceId",
+        "expectedTransports",
+        "receivedTransport",
+        "expectedTransportDigest",
+        "receivedTransportDigest",
+        "expectedEncryptedSequenceNumber",
+        "receivedEncryptedSequenceNumber",
+        "ackId",
+        "source"
+      ]
+    },
+    {
+      "name": "media.first_audio_playback_ack_arrives_before_timeout",
+      "invariantID": "transmit.first_audio_playback_ack_missing",
+      "kind": "liveness",
+      "scope": "pair",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "The receiver must confirm first outbound audio playback before the sender timeout elapses.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "senderDeviceId",
+        "receiverDeviceId",
+        "transportDigest",
+        "encryptedSequenceNumber",
+        "deliveredTransports",
+        "timeoutMs",
+        "ackId"
+      ]
+    },
+    {
+      "name": "media.relay_control_frame_matches_current_peer",
+      "invariantID": "media.relay_control_frame_mismatch",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "A media relay control frame must match the current channel and peer device binding before it mutates prewarm or ACK state.",
+      "evidenceFields": [
+        "contactId",
+        "expectedChannelId",
+        "receivedChannelId",
+        "expectedPeerDeviceId",
+        "receivedPeerDeviceId",
+        "kind",
+        "requestId",
+        "ackId"
+      ]
+    },
+    {
+      "name": "identity.transmit_target_matches_contact",
+      "invariantID": "identity.transmit_target_mismatch",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "An outgoing transmit target must match the contact directory and must not target the local device.",
+      "evidenceFields": [
+        "contactId",
+        "expectedChannelId",
+        "targetChannelId",
+        "expectedRemoteUserId",
+        "targetUserId",
+        "targetDeviceId",
+        "localDeviceId",
+        "reason",
+        "contactFound"
+      ]
+    },
+    {
+      "name": "effect.outgoing_audio_send_requires_current_target",
+      "invariantID": "effect.outgoing_audio_send_without_current_target",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "An outgoing audio send effect must still belong to the current app or engine transmit target before any transport side effect runs.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "targetDeviceId",
+        "activeContactId",
+        "activeChannelId",
+        "activeDeviceId",
+        "source",
+        "engineMatches",
+        "appMatches"
+      ]
+    },
+    {
+      "name": "direct-quic.selected_prewarm_request_blocked_by_connectivity_backoff",
+      "invariantID": "direct-quic.selected_prewarm_request_blocked_by_connectivity_backoff",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+DirectQuicIdentityAndProbe.swift",
+      "predicate": "A selected Direct QUIC prewarm request must not remain blocked by connectivity retry backoff when the app is active or an owning background PTT flow is active.",
+      "evidenceFields": [
+        "contactId",
+        "requestId",
+        "reason",
+        "peerDeviceId",
+        "retryReason",
+        "retryAttemptId",
+        "retryBackoffMs",
+        "retryRemainingMs"
+      ]
+    },
+    {
+      "name": "direct-quic.duplicate_upgrade_request_without_throttle_boundary",
+      "invariantID": "direct-quic.duplicate_upgrade_request_without_throttle_boundary",
+      "kind": "idempotence",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+DirectQuicIdentityAndProbe.swift -> Turbo/PTTViewModelRuntime.swift -> tools/scripts/merged_diagnostics.py",
+      "predicate": "A Direct QUIC remote-offer upgrade request may be sent at most once per contact, channel, peer device, and throttle window unless fresh-session guards are explicitly cleared.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "peerDeviceId",
+        "count",
+        "spanMs",
+        "reasons",
+        "requestIds"
+      ]
+    },
+    {
+      "name": "media.relay_receiver_prewarm_duplicate_send_without_recovery_boundary",
+      "invariantID": "media.relay_receiver_prewarm_duplicate_send_without_recovery_boundary",
+      "kind": "idempotence",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+DirectQuic.swift -> Turbo/PTTViewModelRuntime.swift -> tools/scripts/merged_diagnostics.py",
+      "predicate": "A media relay receiver-prewarm request or ACK control frame may be sent at most once per contact, channel, peer device, request id, and control kind unless a relay or fresh-session recovery boundary resets the local send state.",
+      "evidenceFields": [
+        "kind",
+        "contactId",
+        "channelId",
+        "peerDeviceId",
+        "requestId",
+        "count",
+        "spanMs",
+        "reasons"
+      ]
+    },
+    {
+      "name": "media.incoming_audio_chunk_gap",
+      "invariantID": "media.incoming_audio_chunk_gap",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+BackendSyncTransportFaultsAndSignals.swift",
+      "predicate": "An active receive epoch must not observe an excessive gap between accepted audio chunks.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "incomingTransport",
+        "previousTransport",
+        "gapMilliseconds",
+        "thresholdMilliseconds",
+        "receivePhase",
+        "selectedTransport"
+      ]
+    },
+    {
+      "name": "media.incoming_audio_sequence_gap",
+      "invariantID": "media.incoming_audio_sequence_gap",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+BackendSyncTransportFaultsAndSignals.swift",
+      "predicate": "An active receive epoch must not advance accepted audio sequence numbers with missing frames.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "incomingTransport",
+        "previousTransport",
+        "previousSequenceNumber",
+        "sequenceNumber",
+        "missingSequenceCount",
+        "receivePhase",
+        "selectedTransport"
+      ]
+    },
+    {
+      "name": "media.incoming_audio_queue_delay",
+      "invariantID": "media.incoming_audio_queue_delay",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModelRuntime.swift",
+      "predicate": "Incoming live-audio payload must not sit in a local transport receive queue beyond the freshness budget.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "attemptId",
+        "incomingTransport",
+        "sequenceNumber",
+        "directQuicSequenceNumber",
+        "localQueueDelayMs",
+        "senderClockAgeMs",
+        "thresholdMs",
+        "action"
+      ]
+    },
+    {
+      "name": "engine.ptt_activation_deadline_elapsed",
+      "invariantID": "engine.ptt_activation_deadline_elapsed",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+Transmit.swift",
+      "predicate": "Apple-gated transmit startup must receive PTT audio activation before the deadline while the press is still active.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "channelUUID",
+        "targetDeviceId",
+        "trigger",
+        "startupPolicy",
+        "isPTTAudioSessionActive",
+        "timeoutMs"
+      ]
+    },
+    {
+      "name": "transmit.outbound_audio_requires_remote_receiver_ready",
+      "invariantID": "transmit.outbound_audio_without_remote_receiver_ready",
+      "kind": "precondition",
+      "scope": "backend",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "The sender must not release outbound audio until the remote receiver readiness gate is satisfied or the bounded recovery window expires into a fail-closed path.",
+      "evidenceFields": [
+        "reason",
+        "contactId",
+        "channelId",
+        "selectedConversationPhase",
+        "backendChannelStatus",
+        "backendReadiness",
+        "remoteAudioReadiness",
+        "peerDeviceConnected",
+        "waitedMilliseconds"
+      ]
+    },
+    {
+      "name": "transmit.startup_side_effect_requires_current_activation",
+      "invariantID": "transmit.stale_startup_side_effect",
+      "kind": "postcondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+Transmit.swift",
+      "predicate": "A completed transmit startup side effect must still belong to the current press/activation epoch.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "channelUUID",
+        "stage",
+        "reason",
+        "runtimePressActive",
+        "coordinatorPressActive",
+        "explicitStopRequested"
+      ]
+    },
+    {
+      "name": "media.outbound_audio_transport_backpressure_drop",
+      "invariantID": "media.outbound_audio_transport_backpressure_drop",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Outbound audio transport should not drop stale payloads because pending transport send work exceeded the backpressure limit.",
+      "evidenceFields": [
+        "droppedPayloadCount",
+        "pendingPayloadCount",
+        "maximumPendingPayloads",
+        "reason"
+      ]
+    },
+    {
+      "name": "media.outbound_audio_transport_send_slow",
+      "invariantID": "media.outbound_audio_transport_send_slow",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Outbound audio transport send latency should remain below the slow-send threshold.",
+      "evidenceFields": [
+        "elapsedMilliseconds",
+        "payloadLength",
+        "pendingPayloadCount",
+        "transportDigest"
+      ]
+    },
+    {
+      "name": "media.outbound_audio_transport_slow_send_drop",
+      "invariantID": "media.outbound_audio_transport_slow_send_drop",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Packet-style live audio transport should drop queued stale payloads after a slow send or stop-drain timeout instead of draining delayed speech; ordered continuity transport should preserve queued payloads across slow sends.",
+      "evidenceFields": [
+        "elapsedMilliseconds",
+        "droppedPayloadCount",
+        "pendingPayloadCount",
+        "reason"
+      ]
+    },
+    {
+      "name": "media.codec_negotiation_mismatch",
+      "invariantID": "media.codec_negotiation_mismatch",
+      "kind": "precondition",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Incoming Opus frames must match the negotiated playback codec profile before insertion into playback.",
+      "evidenceFields": [
+        "reason",
+        "codec",
+        "frameIndex",
+        "sampleRate",
+        "frameDurationMs"
+      ]
+    },
+    {
+      "name": "media.playout_excessive_jitter",
+      "invariantID": "media.playout_excessive_jitter",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Incoming Opus playout inter-arrival jitter should not exceed the playback-profile threshold.",
+      "evidenceFields": [
+        "codec",
+        "frameIndex",
+        "interArrivalGapMs",
+        "playbackProfile",
+        "bufferDepthFrames",
+        "targetCushionFrames"
+      ]
+    },
+    {
+      "name": "media.playout_repeated_underrun",
+      "invariantID": "media.playout_repeated_underrun",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Incoming Opus playout should not repeatedly underrun or require adaptive cushion increases during an active receive path.",
+      "evidenceFields": [
+        "codec",
+        "frameIndex",
+        "missingFrameCount",
+        "plcRecoveryCount",
+        "fecRecoveryCount",
+        "adaptiveCushionIncreased",
+        "bufferDepthFrames",
+        "targetCushionFrames"
+      ]
+    }
+  ]
+}

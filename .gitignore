@@ -1,0 +1,16 @@
+.DS_Store
+.unisonHistory
+build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+__pycache__/
+*.pyc
+.scenario-diagnostics/
+.scenario-runtime-config.json
+.envrc
+backend/infra/vm/build/
+node_modules/
+.wrangler/
+backend/relay/target/
+client/ios/Packages/TurboEngine/.build/
+target/

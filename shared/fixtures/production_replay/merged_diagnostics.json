@@ -1,0 +1,132 @@
+{
+  "diagnosticGroups": [
+    {
+      "contexts": {
+        "channel": [
+          "channel-prod-1"
+        ],
+        "contact": [
+          "@prodblake"
+        ]
+      },
+      "subjects": [
+        "@prodavery",
+        "@prodblake"
+      ],
+      "summary": "selected backend ready while one projection is not live"
+    }
+  ],
+  "currentViolations": [],
+  "historicalViolations": [
+    {
+      "invariantId": "selected.backend_ready_ui_not_live",
+      "message": "backend is ready while selected UI is idle",
+      "metadata": {},
+      "scope": "local",
+      "source": "structured",
+      "subject": "@prodavery",
+      "timestamp": "2026-05-10T10:00:07Z"
+    }
+  ],
+  "reports": [
+    {
+      "appVersion": "1.0",
+      "backendInvariantViolations": [],
+      "deviceId": "prod-device-avery",
+      "explicitInvariantViolations": [
+        {
+          "invariantId": "selected.backend_ready_ui_not_live",
+          "message": "backend is ready while selected UI is idle",
+          "scope": "local",
+          "source": "structured",
+          "subject": "@prodavery",
+          "timestamp": "2026-05-10T10:00:07Z"
+        }
+      ],
+      "handle": "@prodavery",
+      "scenarioName": null,
+      "scenarioRunId": null,
+      "snapshot": {
+        "backendCanTransmit": "true",
+        "backendChannelStatus": "ready",
+        "backendPeerJoined": "true",
+        "backendReadiness": "ready",
+        "backendSelfJoined": "true",
+        "isJoined": "true",
+        "isTransmitting": "false",
+        "selectedContact": "@prodblake",
+        "selectedConversationCanTransmit": "true",
+        "selectedConversationPhase": "ready",
+        "selectedConversationStatus": "Ready"
+      },
+      "uploadedAt": "2026-05-10T10:00:08Z"
+    },
+    {
+      "appVersion": "1.0",
+      "backendInvariantViolations": [],
+      "deviceId": "prod-device-blake",
+      "explicitInvariantViolations": [],
+      "handle": "@prodblake",
+      "scenarioName": null,
+      "scenarioRunId": null,
+      "snapshot": {
+        "backendCanTransmit": "true",
+        "backendChannelStatus": "ready",
+        "backendPeerJoined": "true",
+        "backendReadiness": "ready",
+        "backendSelfJoined": "true",
+        "isJoined": "true",
+        "isTransmitting": "false",
+        "selectedContact": "@prodavery",
+        "selectedConversationCanTransmit": "true",
+        "selectedConversationPhase": "ready",
+        "selectedConversationStatus": "Ready"
+      },
+      "uploadedAt": "2026-05-10T10:00:08Z"
+    }
+  ],
+  "sourceWarnings": [],
+  "telemetryEventCount": 0,
+  "telemetryEvents": [],
+  "timeline": [
+    {
+      "line": "[@prodavery] [diag:selection] selectedHandle=@prodblake opened contact prod-device-avery",
+      "timestamp": "2026-05-10T10:00:00Z"
+    },
+    {
+      "line": "[@prodblake] [diag:selection] selectedHandle=@prodavery opened contact prod-device-blake",
+      "timestamp": "2026-05-10T10:00:01Z"
+    },
+    {
+      "line": "[@prodavery] [diag:session] connect requested channelID=channel-prod-1 selectedHandle=@prodblake",
+      "timestamp": "2026-05-10T10:00:02Z"
+    },
+    {
+      "line": "[@prodblake] [diag:session] connect requested channelID=channel-prod-1 selectedHandle=@prodavery",
+      "timestamp": "2026-05-10T10:00:03Z"
+    },
+    {
+      "line": "[@prodavery] [telemetry] severity=info source=client event=ptt.begin message=begin transmit peer_handle=@prodblake device_id=prod-device-avery",
+      "timestamp": "2026-05-10T10:00:04Z"
+    },
+    {
+      "line": "[@prodavery] [telemetry] severity=info source=client event=ptt.end message=end transmit peer_handle=@prodblake device_id=prod-device-avery",
+      "timestamp": "2026-05-10T10:00:05Z"
+    },
+    {
+      "line": "[@prodblake] [diag:session] disconnect requested channelID=channel-prod-1 selectedHandle=@prodavery",
+      "timestamp": "2026-05-10T10:00:06Z"
+    }
+  ],
+  "violations": [
+    {
+      "invariantId": "selected.backend_ready_ui_not_live",
+      "message": "backend is ready while selected UI is idle",
+      "metadata": {},
+      "scope": "local",
+      "source": "structured",
+      "subject": "@prodavery",
+      "timestamp": "2026-05-10T10:00:07Z"
+    }
+  ]
+}

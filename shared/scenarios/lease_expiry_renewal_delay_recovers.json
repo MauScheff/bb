@@ -1,0 +1,117 @@
+{
+  "name": "lease_expiry_renewal_delay_recovers",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "sender begins transmitting with the first renewal delayed past lease expiry",
+      "actions": [
+        { "actor": "a", "type": "setHTTPDelay", "route": "renew-transmit", "milliseconds": 20000, "count": 1 },
+        { "actor": "a", "type": "beginTransmit" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "backend": {
+            "readiness": "self-transmitting",
+            "canTransmit": false
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "receiving",
+          "isJoined": true
+        }
+      }
+    },
+    {
+      "description": "diagnostics does not report a stale live projection after the lease expiry grace",
+      "actions": [
+        { "actor": "a", "type": "wait", "milliseconds": 14500 },
+        { "actor": "a", "type": "captureDiagnostics" },
+        { "actor": "b", "type": "captureDiagnostics" }
+      ],
+      "expectEventually": {
+        "a": {
+          "eventuallyNoInvariant": ["transmit.live_projection_after_lease_expiry"]
+        },
+        "b": {
+          "eventuallyNoInvariant": ["transmit.live_projection_after_lease_expiry"]
+        }
+      }
+    },
+    {
+      "description": "delayed renewal failure leaves both peers ready",
+      "actions": [
+        { "actor": "a", "type": "wait", "milliseconds": 8000 },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "isTransmitting": false,
+          "eventuallyNoInvariant": ["transmit.live_projection_after_lease_expiry"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "eventuallyNoInvariant": ["transmit.live_projection_after_lease_expiry"]
+        }
+      }
+    }
+  ]
+}

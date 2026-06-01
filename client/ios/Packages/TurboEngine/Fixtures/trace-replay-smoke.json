@@ -1,0 +1,748 @@
+{
+  "initialState" : {
+    "audioOutputPreference" : {
+      "speaker" : {
+
+      }
+    },
+    "lifecycle" : {
+      "active" : {
+
+      }
+    },
+    "localDeviceID" : {
+      "rawValue" : "sender-device"
+    },
+    "pttAudio" : {
+      "inactive" : {
+
+      }
+    },
+    "receive" : {
+      "idle" : {
+
+      }
+    },
+    "scheduledPlayback" : [
+
+    ],
+    "conversation" : {
+      "none" : {
+
+      }
+    },
+    "tick" : 0,
+    "transmit" : {
+      "idle" : {
+
+      }
+    },
+    "transport" : {
+      "relayWebSocket" : {
+        "_0" : {
+
+        }
+      }
+    },
+    "transportSelection" : {
+      "bestViableLane" : "webSocketTcp",
+      "currentLane" : "webSocketTcp",
+      "laneCapabilities" : [
+        {
+          "capability" : {
+            "orderedReliableMedia" : {
+              "_0" : {
+                "lane" : "webSocketTcp",
+                "reason" : {
+                  "webSocketFallback" : {
+
+                  }
+                }
+              }
+            }
+          },
+          "lane" : "webSocketTcp"
+        }
+      ],
+      "networkPathGeneration" : 0
+    }
+  },
+  "localDeviceID" : {
+    "rawValue" : "sender-device"
+  },
+  "schemaVersion" : 1,
+  "steps" : [
+    {
+      "diagnostics" : [
+
+      ],
+      "effects" : [
+
+      ],
+      "index" : 0,
+      "input" : {
+        "event" : {
+          "_0" : {
+            "backend" : {
+              "_0" : {
+                "joined" : {
+                  "_0" : {
+                    "channelID" : {
+                      "rawValue" : "channel-trace-smoke"
+                    },
+                    "localDeviceID" : {
+                      "rawValue" : "sender-device"
+                    },
+                    "peer" : {
+                      "contactID" : {
+                        "rawValue" : "receiver"
+                      },
+                      "handle" : "@receiver"
+                    },
+                    "receiverAddressability" : {
+                      "foreground" : {
+                        "_0" : {
+                          "deviceID" : {
+                            "rawValue" : "receiver-device"
+                          }
+                        }
+                      }
+                    },
+                    "peerDevice" : {
+                      "ready" : {
+                        "_0" : {
+                          "deviceID" : {
+                            "rawValue" : "receiver-device"
+                          }
+                        }
+                      }
+                    },
+                    "readiness" : {
+                      "ready" : {
+                        "_0" : {
+                          "backendMembershipObserved" : {
+                            "channelID" : {
+                              "rawValue" : "channel-trace-smoke"
+                            },
+                            "localDeviceID" : {
+                              "rawValue" : "sender-device"
+                            },
+                            "observedAtTick" : 1,
+                            "peerDeviceID" : {
+                              "rawValue" : "receiver-device"
+                            }
+                          },
+                          "transport" : "fastRelay"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "invariantIDs" : [
+
+      ],
+      "resultingState" : {
+        "audioOutputPreference" : {
+          "speaker" : {
+
+          }
+        },
+        "lifecycle" : {
+          "active" : {
+
+          }
+        },
+        "localDeviceID" : {
+          "rawValue" : "sender-device"
+        },
+        "pttAudio" : {
+          "inactive" : {
+
+          }
+        },
+        "receive" : {
+          "idle" : {
+
+          }
+        },
+        "scheduledPlayback" : [
+
+        ],
+        "conversation" : {
+          "joined" : {
+            "_0" : {
+              "channelID" : {
+                "rawValue" : "channel-trace-smoke"
+              },
+              "localDeviceID" : {
+                "rawValue" : "sender-device"
+              },
+              "peer" : {
+                "contactID" : {
+                  "rawValue" : "receiver"
+                },
+                "handle" : "@receiver"
+              },
+              "receiverAddressability" : {
+                "foreground" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "peerDevice" : {
+                "ready" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "readiness" : {
+                "ready" : {
+                  "_0" : {
+                    "backendMembershipObserved" : {
+                      "channelID" : {
+                        "rawValue" : "channel-trace-smoke"
+                      },
+                      "localDeviceID" : {
+                        "rawValue" : "sender-device"
+                      },
+                      "observedAtTick" : 1,
+                      "peerDeviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    },
+                    "transport" : "fastRelay"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tick" : 1,
+        "transmit" : {
+          "idle" : {
+
+          }
+        },
+        "transport" : {
+          "fastRelay" : {
+            "_0" : {
+              "host" : "relay.beepbeep.to",
+              "port" : 443
+            }
+          }
+        },
+        "transportSelection" : {
+          "bestViableLane" : "fastRelayQuic",
+          "currentLane" : "fastRelayQuic",
+          "fallbackLane" : "webSocketTcp",
+          "laneCapabilities" : [
+            {
+              "capability" : {
+                "orderedReliableMedia" : {
+                  "_0" : {
+                    "lane" : "webSocketTcp",
+                    "reason" : {
+                      "webSocketFallback" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "webSocketTcp"
+            },
+            {
+              "capability" : {
+                "unorderedPacketMedia" : {
+                  "_0" : {
+                    "lane" : "fastRelayQuic",
+                    "reason" : {
+                      "fastRelayQuicDatagram" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "fastRelayQuic"
+            }
+          ],
+          "networkPathGeneration" : 0
+        }
+      },
+      "source" : "fixture-join"
+    },
+    {
+      "diagnostics" : [
+
+      ],
+      "effects" : [
+        {
+          "ptt" : {
+            "_0" : {
+              "requestBeginTransmit" : {
+                "_0" : {
+                  "rawValue" : "channel-trace-smoke"
+                }
+              }
+            }
+          }
+        },
+        {
+          "backend" : {
+            "_0" : {
+              "beginTransmit" : {
+                "_0" : {
+                  "rawValue" : "channel-trace-smoke"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "index" : 1,
+      "input" : {
+        "intent" : {
+          "_0" : {
+            "beginTalk" : {
+
+            }
+          }
+        }
+      },
+      "invariantIDs" : [
+
+      ],
+      "resultingState" : {
+        "audioOutputPreference" : {
+          "speaker" : {
+
+          }
+        },
+        "lifecycle" : {
+          "active" : {
+
+          }
+        },
+        "localDeviceID" : {
+          "rawValue" : "sender-device"
+        },
+        "pttAudio" : {
+          "inactive" : {
+
+          }
+        },
+        "receive" : {
+          "idle" : {
+
+          }
+        },
+        "scheduledPlayback" : [
+
+        ],
+        "conversation" : {
+          "joined" : {
+            "_0" : {
+              "channelID" : {
+                "rawValue" : "channel-trace-smoke"
+              },
+              "localDeviceID" : {
+                "rawValue" : "sender-device"
+              },
+              "peer" : {
+                "contactID" : {
+                  "rawValue" : "receiver"
+                },
+                "handle" : "@receiver"
+              },
+              "receiverAddressability" : {
+                "foreground" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "peerDevice" : {
+                "ready" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "readiness" : {
+                "ready" : {
+                  "_0" : {
+                    "backendMembershipObserved" : {
+                      "channelID" : {
+                        "rawValue" : "channel-trace-smoke"
+                      },
+                      "localDeviceID" : {
+                        "rawValue" : "sender-device"
+                      },
+                      "observedAtTick" : 1,
+                      "peerDeviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    },
+                    "transport" : "fastRelay"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tick" : 2,
+        "transmit" : {
+          "beginning" : {
+            "_0" : {
+              "attemptID" : {
+                "rawValue" : "begin-2"
+              },
+              "conversation" : {
+                "channelID" : {
+                  "rawValue" : "channel-trace-smoke"
+                },
+                "localDeviceID" : {
+                  "rawValue" : "sender-device"
+                },
+                "peer" : {
+                  "contactID" : {
+                    "rawValue" : "receiver"
+                  },
+                  "handle" : "@receiver"
+                },
+                "receiverAddressability" : {
+                  "foreground" : {
+                    "_0" : {
+                      "deviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    }
+                  }
+                },
+                "peerDevice" : {
+                  "ready" : {
+                    "_0" : {
+                      "deviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    }
+                  }
+                },
+                "readiness" : {
+                  "ready" : {
+                    "_0" : {
+                      "backendMembershipObserved" : {
+                        "channelID" : {
+                          "rawValue" : "channel-trace-smoke"
+                        },
+                        "localDeviceID" : {
+                          "rawValue" : "sender-device"
+                        },
+                        "observedAtTick" : 1,
+                        "peerDeviceID" : {
+                          "rawValue" : "receiver-device"
+                        }
+                      },
+                      "transport" : "fastRelay"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "transport" : {
+          "fastRelay" : {
+            "_0" : {
+              "host" : "relay.beepbeep.to",
+              "port" : 443
+            }
+          }
+        },
+        "transportSelection" : {
+          "bestViableLane" : "fastRelayQuic",
+          "currentLane" : "fastRelayQuic",
+          "fallbackLane" : "webSocketTcp",
+          "laneCapabilities" : [
+            {
+              "capability" : {
+                "orderedReliableMedia" : {
+                  "_0" : {
+                    "lane" : "webSocketTcp",
+                    "reason" : {
+                      "webSocketFallback" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "webSocketTcp"
+            },
+            {
+              "capability" : {
+                "unorderedPacketMedia" : {
+                  "_0" : {
+                    "lane" : "fastRelayQuic",
+                    "reason" : {
+                      "fastRelayQuicDatagram" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "fastRelayQuic"
+            }
+          ],
+          "networkPathGeneration" : 0
+        }
+      },
+      "source" : "fixture-begin"
+    },
+    {
+      "diagnostics" : [
+        {
+          "message" : "Recorded backend transmit lease while waiting for system transmit begin",
+          "metadata" : {
+            "transmitID" : "tx-trace-smoke"
+          },
+          "subsystem" : "engine"
+        }
+      ],
+      "effects" : [
+
+      ],
+      "index" : 2,
+      "input" : {
+        "event" : {
+          "_0" : {
+            "backend" : {
+              "_0" : {
+                "beginTransmitAccepted" : {
+                  "_0" : {
+                    "rawValue" : "tx-trace-smoke"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "invariantIDs" : [
+
+      ],
+      "resultingState" : {
+        "audioOutputPreference" : {
+          "speaker" : {
+
+          }
+        },
+        "lifecycle" : {
+          "active" : {
+
+          }
+        },
+        "localDeviceID" : {
+          "rawValue" : "sender-device"
+        },
+        "pttAudio" : {
+          "inactive" : {
+
+          }
+        },
+        "receive" : {
+          "idle" : {
+
+          }
+        },
+        "scheduledPlayback" : [
+
+        ],
+        "conversation" : {
+          "joined" : {
+            "_0" : {
+              "channelID" : {
+                "rawValue" : "channel-trace-smoke"
+              },
+              "localDeviceID" : {
+                "rawValue" : "sender-device"
+              },
+              "peer" : {
+                "contactID" : {
+                  "rawValue" : "receiver"
+                },
+                "handle" : "@receiver"
+              },
+              "receiverAddressability" : {
+                "foreground" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "peerDevice" : {
+                "ready" : {
+                  "_0" : {
+                    "deviceID" : {
+                      "rawValue" : "receiver-device"
+                    }
+                  }
+                }
+              },
+              "readiness" : {
+                "ready" : {
+                  "_0" : {
+                    "backendMembershipObserved" : {
+                      "channelID" : {
+                        "rawValue" : "channel-trace-smoke"
+                      },
+                      "localDeviceID" : {
+                        "rawValue" : "sender-device"
+                      },
+                      "observedAtTick" : 1,
+                      "peerDeviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    },
+                    "transport" : "fastRelay"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tick" : 3,
+        "transmit" : {
+          "beginning" : {
+            "_0" : {
+              "attemptID" : {
+                "rawValue" : "begin-2"
+              },
+              "backendAcceptedAtTick" : 3,
+              "backendTransmitID" : {
+                "rawValue" : "tx-trace-smoke"
+              },
+              "conversation" : {
+                "channelID" : {
+                  "rawValue" : "channel-trace-smoke"
+                },
+                "localDeviceID" : {
+                  "rawValue" : "sender-device"
+                },
+                "peer" : {
+                  "contactID" : {
+                    "rawValue" : "receiver"
+                  },
+                  "handle" : "@receiver"
+                },
+                "receiverAddressability" : {
+                  "foreground" : {
+                    "_0" : {
+                      "deviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    }
+                  }
+                },
+                "peerDevice" : {
+                  "ready" : {
+                    "_0" : {
+                      "deviceID" : {
+                        "rawValue" : "receiver-device"
+                      }
+                    }
+                  }
+                },
+                "readiness" : {
+                  "ready" : {
+                    "_0" : {
+                      "backendMembershipObserved" : {
+                        "channelID" : {
+                          "rawValue" : "channel-trace-smoke"
+                        },
+                        "localDeviceID" : {
+                          "rawValue" : "sender-device"
+                        },
+                        "observedAtTick" : 1,
+                        "peerDeviceID" : {
+                          "rawValue" : "receiver-device"
+                        }
+                      },
+                      "transport" : "fastRelay"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "transport" : {
+          "fastRelay" : {
+            "_0" : {
+              "host" : "relay.beepbeep.to",
+              "port" : 443
+            }
+          }
+        },
+        "transportSelection" : {
+          "bestViableLane" : "fastRelayQuic",
+          "currentLane" : "fastRelayQuic",
+          "fallbackLane" : "webSocketTcp",
+          "laneCapabilities" : [
+            {
+              "capability" : {
+                "orderedReliableMedia" : {
+                  "_0" : {
+                    "lane" : "webSocketTcp",
+                    "reason" : {
+                      "webSocketFallback" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "webSocketTcp"
+            },
+            {
+              "capability" : {
+                "unorderedPacketMedia" : {
+                  "_0" : {
+                    "lane" : "fastRelayQuic",
+                    "reason" : {
+                      "fastRelayQuicDatagram" : {
+
+                      }
+                    }
+                  }
+                }
+              },
+              "lane" : "fastRelayQuic"
+            }
+          ],
+          "networkPathGeneration" : 0
+        }
+      },
+      "source" : "fixture-accepted"
+    }
+  ]
+}

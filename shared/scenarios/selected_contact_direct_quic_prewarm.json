@@ -1,0 +1,63 @@
+{
+  "name": "selected_contact_direct_quic_prewarm",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both peers are discoverable and online",
+      "actions": [
+        { "actor": "a", "type": "heartbeatPresence" },
+        { "actor": "b", "type": "heartbeatPresence" }
+      ]
+    },
+    {
+      "description": "answerer-role peer opens and selects the contact without joining",
+      "actions": [
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ],
+      "expectEventually": {
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "noInvariantViolations": true
+        }
+      }
+    },
+    {
+      "description": "selected contact channel refresh retries Direct QUIC prewarm without joining or transmitting",
+      "actions": [
+        { "actor": "b", "type": "ensureDirectChannel", "friend": "a" }
+      ],
+      "expectEventually": {
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "noInvariantViolations": true,
+          "diagnosticsContains": [
+            "Selection Direct QUIC prewarm skipped",
+            "reason=selected-contact",
+            "reason=channel-refresh"
+          ],
+          "diagnosticsNotContains": [
+            "Transmit begin requested",
+            "Captured local audio buffer",
+            "Audio chunk received"
+          ]
+        }
+      }
+    }
+  ]
+}

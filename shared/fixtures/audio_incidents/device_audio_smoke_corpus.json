@@ -1,0 +1,134 @@
+{
+  "generatedAt": "2026-05-28T00:00:00+00:00",
+  "incidents": [
+    {
+      "name": "device_audio_late_io_and_jitter_smoke",
+      "packetDeliveries": [
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 0,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 3,
+          "sequenceNumber": 1,
+          "transport": "directQuic"
+        },
+        {
+          "deltaFrames": 0,
+          "sequenceNumber": 1,
+          "transport": "mediaRelayPacket"
+        },
+        {
+          "deltaFrames": 22,
+          "sequenceNumber": 4,
+          "transport": "mediaRelayTcp"
+        },
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 5,
+          "transport": "relayWebSocket"
+        }
+      ],
+      "schedulerOperations": [
+        {
+          "available": false,
+          "type": "setIOCycleAvailable"
+        },
+        {
+          "cushionPolicy": "alreadyCushioned",
+          "playbackProfile": "lowLatency",
+          "type": "receive"
+        },
+        {
+          "count": 32,
+          "type": "startWaitPoll"
+        },
+        {
+          "available": true,
+          "type": "setIOCycleAvailable"
+        },
+        {
+          "type": "startWaitPoll"
+        },
+        {
+          "type": "playbackNodeStopped"
+        },
+        {
+          "type": "startupReassertion"
+        },
+        {
+          "type": "scheduledBufferCompleted"
+        }
+      ],
+      "sourceMessages": [
+        "Audio chunk received transport=direct-quic encryptedSequenceNumber=0 codec=opus frameIndex=0",
+        "Deferred playback node start until IO cycle pendingBufferCount=1",
+        "Playback node still waiting for IO cycle attempt=32 pendingBufferCount=1",
+        "Playback node started after IO cycle wait attempt=33",
+        "Audio chunk received transport=media-relay-packet encryptedSequenceNumber=1 codec=opus frameIndex=1",
+        "Audio chunk received transport=media-relay-packet encryptedSequenceNumber=1 codec=opus frameIndex=1",
+        "Audio chunk received transport=media-relay-tcp encryptedSequenceNumber=4 codec=opus frameIndex=4",
+        "Audio chunk received transport=relay-websocket encryptedSequenceNumber=5 codec=opus frameIndex=5"
+      ],
+      "subject": "@smoke-receiver",
+      "voiceFrameDeliveries": [
+        {
+          "deltaFrames": 1,
+          "frameIndex": 0,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 3,
+          "frameIndex": 1,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 0,
+          "frameIndex": 1,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 22,
+          "frameIndex": 4,
+          "isFlushFrame": false
+        },
+        {
+          "deltaFrames": 1,
+          "frameIndex": 5,
+          "isFlushFrame": false
+        }
+      ]
+    },
+    {
+      "name": "device_audio_outbound_slow_send_smoke",
+      "outboundTransportIncidents": [
+        {
+          "droppedPayloadCount": 14,
+          "elapsedMilliseconds": 251,
+          "maximumPendingPayloads": 32,
+          "pendingPayloadCount": 0,
+          "reason": "outbound-transport-slow-send",
+          "type": "slowSendDrop"
+        },
+        {
+          "elapsedMilliseconds": 251,
+          "payloadLength": 251,
+          "pendingPayloadCount": 4,
+          "transportDigest": "63b5636c5916",
+          "type": "slowSend"
+        }
+      ],
+      "packetDeliveries": [],
+      "schedulerOperations": [],
+      "sourceMessages": [
+        "media.outbound_audio_transport_slow_send_drop Dropped stale outbound audio transport payload",
+        "media.outbound_audio_transport_send_slow Outbound audio transport send was slow"
+      ],
+      "subject": "@bau",
+      "voiceFrameDeliveries": []
+    }
+  ],
+  "schemaVersion": 1,
+  "source": "checked-in smoke fixture"
+}

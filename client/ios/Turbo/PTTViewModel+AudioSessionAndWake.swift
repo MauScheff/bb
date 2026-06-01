@@ -1,0 +1,332 @@
+//
+//  PTTViewModel+AudioSessionAndWake.swift
+//  Turbo
+//
+//  Created by Codex on 13.05.2026.
+//
+
+import Foundation
+import PushToTalk
+import AVFAudio
+import UIKit
+
+extension PTTViewModel {
+    func schedulePostWakeBackendRefresh(for contactID: UUID) {
+        Task { [weak self] in
+            await self?.controlPlaneCoordinator.handle(.postWakeRepairRequested(contactID: contactID))
+        }
+    }
+
+    func setAudioOutputPreference(_ preference: AudioOutputPreference) {
+        setAudioOutputPreference(preference, persist: true, reason: "manual")
+    }
+
+    func setAudioOutputPreference(
+        _ preference: AudioOutputPreference,
+        persist: Bool,
+        reason: String
+    ) {
+        guard audioOutputPreference != preference else {
+            applyPreferredAudioOutputRouteIfPossible()
+            return
+        }
+        audioOutputPreference = preference
+        if persist {
+            UserDefaults.standard.set(preference.rawValue, forKey: AudioOutputPreference.storageKey)
+        }
+        syncEngineAudioOutputPreference(reason: reason)
+        applyPreferredAudioOutputRouteIfPossible()
+        _ = currentLocalConversationParticipantTelemetry(includeAudio: activeChannelId != nil)
+        Task { @MainActor [weak self] in
+            await self?.syncConversationParticipantTelemetryIfNeeded(reason: .audioRoutePreference(reason))
+        }
+        diagnostics.record(
+            .media,
+            message: "Audio output preference updated",
+            metadata: [
+                "preference": preference.rawValue,
+                "persisted": String(persist),
+                "reason": reason,
+            ]
+        )
+        captureDiagnosticsState("audio-route:updated")
+    }
+
+    func applyPreferredAudioOutputRoute(to audioSession: AVAudioSession = .sharedInstance()) {
+        let overridePlan = AudioOutputRouteOverridePlan.forCurrentRoute(
+            preference: audioOutputPreference,
+            category: audioSession.category,
+            outputPortTypes: audioSession.currentRoute.outputs.map(\.portType)
+        )
+        if overridePlan.shouldClearSpeakerOverride {
+            do {
+                try audioSession.overrideOutputAudioPort(.none)
+                diagnostics.record(
+                    .media,
+                    message: "Cleared preferred speaker audio route",
+                    metadata: audioSessionDiagnostics(audioSession).merging(
+                        ["preference": audioOutputPreference.rawValue]
+                    ) { _, new in new }
+                )
+            } catch {
+                diagnostics.record(
+                    .media,
+                    level: .error,
+                    message: "Failed to clear preferred speaker audio route",
+                    metadata: [
+                        "error": error.localizedDescription,
+                        "preference": audioOutputPreference.rawValue,
+                        "category": audioSession.category.rawValue,
+                        "mode": audioSession.mode.rawValue,
+                    ]
+                )
+            }
+            return
+        }
+
+        guard overridePlan.shouldApplySpeakerOverride else {
+            guard audioSession.category != .playAndRecord else { return }
+            diagnostics.record(
+                .media,
+                message: "Skipped preferred audio output route override until play-and-record session is active",
+                metadata: [
+                    "preference": audioOutputPreference.rawValue,
+                    "category": audioSession.category.rawValue,
+                    "mode": audioSession.mode.rawValue,
+                ]
+            )
+            return
+        }
+        do {
+            try audioSession.overrideOutputAudioPort(.speaker)
+            diagnostics.record(
+                .media,
+                message: "Applied preferred audio output route",
+                metadata: audioSessionDiagnostics(audioSession).merging(
+                    ["preference": audioOutputPreference.rawValue]
+                ) { _, new in new }
+            )
+        } catch {
+            let message = error.localizedDescription
+            if message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "session activation failed" {
+                diagnostics.record(
+                    .media,
+                    message: "Deferred preferred audio output route until session activation",
+                    metadata: [
+                        "preference": audioOutputPreference.rawValue,
+                        "category": audioSession.category.rawValue,
+                        "mode": audioSession.mode.rawValue,
+                    ]
+                )
+                return
+            }
+            diagnostics.record(
+                .media,
+                level: .error,
+                message: "Failed to apply preferred audio output route",
+                metadata: [
+                    "error": message,
+                    "preference": audioOutputPreference.rawValue,
+                    "category": audioSession.category.rawValue,
+                    "mode": audioSession.mode.rawValue,
+                ]
+            )
+        }
+    }
+
+    func applyPreferredAudioOutputRouteIfPossible() {
+        guard mediaServices.hasSession() || pttCoordinator.state.systemChannelUUID != nil else { return }
+        applyPreferredAudioOutputRoute()
+    }
+
+    func handleDeactivatedAudioSession(
+        _ audioSession: AVAudioSession,
+        applicationState: UIApplication.State? = nil
+    ) async {
+        let applicationState = applicationState ?? UIApplication.shared.applicationState
+        let _ = audioSession
+        if !pttCoordinator.state.isTransmitting {
+            try? await mediaServices.session()?.stopSendingAudio()
+        }
+        mediaRuntime.replaceInteractivePrewarmRecoveryTask(with: nil)
+        pttWakeRuntime.clearAll(clearSuppression: false)
+        if let contactID = mediaRuntime.pendingInteractivePrewarmAfterAudioDeactivationContactID {
+            guard applicationState == .active else {
+                diagnostics.record(
+                    .media,
+                    message: "Deferred interactive audio prewarm after PTT audio deactivation until foreground",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "applicationState": String(describing: applicationState)
+                    ]
+                )
+                return
+            }
+            guard !hasLocalTransmitStartupOrActiveIntent(for: contactID) else {
+                cancelDeferredInteractivePrewarmForLocalTransmitIfNeeded(
+                    contactID: contactID,
+                    reason: "ptt-audio-deactivated-during-local-transmit"
+                )
+                return
+            }
+            _ = mediaRuntime.takePendingInteractivePrewarmAfterAudioDeactivationContactID()
+            diagnostics.record(
+                .media,
+                message: "Resuming deferred interactive audio prewarm after PTT audio deactivation",
+                metadata: ["contactId": contactID.uuidString]
+            )
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            await prewarmLocalMediaIfNeeded(for: contactID, applicationState: applicationState)
+        }
+    }
+
+    func scheduleWakePlaybackFallback(for contactID: UUID) {
+        guard pttWakeRuntime.hasPendingWake(for: contactID) else { return }
+        guard !pttWakeRuntime.hasPlaybackFallbackTask(for: contactID) else { return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: wakePlaybackFallbackDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            await self.runWakePlaybackFallbackIfNeeded(for: contactID)
+        }
+        pttWakeRuntime.replacePlaybackFallbackTask(for: contactID, with: task)
+    }
+
+    func resumeBufferedWakePlaybackIfNeeded(
+        reason: String,
+        applicationState: UIApplication.State
+    ) async {
+        guard let pendingWake = pttWakeRuntime.pendingIncomingPush else { return }
+        guard pttWakeRuntime.shouldBufferAudioChunk(for: pendingWake.contactID) else { return }
+        guard pttWakeRuntime.bufferedAudioChunkCount(for: pendingWake.contactID) > 0 else { return }
+        await runWakePlaybackFallbackIfNeeded(
+            for: pendingWake.contactID,
+            reason: reason,
+            applicationState: applicationState
+        )
+    }
+
+    func runWakePlaybackFallbackIfNeeded(for contactID: UUID) async {
+        await runWakePlaybackFallbackIfNeeded(
+            for: contactID,
+            reason: "ptt-activation-timeout",
+            applicationState: currentApplicationState()
+        )
+    }
+
+    func runWakePlaybackFallbackIfNeeded(
+        for contactID: UUID,
+        reason: String,
+        applicationState: UIApplication.State
+    ) async {
+        defer {
+            pttWakeRuntime.replacePlaybackFallbackTask(for: contactID, with: nil)
+        }
+
+        guard pttWakeRuntime.shouldBufferAudioChunk(for: contactID) else { return }
+        let bufferedChunkCount = pttWakeRuntime.bufferedAudioChunkCount(for: contactID)
+        guard shouldUseAppManagedWakePlaybackFallback(applicationState: applicationState) else {
+            pttWakeRuntime.markFallbackDeferredUntilForeground(for: contactID)
+            diagnostics.record(
+                .media,
+                level: .error,
+                message: "PTT system audio activation timed out while app remained backgrounded",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "applicationState": String(describing: applicationState),
+                    "bufferedChunkCount": String(bufferedChunkCount),
+                    "pendingWakeChannelUUID": pttWakeRuntime.pendingIncomingPush?.channelUUID.uuidString ?? "none",
+                    "pendingWakeActivationState": String(describing: pttWakeRuntime.pendingIncomingPush?.activationState ?? .signalBuffered),
+                ]
+            )
+            captureDiagnosticsState("ptt-wake:fallback-deferred")
+            return
+        }
+        guard bufferedChunkCount > 0 else {
+            diagnostics.record(
+                .media,
+                message: "PTT activation timed out before buffered audio arrived",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "applicationState": String(describing: applicationState),
+                ]
+            )
+            captureDiagnosticsState("ptt-wake:fallback-timeout-no-audio")
+            return
+        }
+
+        diagnostics.record(
+            .media,
+            message: "PTT activation timed out; starting app-managed playback fallback",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "bufferedChunkCount": String(bufferedChunkCount),
+                "reason": reason
+            ]
+        )
+        captureDiagnosticsState("ptt-wake:fallback-started")
+
+        await ensureMediaSession(
+            for: contactID,
+            activationMode: .appManaged,
+            startupMode: .playbackOnly
+        )
+
+        guard pttWakeRuntime.shouldBufferAudioChunk(for: contactID) else {
+            diagnostics.record(
+                .media,
+                message: "Skipped app-managed playback fallback because wake activation changed during startup",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "activationState": String(
+                        describing: pttWakeRuntime.incomingWakeActivationState(for: contactID) ?? .signalBuffered
+                    )
+                ]
+            )
+            return
+        }
+
+        let bufferedAudioChunks = pttWakeRuntime.takeBufferedAudioChunks(for: contactID)
+        pttWakeRuntime.markAppManagedFallbackStarted(for: contactID)
+        recordWakeReceiveTiming(
+            stage: "app-managed-fallback-flush-started",
+            contactID: contactID,
+            metadata: [
+                "bufferedChunkCount": String(bufferedAudioChunks.count),
+                "reason": reason,
+            ]
+        )
+        diagnostics.record(
+            .media,
+            message: "Flushing buffered wake audio through app-managed playback fallback",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "bufferedChunkCount": String(bufferedAudioChunks.count),
+                "reason": reason
+            ]
+        )
+        markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        for payload in bufferedAudioChunks {
+            await receiveRemoteAudioChunk(payload)
+        }
+        recordWakeReceiveTiming(
+            stage: "app-managed-fallback-flush-completed",
+            contactID: contactID,
+            metadata: [
+                "bufferedChunkCount": String(bufferedAudioChunks.count),
+                "reason": reason,
+            ]
+        )
+        recordWakeReceiveTimingSummary(
+            reason: "app-managed-fallback-flush",
+            contactID: contactID,
+            metadata: [
+                "bufferedChunkCount": String(bufferedAudioChunks.count),
+                "fallbackReason": reason,
+            ]
+        )
+    }
+}

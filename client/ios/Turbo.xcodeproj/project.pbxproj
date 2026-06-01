@@ -1,0 +1,968 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		272D3A9D6E6B4A5480FC6903 /* BeepNotificationService.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F40D3F48524F48FAAAC8BB9A /* BeepNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		63AFA3D482024EE5913637BE /* TurboEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 2BDCEAD514214D09AD627BEB /* TurboEngine */; };
+		9C74CE5FE2FE425B9CBCEE43 /* TurboEngine in Frameworks */ = {isa = PBXBuildFile; productRef = CA10C4CEB0ED415A9527E063 /* TurboEngine */; };
+		A59D16E78629434BA1C16216 /* Turbo/BeepBeepLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 259617F2522049AF8CBD4E81 /* Turbo/BeepBeepLiveActivityAttributes.swift */; };
+		AB060FAD779F4C608A998579 /* BeepBeepLiveActivityWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 9127B7BCA23A4A369169AF0F /* BeepBeepLiveActivityWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B18D8204A1E84C398A56D001 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B18D8203A1E84C398A56D001 /* AppIntents.framework */; };
+		B18D8205A1E84C398A56D001 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B18D8203A1E84C398A56D001 /* AppIntents.framework */; };
+		B18D8207A1E84C398A56D001 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B18D8203A1E84C398A56D001 /* AppIntents.framework */; };
+		B18D8208A1E84C398A56D001 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B18D8203A1E84C398A56D001 /* AppIntents.framework */; };
+		C04875032FBD0001003C0D3A /* TurboOpus.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = C04875022FBD0001003C0D3A /* TurboOpus.xcframework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4272F4310FCD4614985AAF11 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5CC93A9A2F6DE60E00DA3003 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 18C7F4B290304AA7893AB6D6;
+			remoteInfo = BeepBeepLiveActivityWidget;
+		};
+		5CC93AB02F6DE60F00DA3003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5CC93A9A2F6DE60E00DA3003 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5CC93AA12F6DE60E00DA3003;
+			remoteInfo = Turbo;
+		};
+		5CC93ABA2F6DE60F00DA3003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5CC93A9A2F6DE60E00DA3003 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5CC93AA12F6DE60E00DA3003;
+			remoteInfo = Turbo;
+		};
+		FE9352B84AEB415D9D085735 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5CC93A9A2F6DE60E00DA3003 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7AD1A80D448C41E6AAF4B121;
+			remoteInfo = BeepNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		9E3870E034EC451D8FF36F80 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				272D3A9D6E6B4A5480FC6903 /* BeepNotificationService.appex in Embed App Extensions */,
+				AB060FAD779F4C608A998579 /* BeepBeepLiveActivityWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		259617F2522049AF8CBD4E81 /* Turbo/BeepBeepLiveActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Turbo/BeepBeepLiveActivityAttributes.swift; sourceTree = "<group>"; };
+		5CC93AA22F6DE60E00DA3003 /* BeepBeep: Walkie Talkie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "BeepBeep: Walkie Talkie.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5CC93AAF2F6DE60F00DA3003 /* TurboTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TurboTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5CC93AB92F6DE60F00DA3003 /* TurboUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TurboUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9127B7BCA23A4A369169AF0F /* BeepBeepLiveActivityWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeepBeepLiveActivityWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B18D8203A1E84C398A56D001 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		C04875022FBD0001003C0D3A /* TurboOpus.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = TurboOpus.xcframework; path = Vendor/Opus/TurboOpus.xcframework; sourceTree = "<group>"; };
+		F40D3F48524F48FAAAC8BB9A /* BeepNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeepNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5CC93ACE2F6DEFC300DA3003 /* Exceptions for "Turbo" folder in "BeepBeep" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5CC93AA12F6DE60E00DA3003 /* BeepBeep */;
+		};
+		6491B92DEAC4457B9F3ACF0A /* Exceptions for "BeepNotificationService" folder in "BeepNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 7AD1A80D448C41E6AAF4B121 /* BeepNotificationService */;
+		};
+		BD594E9905A74ED38113F66E /* Exceptions for "BeepBeepLiveActivityWidget" folder in "BeepBeepLiveActivityWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 18C7F4B290304AA7893AB6D6 /* BeepBeepLiveActivityWidget */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		32DBF6CACD41450B89B960A2 /* BeepBeepLiveActivityWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BD594E9905A74ED38113F66E /* Exceptions for "BeepBeepLiveActivityWidget" folder in "BeepBeepLiveActivityWidget" target */,
+			);
+			path = BeepBeepLiveActivityWidget;
+			sourceTree = "<group>";
+		};
+		4977A2010DBF49CAB4FF9B53 /* BeepNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				6491B92DEAC4457B9F3ACF0A /* Exceptions for "BeepNotificationService" folder in "BeepNotificationService" target */,
+			);
+			path = BeepNotificationService;
+			sourceTree = "<group>";
+		};
+		5CC93AA42F6DE60E00DA3003 /* Turbo */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5CC93ACE2F6DEFC300DA3003 /* Exceptions for "Turbo" folder in "BeepBeep" target */,
+			);
+			path = Turbo;
+			sourceTree = "<group>";
+		};
+		5CC93AB22F6DE60F00DA3003 /* TurboTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TurboTests;
+			sourceTree = "<group>";
+		};
+		5CC93ABC2F6DE60F00DA3003 /* TurboUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TurboUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5CC93A9F2F6DE60E00DA3003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9C74CE5FE2FE425B9CBCEE43 /* TurboEngine in Frameworks */,
+				C04875032FBD0001003C0D3A /* TurboOpus.xcframework in Frameworks */,
+				B18D8204A1E84C398A56D001 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AAC2F6DE60F00DA3003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				63AFA3D482024EE5913637BE /* TurboEngine in Frameworks */,
+				B18D8207A1E84C398A56D001 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AB62F6DE60F00DA3003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B18D8208A1E84C398A56D001 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8916C63D53C84A4B9C5EFC4D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B18D8205A1E84C398A56D001 /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9DED156F20E0469490344ABB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5C0C24482FB1FAF900974270 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				259617F2522049AF8CBD4E81 /* Turbo/BeepBeepLiveActivityAttributes.swift */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		5CC93A992F6DE60E00DA3003 = {
+			isa = PBXGroup;
+			children = (
+				5CC93AA42F6DE60E00DA3003 /* Turbo */,
+				4977A2010DBF49CAB4FF9B53 /* BeepNotificationService */,
+				32DBF6CACD41450B89B960A2 /* BeepBeepLiveActivityWidget */,
+				5CC93AB22F6DE60F00DA3003 /* TurboTests */,
+				5CC93ABC2F6DE60F00DA3003 /* TurboUITests */,
+				5CC93AA32F6DE60E00DA3003 /* Products */,
+				B18D8206A1E84C398A56D001 /* Frameworks */,
+				5C0C24482FB1FAF900974270 /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+		5CC93AA32F6DE60E00DA3003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5CC93AA22F6DE60E00DA3003 /* BeepBeep: Walkie Talkie.app */,
+				F40D3F48524F48FAAAC8BB9A /* BeepNotificationService.appex */,
+				9127B7BCA23A4A369169AF0F /* BeepBeepLiveActivityWidget.appex */,
+				5CC93AAF2F6DE60F00DA3003 /* TurboTests.xctest */,
+				5CC93AB92F6DE60F00DA3003 /* TurboUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B18D8206A1E84C398A56D001 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C04875022FBD0001003C0D3A /* TurboOpus.xcframework */,
+				B18D8203A1E84C398A56D001 /* AppIntents.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		18C7F4B290304AA7893AB6D6 /* BeepBeepLiveActivityWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 042DB42ACD0542F6BB0F1F31 /* Build configuration list for PBXNativeTarget "BeepBeepLiveActivityWidget" */;
+			buildPhases = (
+				4CFEFFF8A1554D25B896433F /* Sources */,
+				9DED156F20E0469490344ABB /* Frameworks */,
+				2B0A01F5F055413C96CA34A0 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				32DBF6CACD41450B89B960A2 /* BeepBeepLiveActivityWidget */,
+			);
+			name = BeepBeepLiveActivityWidget;
+			productName = BeepBeepLiveActivityWidget;
+			productReference = 9127B7BCA23A4A369169AF0F /* BeepBeepLiveActivityWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		5CC93AA12F6DE60E00DA3003 /* BeepBeep */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5CC93AC32F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "BeepBeep" */;
+			buildPhases = (
+				5CC93A9E2F6DE60E00DA3003 /* Sources */,
+				5CC93A9F2F6DE60E00DA3003 /* Frameworks */,
+				5CC93AA02F6DE60E00DA3003 /* Resources */,
+				9E3870E034EC451D8FF36F80 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BBAD28B5E97E43768728C373 /* PBXTargetDependency */,
+				AA82C5D6106F4091929C9466 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5CC93AA42F6DE60E00DA3003 /* Turbo */,
+			);
+			name = BeepBeep;
+			packageProductDependencies = (
+				CA10C4CEB0ED415A9527E063 /* TurboEngine */,
+			);
+			productName = BeepBeep;
+			productReference = 5CC93AA22F6DE60E00DA3003 /* BeepBeep: Walkie Talkie.app */;
+			productType = "com.apple.product-type.application";
+		};
+		5CC93AAE2F6DE60F00DA3003 /* TurboTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5CC93AC62F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "TurboTests" */;
+			buildPhases = (
+				5CC93AAB2F6DE60F00DA3003 /* Sources */,
+				5CC93AAC2F6DE60F00DA3003 /* Frameworks */,
+				5CC93AAD2F6DE60F00DA3003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5CC93AB12F6DE60F00DA3003 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5CC93AB22F6DE60F00DA3003 /* TurboTests */,
+			);
+			name = TurboTests;
+			packageProductDependencies = (
+				2BDCEAD514214D09AD627BEB /* TurboEngine */,
+			);
+			productName = TurboTests;
+			productReference = 5CC93AAF2F6DE60F00DA3003 /* TurboTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		5CC93AB82F6DE60F00DA3003 /* TurboUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5CC93AC92F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "TurboUITests" */;
+			buildPhases = (
+				5CC93AB52F6DE60F00DA3003 /* Sources */,
+				5CC93AB62F6DE60F00DA3003 /* Frameworks */,
+				5CC93AB72F6DE60F00DA3003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5CC93ABB2F6DE60F00DA3003 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5CC93ABC2F6DE60F00DA3003 /* TurboUITests */,
+			);
+			name = TurboUITests;
+			productName = TurboUITests;
+			productReference = 5CC93AB92F6DE60F00DA3003 /* TurboUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		7AD1A80D448C41E6AAF4B121 /* BeepNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 097632111F5B4E7499366CA4 /* Build configuration list for PBXNativeTarget "BeepNotificationService" */;
+			buildPhases = (
+				433E36A515D146A88ACBB050 /* Sources */,
+				8916C63D53C84A4B9C5EFC4D /* Frameworks */,
+				06049F545FC94CD8B1504F58 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4977A2010DBF49CAB4FF9B53 /* BeepNotificationService */,
+			);
+			name = BeepNotificationService;
+			productName = BeepNotificationService;
+			productReference = F40D3F48524F48FAAAC8BB9A /* BeepNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5CC93A9A2F6DE60E00DA3003 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					18C7F4B290304AA7893AB6D6 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					5CC93AA12F6DE60E00DA3003 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					5CC93AAE2F6DE60F00DA3003 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 5CC93AA12F6DE60E00DA3003;
+					};
+					5CC93AB82F6DE60F00DA3003 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 5CC93AA12F6DE60E00DA3003;
+					};
+					7AD1A80D448C41E6AAF4B121 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+				};
+			};
+			buildConfigurationList = 5CC93A9D2F6DE60E00DA3003 /* Build configuration list for PBXProject "Turbo" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5CC93A992F6DE60E00DA3003;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5A20D878CC0841DF946C2F3C /* XCLocalSwiftPackageReference "Packages/TurboEngine" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5CC93AA32F6DE60E00DA3003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5CC93AA12F6DE60E00DA3003 /* BeepBeep */,
+				7AD1A80D448C41E6AAF4B121 /* BeepNotificationService */,
+				18C7F4B290304AA7893AB6D6 /* BeepBeepLiveActivityWidget */,
+				5CC93AAE2F6DE60F00DA3003 /* TurboTests */,
+				5CC93AB82F6DE60F00DA3003 /* TurboUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		06049F545FC94CD8B1504F58 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2B0A01F5F055413C96CA34A0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AA02F6DE60E00DA3003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AAD2F6DE60F00DA3003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AB72F6DE60F00DA3003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		433E36A515D146A88ACBB050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4CFEFFF8A1554D25B896433F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A59D16E78629434BA1C16216 /* Turbo/BeepBeepLiveActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93A9E2F6DE60E00DA3003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AAB2F6DE60F00DA3003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5CC93AB52F6DE60F00DA3003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5CC93AB12F6DE60F00DA3003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5CC93AA12F6DE60E00DA3003 /* BeepBeep */;
+			targetProxy = 5CC93AB02F6DE60F00DA3003 /* PBXContainerItemProxy */;
+		};
+		5CC93ABB2F6DE60F00DA3003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5CC93AA12F6DE60E00DA3003 /* BeepBeep */;
+			targetProxy = 5CC93ABA2F6DE60F00DA3003 /* PBXContainerItemProxy */;
+		};
+		AA82C5D6106F4091929C9466 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 18C7F4B290304AA7893AB6D6 /* BeepBeepLiveActivityWidget */;
+			targetProxy = 4272F4310FCD4614985AAF11 /* PBXContainerItemProxy */;
+		};
+		BBAD28B5E97E43768728C373 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7AD1A80D448C41E6AAF4B121 /* BeepNotificationService */;
+			targetProxy = FE9352B84AEB415D9D085735 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		025A4BC43DBF439F9ACEF2C4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeepBeepLiveActivityWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo.BeepBeepLiveActivityWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1F5DB96DA3FC47A6A7D52721 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeepNotificationService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo.BeepNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5CC93AC12F6DE60F00DA3003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5CC93AC22F6DE60F00DA3003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		5CC93AC42F6DE60F00DA3003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Turbo/Turbo.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Turbo/Info.plist;
+				INFOPLIST_KEY_APNSEnvironment = "$(APS_ENVIRONMENT)";
+				INFOPLIST_KEY_CFBundleDisplayName = BeepBeep;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo;
+				PRODUCT_MODULE_NAME = BeepBeep;
+				PRODUCT_NAME = "BeepBeep: Walkie Talkie";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5CC93AC52F6DE60F00DA3003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Turbo/Turbo.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Turbo/Info.plist;
+				INFOPLIST_KEY_APNSEnvironment = "$(APS_ENVIRONMENT)";
+				INFOPLIST_KEY_CFBundleDisplayName = BeepBeep;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo;
+				PRODUCT_MODULE_NAME = BeepBeep;
+				PRODUCT_NAME = "BeepBeep: Walkie Talkie";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5CC93AC72F6DE60F00DA3003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.TurboTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BeepBeep: Walkie Talkie.app/BeepBeep: Walkie Talkie";
+			};
+			name = Debug;
+		};
+		5CC93AC82F6DE60F00DA3003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.TurboTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BeepBeep: Walkie Talkie.app/BeepBeep: Walkie Talkie";
+			};
+			name = Release;
+		};
+		5CC93ACA2F6DE60F00DA3003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.TurboUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BeepBeep;
+			};
+			name = Debug;
+		};
+		5CC93ACB2F6DE60F00DA3003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.TurboUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BeepBeep;
+			};
+			name = Release;
+		};
+		64FD76DC148640D4A7B40283 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeepBeepLiveActivityWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo.BeepBeepLiveActivityWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		66C4A0F9403842DAB2A523E6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7MQU7TLQQ2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BeepNotificationService/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.rounded.Turbo.BeepNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		042DB42ACD0542F6BB0F1F31 /* Build configuration list for PBXNativeTarget "BeepBeepLiveActivityWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				025A4BC43DBF439F9ACEF2C4 /* Debug */,
+				64FD76DC148640D4A7B40283 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		097632111F5B4E7499366CA4 /* Build configuration list for PBXNativeTarget "BeepNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				66C4A0F9403842DAB2A523E6 /* Debug */,
+				1F5DB96DA3FC47A6A7D52721 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CC93A9D2F6DE60E00DA3003 /* Build configuration list for PBXProject "Turbo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CC93AC12F6DE60F00DA3003 /* Debug */,
+				5CC93AC22F6DE60F00DA3003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CC93AC32F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "BeepBeep" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CC93AC42F6DE60F00DA3003 /* Debug */,
+				5CC93AC52F6DE60F00DA3003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CC93AC62F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "TurboTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CC93AC72F6DE60F00DA3003 /* Debug */,
+				5CC93AC82F6DE60F00DA3003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5CC93AC92F6DE60F00DA3003 /* Build configuration list for PBXNativeTarget "TurboUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5CC93ACA2F6DE60F00DA3003 /* Debug */,
+				5CC93ACB2F6DE60F00DA3003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		5A20D878CC0841DF946C2F3C /* XCLocalSwiftPackageReference "Packages/TurboEngine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/TurboEngine;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2BDCEAD514214D09AD627BEB /* TurboEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A20D878CC0841DF946C2F3C /* XCLocalSwiftPackageReference "Packages/TurboEngine" */;
+			productName = TurboEngine;
+		};
+		CA10C4CEB0ED415A9527E063 /* TurboEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A20D878CC0841DF946C2F3C /* XCLocalSwiftPackageReference "Packages/TurboEngine" */;
+			productName = TurboEngine;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5CC93A9A2F6DE60E00DA3003 /* Project object */;
+}

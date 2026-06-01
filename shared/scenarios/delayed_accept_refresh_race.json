@@ -1,0 +1,75 @@
+{
+  "name": "delayed_accept_refresh_race",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "stale refreshes race with a delayed acceptance and still converge cleanly",
+      "actions": [
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "a", "type": "reconcileSelectedConversation" },
+        { "actor": "b", "type": "connect", "delayMilliseconds": 700 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "friendReady",
+          "isJoined": false
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "waitingForPeer",
+          "isJoined": true
+        }
+      }
+    },
+    {
+      "description": "sender joins and both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "disconnect clears both joined states",
+      "actions": [
+        { "actor": "a", "type": "disconnect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "isJoined": false, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "isJoined": false, "isTransmitting": false }
+      }
+    }
+  ]
+}

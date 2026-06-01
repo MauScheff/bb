@@ -1,0 +1,78 @@
+x-turbo-service: &turbo-service
+  image: ${TURBO_IMAGE:-turbo-self-hosted:local}
+  build:
+    context: ../../..
+    dockerfile: backend/infra/vm/Dockerfile
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-turbo_runtime}
+      POSTGRES_USER: ${POSTGRES_USER:-turbo_runtime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../self-hosted/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-turbo_runtime} -d ${POSTGRES_DB:-turbo_runtime}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  runtime:
+    <<: *turbo-service
+    command: ["/usr/local/bin/beepbeep-runtime"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TURBO_RUNTIME_DATABASE_URL: ${TURBO_RUNTIME_DATABASE_URL}
+      TURBO_RUNTIME_REDIS_URL: ${TURBO_RUNTIME_REDIS_URL:-redis://redis:6379/}
+      TURBO_RUNTIME_BIND: ${TURBO_RUNTIME_BIND:-0.0.0.0:8091}
+      TURBO_RUNTIME_ID: ${TURBO_RUNTIME_ID:-vm-runtime-1}
+      TURBO_RUNTIME_WEBSOCKET_MODE: ${TURBO_RUNTIME_WEBSOCKET_MODE:-clustered-single-active}
+      TURBO_RUNTIME_WEBSOCKET_OWNER_TTL_MS: ${TURBO_RUNTIME_WEBSOCKET_OWNER_TTL_MS:-15000}
+      TURBO_KERNEL_DEADLINE_MS: ${TURBO_KERNEL_DEADLINE_MS:-20000}
+      TURBO_APNS_WORKER_BASE_URL: ${TURBO_APNS_WORKER_BASE_URL:-}
+      TURBO_APNS_WORKER_SECRET: ${TURBO_APNS_WORKER_SECRET:-}
+      TURBO_APNS_BUNDLE_ID: ${TURBO_APNS_BUNDLE_ID:-com.rounded.Turbo}
+      TURBO_APNS_USE_SANDBOX: ${TURBO_APNS_USE_SANDBOX:-1}
+      TURBO_APNS_WORKER_TIMEOUT_MS: ${TURBO_APNS_WORKER_TIMEOUT_MS:-1500}
+    ports:
+      - "${TURBO_RUNTIME_PORT:-8091}:8091"
+
+  relay:
+    <<: *turbo-service
+    profiles: ["relay"]
+    command: ["/usr/local/bin/relay"]
+    environment:
+      TURBO_RELAY_CERT_PEM: ${TURBO_RELAY_CERT_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/fullchain.pem}
+      TURBO_RELAY_KEY_PEM: ${TURBO_RELAY_KEY_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/privkey.pem}
+      TURBO_RELAY_SHARED_TOKEN: ${TURBO_RELAY_SHARED_TOKEN:-}
+      TURBO_RELAY_QUIC_ADDR: ${TURBO_RELAY_QUIC_ADDR:-0.0.0.0:443}
+      TURBO_RELAY_TCP_ADDR: ${TURBO_RELAY_TCP_ADDR:-0.0.0.0:443}
+      TURBO_RELAY_SESSION_TTL_SECONDS: ${TURBO_RELAY_SESSION_TTL_SECONDS:-180}
+    ports:
+      - "443:443/udp"
+      - "443:443/tcp"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,131 @@
+{
+  "name": "restart_ready_session_recovery_with_offline_repair",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins while sender refreshes repeatedly",
+      "actions": [
+        { "actor": "b", "type": "connect" },
+        { "actor": "a", "type": "refreshChannelState", "repeatCount": 3, "repeatIntervalMilliseconds": 25 },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" },
+        { "actor": "b", "type": "refreshBeeps", "repeatCount": 2, "repeatIntervalMilliseconds": 25 },
+        { "actor": "b", "type": "refreshChannelState", "delayMilliseconds": 600 }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "recipient restarts",
+      "actions": [
+        { "actor": "b", "type": "restartApp" }
+      ]
+    },
+    {
+      "description": "refresh and reconciliation restore the restarted recipient",
+      "actions": [
+        { "actor": "b", "type": "openFriend", "friend": "a" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "transmit start with delayed receiver signal still converges",
+      "actions": [
+        { "actor": "b", "type": "setWebSocketSignalDelay", "signalKind": "transmit-start", "count": 1, "milliseconds": 250 },
+        { "actor": "a", "type": "beginTransmit" },
+        { "actor": "b", "type": "refreshContactSummaries", "delayMilliseconds": 50 },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "transmitting", "isJoined": true, "isTransmitting": true },
+        "b": { "selectedHandle": "@avery", "phase": "receiving", "isJoined": true }
+      }
+    },
+    {
+      "description": "transmit end restores both peers to ready",
+      "actions": [
+        { "actor": "a", "type": "endTransmit" },
+        { "actor": "a", "type": "refreshChannelState", "delayMilliseconds": 50 },
+        { "actor": "b", "type": "refreshContactSummaries", "delayMilliseconds": 600 }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "isTransmitting": false }
+      }
+    },
+    {
+      "description": "initiator backgrounds and foregrounds before disconnect",
+      "actions": [
+        { "actor": "a", "type": "backgroundApp" },
+        { "actor": "a", "type": "foregroundApp" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" }
+      ]
+    },
+    {
+      "description": "disconnect converges without retained connected-session residue",
+      "actions": [
+        { "actor": "a", "type": "disconnect" },
+        { "actor": "a", "type": "refreshContactSummaries", "delayMilliseconds": 50 },
+        { "actor": "a", "type": "refreshChannelState", "delayMilliseconds": 600 },
+        { "actor": "b", "type": "refreshChannelState", "delayMilliseconds": 50 }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "isJoined": false, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "isJoined": false, "isTransmitting": false }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "fuzz_case:12345:0",
+      "reason": "locked receiver, stale remote chunk, late chunk after stop, active network migration"
+    },
+    {
+      "name": "fuzz_case:12345:5",
+      "reason": "background receiver, PTT activation deadline, duplicate stop ack"
+    },
+    {
+      "name": "fuzz_case:12345:17",
+      "reason": "deadline activation, stale remote chunk, stale stop ack"
+    },
+    {
+      "name": "fuzz_case:77777:3",
+      "reason": "alternate seed coverage for network faults and lifecycle interleavings"
+    },
+    {
+      "name": "fuzz_case:8675309:8",
+      "reason": "alternate seed coverage for transport fallback and duplicate/reordered chunks"
+    }
+  ]
+}

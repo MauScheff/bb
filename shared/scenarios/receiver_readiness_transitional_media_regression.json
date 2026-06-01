@@ -1,0 +1,156 @@
+{
+  "name": "receiver_readiness_transitional_media_regression",
+  "baseURL": "http://localhost:8090/s/turbo",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "pre-Beep refresh noise",
+      "actions": [
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshChannelState", "delayMilliseconds": 50 }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" },
+        { "actor": "b", "type": "refreshContactSummaries" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" },
+        { "actor": "a", "type": "refreshChannelState", "delayMilliseconds": 50 }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready with delayed receiver readiness observation",
+      "actions": [
+        {
+          "actor": "b",
+          "type": "setHTTPDelay",
+          "route": "channel-readiness",
+          "milliseconds": 300,
+          "count": 1
+        },
+        { "actor": "a", "type": "connect" },
+        { "actor": "a", "type": "refreshBeeps", "delayMilliseconds": 600 },
+        { "actor": "a", "type": "refreshChannelState", "delayMilliseconds": 300 },
+        { "actor": "b", "type": "refreshContactSummaries", "delayMilliseconds": 50 },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true
+        }
+      }
+    },
+    {
+      "description": "transmit and return to ready without duplicate or transitional receiver-ready publishes",
+      "actions": [
+        { "actor": "a", "type": "beginTransmit" },
+        { "actor": "b", "type": "refreshContactSummaries" },
+        { "actor": "b", "type": "refreshBeeps", "delayMilliseconds": 50 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "receiving",
+          "isJoined": true
+        }
+      }
+    },
+    {
+      "description": "end transmit and converge ready without readiness publication violations",
+      "actions": [
+        { "actor": "a", "type": "endTransmit" },
+        {
+          "actor": "a",
+          "type": "refreshBeeps",
+          "repeatCount": 2,
+          "repeatIntervalMilliseconds": 150
+        },
+        {
+          "actor": "b",
+          "type": "refreshContactSummaries",
+          "repeatCount": 2,
+          "repeatIntervalMilliseconds": 75
+        }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "isTransmitting": false
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "isTransmitting": false
+        }
+      }
+    },
+    {
+      "description": "disconnect clears joined state",
+      "actions": [
+        { "actor": "a", "type": "disconnect" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "isJoined": false,
+          "isTransmitting": false
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "isJoined": false,
+          "isTransmitting": false
+        }
+      }
+    }
+  ]
+}

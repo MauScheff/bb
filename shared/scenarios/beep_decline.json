@@ -1,0 +1,43 @@
+{
+  "name": "beep_decline",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep propagates to recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient declines incoming Beep",
+      "actions": [
+        { "actor": "b", "type": "declineBeep" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "idle", "isJoined": false, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "phase": "idle", "isJoined": false, "isTransmitting": false }
+      }
+    }
+  ]
+}

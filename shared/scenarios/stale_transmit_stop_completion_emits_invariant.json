@@ -1,0 +1,36 @@
+{
+  "name": "stale_transmit_stop_completion_emits_invariant",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "a stale stop completion for an older transmit is reported as an invariant",
+      "actions": [
+        { "actor": "a", "type": "injectStaleTransmitStopCompletion" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "expectInvariant": ["transmit.stale_end_overrides_newer_epoch"]
+        }
+      }
+    }
+  ]
+}

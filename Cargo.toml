@@ -1,0 +1,3 @@
+[workspace]
+members = ["backend/runtime", "backend/relay"]
+resolver = "3"

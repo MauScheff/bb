@@ -1,0 +1,4 @@
+module TurboOpus {
+  header "TurboOpus.h"
+  export *
+}

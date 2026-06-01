@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "sourceProject": "bb/main",
+  "events": [
+    {
+      "invariantId": "backend.ptt_push_target_missing_token",
+      "detector": "turbo.service.channels.internal.exactWakeTargetTokenOrInvariant",
+      "authoritativeSeam": "backend exact wake-target token lookup",
+      "evidenceFields": ["channelId", "senderDeviceId", "targetUserId", "targetDeviceId", "startedAt"]
+    },
+    {
+      "invariantId": "channel.active_transmit_sender_presence_drift",
+      "detector": "turbo.service.ws.internal.resolveEnvelopeTarget",
+      "authoritativeSeam": "websocket signaling transmit authorization",
+      "evidenceFields": ["channelId", "deviceId", "signalKind"]
+    },
+    {
+      "invariantId": "channel.connecting_without_membership_or_request",
+      "detector": "turbo.service.channels.state",
+      "authoritativeSeam": "channel state projection",
+      "evidenceFields": ["channelId"]
+    },
+    {
+      "invariantId": "channel.join_without_connected_session",
+      "detector": "turbo.service.channels.join",
+      "authoritativeSeam": "channel join route",
+      "evidenceFields": ["channelId", "deviceId", "existingActiveChannelId"]
+    },
+    {
+      "invariantId": "channel.no_membership_projection_while_durable_membership_exists",
+      "detector": "turbo.service.channels.state",
+      "authoritativeSeam": "channel state projection",
+      "evidenceFields": ["channelId", "deviceId", "durableSelfJoined", "durablePeerJoined"]
+    },
+    {
+      "invariantId": "channel.stale_membership_on_session_connect",
+      "detector": "turbo.service.presence.internal.clearStaleChannelMembershipOnSessionConnect",
+      "authoritativeSeam": "fresh websocket session connect",
+      "evidenceFields": ["channelId", "deviceId"]
+    },
+    {
+      "invariantId": "channel.stale_peer_presence_projected_live",
+      "detector": "turbo.service.channels.state and turbo.service.channels.readiness",
+      "authoritativeSeam": "channel state/readiness projection",
+      "evidenceFields": ["channelId", "deviceId", "peerDeviceId", "route"]
+    },
+    {
+      "invariantId": "channel.stale_self_presence_projected_live",
+      "detector": "turbo.service.channels.state and turbo.service.channels.readiness",
+      "authoritativeSeam": "channel state/readiness projection",
+      "evidenceFields": ["channelId", "deviceId", "route"]
+    },
+    {
+      "invariantId": "contacts.summary_connectable_without_live_peer_or_request",
+      "detector": "turbo.service.contacts.internal.summaryJson",
+      "authoritativeSeam": "contact summary projection",
+      "evidenceFields": ["peerUserId", "channelId", "summaryStatus"]
+    },
+    {
+      "invariantId": "presence.offline_retained_connected_session",
+      "detector": "turbo.service.presence.offline and turbo.service.presence.background",
+      "authoritativeSeam": "presence offline/background routes",
+      "evidenceFields": ["deviceId", "sessionConnected", "socketConnected"]
+    },
+    {
+      "invariantId": "presence.stale_active_channel_on_session_connect",
+      "detector": "turbo.service.presence.internal.clearStaleActiveChannelOnSessionConnect",
+      "authoritativeSeam": "fresh websocket session connect",
+      "evidenceFields": ["channelId", "deviceId"]
+    }
+  ]
+}

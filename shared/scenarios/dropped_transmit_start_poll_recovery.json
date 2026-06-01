@@ -1,0 +1,97 @@
+{
+  "name": "dropped_transmit_start_poll_recovery",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "dropping the next transmit-start websocket notice still recovers through refresh",
+      "actions": [
+        { "actor": "b", "type": "dropNextWebSocketSignals", "signalKind": "transmit-start", "count": 1 },
+        { "actor": "a", "type": "beginTransmit" },
+        { "actor": "b", "type": "refreshChannelState", "delayMilliseconds": 600 },
+        { "actor": "b", "type": "refreshContactSummaries", "delayMilliseconds": 600 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "backend": {
+            "readiness": "self-transmitting",
+            "canTransmit": false
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "receiving",
+          "isJoined": true,
+          "contacts": [
+            { "handle": "@avery", "listState": "peer-transmitting", "badgeStatus": "receiving" }
+          ],
+          "backend": {
+            "readiness": "peer-transmitting",
+            "canTransmit": false
+          }
+        }
+      }
+    },
+    {
+      "description": "ending transmit converges both sides back to ready",
+      "actions": [
+        { "actor": "a", "type": "endTransmit" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "isTransmitting": false }
+      }
+    }
+  ]
+}

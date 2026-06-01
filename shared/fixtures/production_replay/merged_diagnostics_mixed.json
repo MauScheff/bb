@@ -1,0 +1,156 @@
+{
+  "diagnosticGroups": [
+    {
+      "contexts": {
+        "channel": [
+          "channel-mixed-1"
+        ],
+        "contact": [
+          "@mixedblake"
+        ]
+      },
+      "subjects": [
+        "@mixedavery",
+        "@mixedblake"
+      ],
+      "summary": "one device retained a ready Conversation while the peer had no session context"
+    }
+  ],
+  "currentViolations": [
+    {
+      "invariantId": "pair.one_sided_ready_conversation",
+      "message": "one device restored or retained a ready Conversation while the peer has no local Device or backend Conversation evidence left=@mixedavery:ready right=@mixedblake:idle",
+      "metadata": {
+        "left": "@mixedavery",
+        "right": "@mixedblake"
+      },
+      "scope": "pair",
+      "source": "merged",
+      "subject": "pair",
+      "timestamp": "2026-05-14T10:00:08Z"
+    }
+  ],
+  "historicalViolations": [
+    {
+      "invariantId": "selected.outgoing_beep_call_flap",
+      "message": "selected route flapped between outgoingBeep and call-visible without a phase change",
+      "metadata": {
+        "selectedContact": "@mixedblake"
+      },
+      "scope": "local",
+      "source": "ios",
+      "subject": "@mixedavery",
+      "timestamp": "2026-05-14T10:00:04Z"
+    }
+  ],
+  "reports": [
+    {
+      "appVersion": "1.0",
+      "backendInvariantViolations": [],
+      "deviceId": "mixed-device-avery",
+      "explicitInvariantViolations": [],
+      "handle": "@mixedavery",
+      "scenarioName": null,
+      "scenarioRunId": null,
+      "snapshot": {
+        "backendCanTransmit": "true",
+        "backendChannelStatus": "ready",
+        "backendPeerDeviceConnected": "true",
+        "backendPeerJoined": "true",
+        "backendReadiness": "ready",
+        "backendSelfJoined": "true",
+        "isJoined": "true",
+        "isTransmitting": "false",
+        "selectedContact": "@mixedblake",
+        "selectedConversationCanTransmit": "true",
+        "selectedConversationPhase": "ready",
+        "selectedConversationStatus": "Ready",
+        "systemSession": "active(contactID: 111, channelUUID: 222)"
+      },
+      "uploadedAt": "2026-05-14T10:00:08Z"
+    },
+    {
+      "appVersion": "1.0",
+      "backendInvariantViolations": [],
+      "deviceId": "mixed-device-blake",
+      "explicitInvariantViolations": [],
+      "handle": "@mixedblake",
+      "scenarioName": null,
+      "scenarioRunId": null,
+      "snapshot": {
+        "backendCanTransmit": "false",
+        "backendChannelStatus": "none",
+        "backendPeerDeviceConnected": "false",
+        "backendPeerJoined": "false",
+        "backendReadiness": "inactive",
+        "backendSelfJoined": "false",
+        "isJoined": "false",
+        "isTransmitting": "false",
+        "selectedContact": "none",
+        "selectedConversationCanTransmit": "false",
+        "selectedConversationPhase": "idle",
+        "selectedConversationStatus": "Avery is online",
+        "systemSession": "none"
+      },
+      "uploadedAt": "2026-05-14T10:00:08Z"
+    }
+  ],
+  "sourceWarnings": [],
+  "telemetryEventCount": 0,
+  "telemetryEvents": [],
+  "timeline": [
+    {
+      "line": "[@mixedavery] [diag:selection] selectedHandle=@mixedblake opened contact mixed-device-avery",
+      "timestamp": "2026-05-14T10:00:00Z"
+    },
+    {
+      "line": "[@mixedavery] [diag:session] request sent channelID=channel-mixed-1 selectedHandle=@mixedblake",
+      "timestamp": "2026-05-14T10:00:01Z"
+    },
+    {
+      "line": "[@mixedavery] [diag:ui] requested route opened call surface selectedHandle=@mixedblake",
+      "timestamp": "2026-05-14T10:00:02Z"
+    },
+    {
+      "line": "[@mixedavery] [diag:ui] requested route collapsed selectedHandle=@mixedblake",
+      "timestamp": "2026-05-14T10:00:03Z"
+    },
+    {
+      "line": "[@mixedavery] [telemetry] severity=error source=ios event=invariant invariant_id=selected.outgoing_beep_call_flap message=selected route flapped between outgoingBeep and call-visible without a phase change peer_handle=@mixedblake device_id=mixed-device-avery",
+      "timestamp": "2026-05-14T10:00:04Z"
+    },
+    {
+      "line": "[@mixedavery] [diag:session] reconnect restored ready channelID=channel-mixed-1 selectedHandle=@mixedblake",
+      "timestamp": "2026-05-14T10:00:05Z"
+    },
+    {
+      "line": "[@mixedblake] [diag:session] app relaunched without restored session selectedHandle=@mixedavery",
+      "timestamp": "2026-05-14T10:00:06Z"
+    }
+  ],
+  "violations": [
+    {
+      "invariantId": "pair.one_sided_ready_conversation",
+      "message": "one device restored or retained a ready Conversation while the peer has no local Device or backend Conversation evidence left=@mixedavery:ready right=@mixedblake:idle",
+      "metadata": {
+        "left": "@mixedavery",
+        "right": "@mixedblake"
+      },
+      "scope": "pair",
+      "source": "merged",
+      "subject": "pair",
+      "timestamp": "2026-05-14T10:00:08Z"
+    },
+    {
+      "invariantId": "selected.outgoing_beep_call_flap",
+      "message": "selected route flapped between outgoingBeep and call-visible without a phase change",
+      "metadata": {
+        "selectedContact": "@mixedblake"
+      },
+      "scope": "local",
+      "source": "ios",
+      "subject": "@mixedavery",
+      "timestamp": "2026-05-14T10:00:04Z"
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "name": "background_wake_transmit_does_not_project_receiver",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "receiver backgrounds and foreground peer sees a wake-capable target",
+      "actions": [
+        { "actor": "a", "type": "backgroundApp" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "wakeReady",
+          "isJoined": true,
+          "canTransmitNow": false,
+          "backend": {
+            "remoteWakeCapabilityKind": "wake-capable"
+          },
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        }
+      }
+    },
+    {
+      "description": "foreground peer transmits to wake-capable receiver without directly projecting background receiver live",
+      "actions": [
+        { "actor": "b", "type": "beginTransmit" },
+        { "actor": "a", "type": "captureDiagnostics", "delayMilliseconds": 1200 },
+        { "actor": "b", "type": "captureDiagnostics", "delayMilliseconds": 1200 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "backend": {
+            "readiness": "self-transmitting",
+            "canTransmit": false
+          },
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        }
+      }
+    },
+    {
+      "description": "ending transmit keeps the background receiver non-live",
+      "actions": [
+        { "actor": "b", "type": "endTransmit" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "b", "type": "refreshChannelState" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "wakeReady",
+          "isJoined": true,
+          "isTransmitting": false,
+          "eventuallyNoInvariant": ["selected.receiving_without_joined_conversation_evidence"]
+        }
+      }
+    }
+  ]
+}

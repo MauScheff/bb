@@ -1,0 +1,121 @@
+{
+  "name": "active_transmit_sender_disconnect_clears_transmit",
+  "baseURL": "https://beepbeep.to",
+  "requiresLocalBackend": true,
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "both sides become ready",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "ready", "isJoined": true, "canTransmitNow": true },
+        "b": { "selectedHandle": "@avery", "phase": "ready", "isJoined": true, "canTransmitNow": true }
+      }
+    },
+    {
+      "description": "sender begins an active transmit",
+      "actions": [
+        { "actor": "a", "type": "beginTransmit" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "transmitting",
+          "isJoined": true,
+          "isTransmitting": true,
+          "backend": {
+            "readiness": "self-transmitting",
+            "canTransmit": false
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "receiving",
+          "isJoined": true,
+          "backend": {
+            "readiness": "peer-transmitting",
+            "canTransmit": false
+          }
+        }
+      }
+    },
+    {
+      "description": "sender disconnect clears active transmit and converges both peers",
+      "actions": [
+        { "actor": "a", "type": "disconnect" },
+        { "actor": "a", "type": "refreshContactSummaries" },
+        { "actor": "a", "type": "refreshBeeps" },
+        { "actor": "a", "type": "refreshChannelState" },
+        { "actor": "a", "type": "reconcileSelectedConversation" },
+        { "actor": "b", "type": "refreshContactSummaries", "delayMilliseconds": 250 },
+        { "actor": "b", "type": "refreshBeeps" },
+        { "actor": "b", "type": "refreshChannelState" },
+        { "actor": "b", "type": "reconcileSelectedConversation" },
+        { "actor": "a", "type": "captureDiagnostics", "delayMilliseconds": 500 },
+        { "actor": "b", "type": "captureDiagnostics", "delayMilliseconds": 500 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "eventuallyNoInvariant": [
+            "channel.active_transmit_sender_presence_drift",
+            "channel.active_transmit_without_addressable_receiver",
+            "selected.live_projection_after_membership_exit"
+          ]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "idle",
+          "isJoined": false,
+          "isTransmitting": false,
+          "eventuallyNoInvariant": [
+            "channel.active_transmit_sender_presence_drift",
+            "channel.active_transmit_without_addressable_receiver",
+            "selected.live_projection_after_membership_exit"
+          ]
+        }
+      }
+    }
+  ]
+}

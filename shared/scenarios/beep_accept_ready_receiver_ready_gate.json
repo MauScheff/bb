@@ -1,0 +1,137 @@
+{
+  "name": "beep_accept_ready_receiver_ready_gate",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "delay receiver-ready during the final join so both sides stay in handshake waiting states",
+      "actions": [
+        {
+          "actor": "a",
+          "type": "setWebSocketSignalDelay",
+          "signalKind": "receiver-ready",
+          "milliseconds": 4000,
+          "count": 1
+        },
+        {
+          "actor": "b",
+          "type": "setWebSocketSignalDelay",
+          "signalKind": "receiver-ready",
+          "milliseconds": 4000,
+          "count": 1
+        },
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "waitingForPeer",
+          "isJoined": true,
+          "canTransmitNow": false,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "selfJoined": true,
+            "peerJoined": true,
+            "canTransmit": true
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "waitingForPeer",
+          "isJoined": true,
+          "canTransmitNow": false,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "selfJoined": true,
+            "peerJoined": true,
+            "canTransmit": true
+          }
+        }
+      }
+    },
+    {
+      "description": "delayed receiver-ready delivery converges both peers to ready",
+      "actions": [
+        { "actor": "a", "type": "wait", "milliseconds": 4500 }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "selfJoined": true,
+            "peerJoined": true,
+            "canTransmit": true
+          }
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "ready",
+          "isJoined": true,
+          "canTransmitNow": true,
+          "backend": {
+            "channelStatus": "ready",
+            "readiness": "ready",
+            "remoteAudioReadiness": "ready",
+            "selfJoined": true,
+            "peerJoined": true,
+            "canTransmit": true
+          }
+        }
+      }
+    },
+    {
+      "description": "disconnect clears both joined states",
+      "actions": [
+        { "actor": "a", "type": "disconnect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "isJoined": false, "isTransmitting": false },
+        "b": { "selectedHandle": "@avery", "isJoined": false, "isTransmitting": false }
+      }
+    }
+  ]
+}

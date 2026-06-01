@@ -1,0 +1,67 @@
+{
+  "name": "friend_disconnect_before_second_join",
+  "baseURL": "https://beepbeep.to",
+  "participants": {
+    "a": {
+      "handle": "@avery",
+      "deviceId": "sim-scenario-avery"
+    },
+    "b": {
+      "handle": "@blake",
+      "deviceId": "sim-scenario-blake"
+    }
+  },
+  "steps": [
+    {
+      "description": "both Friends open each other",
+      "actions": [
+        { "actor": "a", "type": "openFriend", "friend": "b" },
+        { "actor": "b", "type": "openFriend", "friend": "a" }
+      ]
+    },
+    {
+      "description": "Beep reaches recipient",
+      "actions": [
+        { "actor": "a", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "outgoingBeep", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "incomingBeep", "isJoined": false }
+      }
+    },
+    {
+      "description": "recipient joins and sender becomes friendReady",
+      "actions": [
+        { "actor": "b", "type": "connect" }
+      ],
+      "expectEventually": {
+        "a": { "selectedHandle": "@blake", "phase": "friendReady", "isJoined": false },
+        "b": { "selectedHandle": "@avery", "phase": "waitingForPeer", "isJoined": true }
+      }
+    },
+    {
+      "description": "joined Friend disconnects before sender finishes joining",
+      "actions": [
+        { "actor": "b", "type": "disconnect" }
+      ],
+      "expectEventually": {
+        "a": {
+          "selectedHandle": "@blake",
+          "phase": "idle",
+          "isJoined": false,
+          "contacts": [
+            { "handle": "@blake", "listState": "idle", "isOnline": true }
+          ]
+        },
+        "b": {
+          "selectedHandle": "@avery",
+          "phase": "idle",
+          "isJoined": false,
+          "contacts": [
+            { "handle": "@avery", "listState": "idle", "isOnline": true }
+          ]
+        }
+      }
+    }
+  ]
+}
