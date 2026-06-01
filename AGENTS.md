@@ -12,7 +12,7 @@ Humans mostly use [`README.md`](/Users/mau/Development/bb/README.md). All other 
 - Canonical product/domain terminology lives in [`GLOSSARY.md`](/Users/mau/Development/bb/GLOSSARY.md); use it before introducing or renaming domain concepts.
 - Latest product, brand, and marketing thesis lives in [`Beep-Beep-Product-Thesis.md`](/Users/mau/Development/bb/docs/product/Beep-Beep-Product-Thesis.md).
 - Backend source of truth is [`backend`](/Users/mau/Development/bb/backend): Rust runtime/effects plus Unison kernel definitions under `beepbeep.*` in the local `bb/main` Unison codebase.
-- The canonical hosted backend base URL is `https://api.beepbeep.to`.
+- Canonical hosted production endpoints are `https://api.beepbeep.to` for the API/control plane and `relay.beepbeep.to:443` for media relay.
 - The previous Turbo checkout at `/Users/mau/Development/Turbo` is the recovery archive. Do not route active work there unless explicitly doing archaeology.
 - Repeated operational flows should go through [`justfile`](/Users/mau/Development/bb/justfile) recipes when available.
 - The invariant registry is [`shared/invariants/registry.json`](/Users/mau/Development/bb/shared/invariants/registry.json); app hot-path runtime contract annotations are catalogued in [`shared/contracts/app_contract_manifest.json`](/Users/mau/Development/bb/shared/contracts/app_contract_manifest.json) and emitted through [`client/ios/Turbo/DiagnosticsContracts.swift`](/Users/mau/Development/bb/client/ios/Turbo/DiagnosticsContracts.swift).

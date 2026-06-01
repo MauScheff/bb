@@ -1,10 +1,11 @@
 # Self-Hosted VM Deployment
 
-Purpose: deploy the production-shaped self-hosted Turbo runtime to one Compute Engine VM.
+Purpose: deploy and operate the production-shaped BeepBeep backend runtime on
+Compute Engine.
 
 ## Decision
 
-Use one VM, but keep separate services:
+Use process/service boundaries for each backend role:
 
 | Service | Role | Durable truth |
 | --- | --- | --- |
@@ -14,7 +15,9 @@ Use one VM, but keep separate services:
 | `redis` | TTL presence, owner records, pub/sub, and short-lived coordination. | Rebuildable cache only |
 | compiled Unison kernel | Pure Talk Turn decisions. | Versioned `.uc` artifacts in the image |
 
-Co-location keeps testing and early production simple. Process/container separation keeps logs, restarts, health checks, and later GKE or Cloud SQL migration clean.
+Current production keeps the API runtime and media relay on separate VMs because
+both nginx/API and relay TCP/TLS fallback need TCP `443`. This avoids a stream
+router while keeping the operational model simple.
 
 ## Redis Rule
 
@@ -47,13 +50,15 @@ Deploy runtime, Postgres, and Redis to the self-hosted VM:
 just gce-self-hosted-deploy
 ```
 
-Deploy and let Docker Compose own the backend relay profile on TCP/UDP `443`:
+Optional future path: deploy and let Docker Compose own the backend relay
+profile on TCP/UDP `443`:
 
 ```bash
 just gce-self-hosted-deploy-relay
 ```
 
-Do not use the relay recipe while the existing `turbo-relay` systemd service is still bound to port `443`.
+Do not use the relay recipe on the API VM while nginx owns TCP `443`, or while
+the dedicated `turbo-relay` systemd service owns `relay.beepbeep.to`.
 
 ## Defaults
 
@@ -67,17 +72,18 @@ Do not use the relay recipe while the existing `turbo-relay` systemd service is 
 
 The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials.
 
-## Current VM
+## Current Production VMs
 
-| Setting | Value |
-| --- | --- |
-| Project | `beep-beep-495919` |
-| Zone | `europe-west6-a` |
-| Instance | `turbo-self-hosted-1` |
-| Static IP | `34.158.24.229` |
-| Runtime health | `http://34.158.24.229:8091/s/turbo/v1/health` |
+| Role | Instance | Static IP | Endpoint | Ports |
+| --- | --- | --- | --- | --- |
+| API/control plane | `turbo-self-hosted-1` | `34.158.24.229` | `https://api.beepbeep.to` | nginx TCP `443`, runtime `8091` private/local |
+| Media relay | `turbo-relay-1` | `34.65.146.215` | `relay.beepbeep.to` | UDP `443`, TCP `443` |
 
-The current deployed VM runs `postgres`, `redis`, and `runtime`. It does not run the `relay` profile yet. The existing relay VM remains untouched until DNS, TLS, and TCP/UDP `443` ownership are switched deliberately.
+Both VMs are in project `beep-beep-495919`, zone `europe-west6-a`.
+
+The API VM runs `postgres`, `redis`, `runtime`, and nginx. It does not run the
+Docker Compose `relay` profile. The relay VM runs the `turbo-relay` systemd
+service directly.
 
 ## Done Condition
 
@@ -85,4 +91,7 @@ A VM deploy is usable when:
 
 - `docker compose ps` shows `postgres`, `redis`, and `runtime` healthy/running.
 - `curl http://127.0.0.1:8091/s/turbo/v1/health` succeeds on the VM.
-- `just self-hosted-cutover-readiness` consumes fresh runtime, storage, websocket, simulator, and physical-device evidence before any production cutover.
+- `just beepbeep-backend-production-gate https://api.beepbeep.to` passes.
+- Relay canaries pass against `relay.beepbeep.to:443`.
+- Physical-device proof covers the Apple PushToTalk/audio cells after lower
+  backend lanes are green.

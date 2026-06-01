@@ -15,11 +15,16 @@ iOS client
             pure command decisions, snapshots, policy, effect plans, corpus, worker entrypoints
 ```
 
-Default hosted base URL:
+Canonical hosted production endpoints:
 
 ```text
-https://api.beepbeep.to
+API/control plane: https://api.beepbeep.to
+media relay:       relay.beepbeep.to:443
 ```
+
+These endpoints are one backend system with separate network roles. The API VM
+owns nginx/HTTPS on TCP `443`. The relay VM owns QUIC packet media on UDP `443`
+and TCP/TLS fallback on TCP `443`.
 
 ## Ownership
 

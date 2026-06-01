@@ -4,11 +4,16 @@ BeepBeep is an iOS Push-to-Talk app backed by a Rust control-plane runtime and a
 
 The app owns Apple PushToTalk, audio, local projection, and user interaction. The backend owns shared truth: identity, devices, Beeps, Conversation membership, readiness, wake targeting, websocket signaling, and Talk Turn ownership. The backend is the control plane, not the media plane.
 
-Canonical hosted backend:
+Canonical hosted production endpoints:
 
 ```text
-https://api.beepbeep.to
+API/control plane: https://api.beepbeep.to
+media relay:       relay.beepbeep.to:443
 ```
+
+The API VM and relay VM are separate on purpose. The API endpoint owns HTTPS
+through nginx on TCP `443`. The relay endpoint owns QUIC packet media on UDP
+`443` plus TCP/TLS fallback on TCP `443`.
 
 ## Layout
 
@@ -18,6 +23,7 @@ https://api.beepbeep.to
 | Engine package | `client/ios/Packages/TurboEngine` |
 | Rust backend runtime | `backend/runtime` |
 | Fast relay module | `backend/relay` |
+| Landing page and waitlist function | `landing/` |
 | Backend infra/scripts/specs | `backend/infra`, `backend/scripts`, `backend/specs` |
 | Shared contracts, invariants, scenarios, fixtures | `shared/` |
 | Cross-cutting tools | `tools/scripts/` |

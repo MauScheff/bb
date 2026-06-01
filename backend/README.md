@@ -2,11 +2,16 @@
 
 Canonical backend workspace for the Rust runtime plus the pure Unison kernel.
 
-The hosted backend base URL is:
+Canonical hosted production endpoints:
 
 ```text
-https://api.beepbeep.to
+API/control plane: https://api.beepbeep.to
+media relay:       relay.beepbeep.to:443
 ```
+
+The API and relay are one backend system with separate network roles. The API
+VM terminates HTTPS through nginx on TCP `443`; the relay VM binds UDP `443`
+for QUIC packet media and TCP `443` for TCP/TLS fallback.
 
 ## Active Model
 
