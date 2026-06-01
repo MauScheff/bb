@@ -132,11 +132,16 @@ def planned_steps(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     if args.mode == "production":
         simulator_base = args.base_url.rstrip("/") + "/s/turbo"
+        config_url = args.base_url.rstrip("/") + "/v1/config"
         synthetic_suffix = uuid.uuid4().hex[:8]
         synthetic_caller = f"@gatecaller{synthetic_suffix}"
         synthetic_callee = f"@gatecallee{synthetic_suffix}"
         steps.extend(
             [
+                {
+                    "name": "hosted-tls-config",
+                    "command": ["curl", "-fsS", config_url],
+                },
                 {
                     "name": "simulator-scenario-suite-self-hosted",
                     "command": [
