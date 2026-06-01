@@ -116,6 +116,7 @@ struct RuntimeHttpState {
     beeps: BTreeMap<String, RuntimeBeep>,
     beep_aliases_by_id: BTreeMap<String, String>,
     channels: BTreeMap<String, RuntimeChannel>,
+    remembered_contacts_by_handle: BTreeMap<String, BTreeSet<String>>,
     profiles_by_handle: BTreeMap<String, String>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
@@ -596,11 +597,13 @@ where
         if is_dev_reset_path(&request.path) {
             let cleared_beeps = self.state.beeps.len();
             let cleared_channels = self.state.channels.len();
+            let cleared_remembered_contacts = self.state.remembered_contacts_by_handle.len();
             let cleared_profiles = self.state.profiles_by_handle.len();
             let cleared_direct_quic_identities = self.state.direct_quic_identities_by_device.len();
             let cleared_presence_entries = self.state.presence_by_handle.len();
             self.state.beeps.clear();
             self.state.channels.clear();
+            self.state.remembered_contacts_by_handle.clear();
             self.state.profiles_by_handle.clear();
             self.state.direct_quic_identities_by_device.clear();
             self.state.presence_by_handle.clear();
@@ -618,6 +621,7 @@ where
                     "clearedTokenEntries": 0,
                     "clearedBeeps": cleared_beeps,
                     "clearedChannels": cleared_channels,
+                    "clearedRememberedContacts": cleared_remembered_contacts,
                     "clearedProfiles": cleared_profiles,
                     "clearedDirectQuicIdentities": cleared_direct_quic_identities
                 }),
@@ -638,15 +642,10 @@ where
             });
         }
         if is_contact_remember_path(&request.path) {
-            let other_user_id = path_value(&body, &["otherUserId"])
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| {
-                    path_value(&body, &["otherHandle"])
-                        .and_then(Value::as_str)
-                        .map(user_id_for_handle)
-                })
-                .unwrap_or_else(|| "user-self".to_owned());
+            let handle = request_handle(&request).to_owned();
+            let other_handle = contact_peer_handle_from_body(&body);
+            let other_user_id = user_id_for_handle(&other_handle);
+            self.remember_contact_pair(&handle, &other_handle);
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -656,15 +655,10 @@ where
             });
         }
         if is_contact_forget_path(&request.path) {
-            let other_user_id = path_value(&body, &["otherUserId"])
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| {
-                    path_value(&body, &["otherHandle"])
-                        .and_then(Value::as_str)
-                        .map(user_id_for_handle)
-                })
-                .unwrap_or_else(|| "user-self".to_owned());
+            let handle = request_handle(&request).to_owned();
+            let other_handle = contact_peer_handle_from_body(&body);
+            let other_user_id = user_id_for_handle(&other_handle);
+            self.forget_contact(&handle, &other_handle);
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -933,20 +927,53 @@ where
         }
 
         self.state.next_beep_id += 1;
-        let from_user_id = user_id_for_handle(&from_handle);
-        let to_user_id = user_id_for_handle(&to_handle);
-        let (low_user_id, high_user_id) = sorted_pair(from_user_id, to_user_id);
+        let channel_id = channel_id_for_pair(&from_handle, &to_handle);
         let beep = RuntimeBeep {
             beep_id: format!("beep-{}", self.state.next_beep_id),
             from_handle,
             to_handle,
-            channel_id: format!("direct-{low_user_id}-{high_user_id}"),
+            channel_id,
             status: "pending".to_owned(),
             request_count: 1,
         };
         self.state.beeps.insert(beep.beep_id.clone(), beep.clone());
         self.ensure_channel_participants(&beep.channel_id, &beep.from_handle, &beep.to_handle);
         beep
+    }
+
+    fn remember_contact_pair(&mut self, owner_handle: &str, peer_handle: &str) {
+        let owner_handle = normalize_handle(owner_handle);
+        let peer_handle = normalize_handle(peer_handle);
+        if owner_handle == peer_handle {
+            return;
+        }
+        self.state
+            .remembered_contacts_by_handle
+            .entry(owner_handle.clone())
+            .or_default()
+            .insert(peer_handle.clone());
+        self.state
+            .remembered_contacts_by_handle
+            .entry(peer_handle)
+            .or_default()
+            .insert(owner_handle);
+    }
+
+    fn forget_contact(&mut self, owner_handle: &str, peer_handle: &str) {
+        let owner_handle = normalize_handle(owner_handle);
+        let peer_handle = normalize_handle(peer_handle);
+        if let Some(remembered_contacts) = self
+            .state
+            .remembered_contacts_by_handle
+            .get_mut(&owner_handle)
+        {
+            remembered_contacts.remove(&peer_handle);
+            if remembered_contacts.is_empty() {
+                self.state
+                    .remembered_contacts_by_handle
+                    .remove(&owner_handle);
+            }
+        }
     }
 
     fn resolve_beep_action_id(&self, requested_beep_id: &str, action: &str) -> Option<String> {
@@ -987,20 +1014,37 @@ where
 
     fn contact_summaries_for_handle(&self, handle: &str) -> Vec<Value> {
         let normalized_handle = normalize_handle(handle);
-        self.state
-            .channels
-            .iter()
-            .filter(|(_, channel)| {
-                channel
-                    .participants_by_handle
-                    .contains_key(&normalized_handle)
-            })
-            .filter_map(|(channel_id, channel)| {
+        let mut peers_by_channel_id = BTreeMap::new();
+        for (channel_id, channel) in &self.state.channels {
+            if channel
+                .participants_by_handle
+                .contains_key(&normalized_handle)
+            {
                 let peer_handle = channel
                     .participants_by_handle
                     .keys()
-                    .find(|candidate| *candidate != &normalized_handle)?;
-                Some(self.contact_summary_for_channel(channel_id, handle, peer_handle))
+                    .find(|candidate| *candidate != &normalized_handle)
+                    .cloned();
+                if let Some(peer_handle) = peer_handle {
+                    peers_by_channel_id.insert(channel_id.clone(), peer_handle);
+                }
+            }
+        }
+        if let Some(remembered_contacts) = self
+            .state
+            .remembered_contacts_by_handle
+            .get(&normalized_handle)
+        {
+            for peer_handle in remembered_contacts {
+                peers_by_channel_id
+                    .entry(channel_id_for_pair(&normalized_handle, peer_handle))
+                    .or_insert_with(|| peer_handle.clone());
+            }
+        }
+        peers_by_channel_id
+            .into_iter()
+            .map(|(channel_id, peer_handle)| {
+                self.contact_summary_for_channel(&channel_id, handle, &peer_handle)
             })
             .collect()
     }
@@ -2387,6 +2431,25 @@ fn handle_for_user_id(user_id: &str) -> String {
     format!("@{}", user_id.strip_prefix("user-").unwrap_or(user_id))
 }
 
+fn contact_peer_handle_from_body(body: &Value) -> String {
+    path_value(body, &["otherHandle"])
+        .and_then(Value::as_str)
+        .map(normalize_handle)
+        .or_else(|| {
+            path_value(body, &["otherUserId"])
+                .and_then(Value::as_str)
+                .map(handle_for_user_id)
+        })
+        .unwrap_or_else(|| "@self".to_owned())
+}
+
+fn channel_id_for_pair(first_handle: &str, second_handle: &str) -> String {
+    let first_user_id = user_id_for_handle(first_handle);
+    let second_user_id = user_id_for_handle(second_handle);
+    let (low_user_id, high_user_id) = sorted_pair(first_user_id, second_user_id);
+    format!("direct-{low_user_id}-{high_user_id}")
+}
+
 fn normalize_handle(handle: &str) -> String {
     normalize_identity_reference(handle)
 }
@@ -3299,6 +3362,97 @@ mod tests {
         assert_eq!(accept.body["beepId"], replacement.body["beepId"]);
         assert_eq!(accept.body["status"], "connected");
         assert_eq!(accept.body["accepted"], true);
+    }
+
+    #[test]
+    fn self_hosted_http_route_probe_remember_contact_is_reciprocal_and_summary_durable() {
+        let mut service = service();
+
+        let remember = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/remember".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(remember.status, 200);
+        assert_eq!(remember.body["status"], "remembered");
+        assert_eq!(remember.body["otherUserId"], user_id_for_handle("@blake"));
+
+        let avery_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-b".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(avery_summaries.body.as_array().expect("summaries").len(), 1);
+        assert_eq!(blake_summaries.body.as_array().expect("summaries").len(), 1);
+        assert_eq!(avery_summaries.body[0]["handle"], "@blake");
+        assert_eq!(avery_summaries.body[0]["publicId"], "@blake");
+        assert_eq!(blake_summaries.body[0]["handle"], "@avery");
+        assert_eq!(blake_summaries.body[0]["publicId"], "@avery");
+        assert_eq!(
+            avery_summaries.body[0]["channelId"],
+            channel_id_for_pair("@avery", "@blake")
+        );
+        assert_eq!(
+            blake_summaries.body[0]["channelId"],
+            channel_id_for_pair("@avery", "@blake")
+        );
+        assert_eq!(
+            avery_summaries.body[0]["beepThreadProjection"]["kind"],
+            "none"
+        );
+        assert_eq!(avery_summaries.body[0]["membership"]["kind"], "absent");
+        assert_eq!(avery_summaries.body[0]["summaryStatus"]["kind"], "online");
+    }
+
+    #[test]
+    fn self_hosted_http_route_probe_forget_contact_is_account_local() {
+        let mut service = service();
+
+        let remember = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/remember".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(remember.status, 200);
+
+        let forget = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/forget".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(forget.status, 200);
+        assert_eq!(forget.body["status"], "forgotten");
+
+        let avery_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-b".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(avery_summaries.body.as_array().expect("summaries").len(), 0);
+        assert_eq!(blake_summaries.body.as_array().expect("summaries").len(), 1);
+        assert_eq!(blake_summaries.body[0]["handle"], "@avery");
     }
 
     #[test]
