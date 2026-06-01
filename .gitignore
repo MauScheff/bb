@@ -15,6 +15,7 @@ backend/infra/vm/build/
 node_modules/
 .wrangler/
 landing/.firebase/
+landing/firebase-debug.log
 landing/functions/.env*
 !landing/functions/.env.example
 backend/relay/target/
