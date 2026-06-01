@@ -1,8 +1,11 @@
 .DS_Store
+.codex/
 .unisonHistory
 build/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+**/*.xcodeproj/xcuserdata/
+**/*.xcworkspace/xcuserdata/
 __pycache__/
 *.pyc
 .scenario-diagnostics/
@@ -11,6 +14,9 @@ __pycache__/
 backend/infra/vm/build/
 node_modules/
 .wrangler/
+landing/.firebase/
+landing/functions/.env*
+!landing/functions/.env.example
 backend/relay/target/
 client/ios/Packages/TurboEngine/.build/
 target/
