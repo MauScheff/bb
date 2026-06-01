@@ -7,7 +7,7 @@ The app owns Apple PushToTalk, audio, local projection, and user interaction. Th
 Canonical hosted backend:
 
 ```text
-https://staging.beepbeep.to
+https://api.beepbeep.to
 ```
 
 ## Layout
@@ -17,21 +17,21 @@ https://staging.beepbeep.to
 | iOS app and tests | `client/ios/` |
 | Engine package | `client/ios/Packages/TurboEngine` |
 | Rust backend runtime | `backend/runtime` |
-| Fast relay crate | `backend/relay` |
+| Fast relay module | `backend/relay` |
 | Backend infra/scripts/specs | `backend/infra`, `backend/scripts`, `backend/specs` |
 | Shared contracts, invariants, scenarios, fixtures | `shared/` |
 | Cross-cutting tools | `tools/scripts/` |
 | Organized docs and historical reference | `docs/` |
 | Handoffs and durable notes | `handoffs/`, `journal/` |
 
-The old `/Users/mau/Development/bb` checkout is the recovery archive. It is not required for normal work in this repo.
+The old `/Users/mau/Development/Turbo` checkout is the recovery archive. It is not required for normal work in this repo.
 
 ## Primary Commands
 
 | Need | Command |
 | --- | --- |
 | Backend reliability gate | `just beepbeep-backend-gate` |
-| Backend staging gate | `just beepbeep-backend-staging-gate` |
+| Backend production gate | `just beepbeep-backend-production-gate` |
 | Backend cutover readiness | `just beepbeep-backend-cutover-readiness` |
 | Rust runtime tests | `just rust-runtime-test` |
 | Relay tests | `just relay-test` |

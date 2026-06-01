@@ -58,7 +58,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("handles", nargs="*", help="Handles to pass to reliability intake.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--artifact", action="append", default=[], help="Existing diagnostics artifact to include.")
     parser.add_argument(

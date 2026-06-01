@@ -6,9 +6,9 @@ Operational command reference for `/Users/mau/Development/bb`. Use [`WORKFLOW.md
 
 | Surface | Path or owner | Primary commands |
 | --- | --- | --- |
-| Backend runtime | [`backend`](/Users/mau/Development/bb/backend) | `just beepbeep-backend-gate`, `just beepbeep-backend-staging-gate`, `just self-hosted-serve` |
+| Backend runtime | [`backend`](/Users/mau/Development/bb/backend) | `just beepbeep-backend-gate`, `just beepbeep-backend-production-gate`, `just self-hosted-serve` |
 | Unison kernel | local Unison project `bb/main`, namespace `beepbeep.*` | `just kernel-test`, `just kernel-fuzz`, `just kernel-corpus-json` |
-| Rust relay | [`backend/relay`](/Users/mau/Development/bb/backend/relay) | `just relay-test`, `just gce-self-hosted-deploy-relay` |
+| Backend relay module | [`backend/relay`](/Users/mau/Development/bb/backend/relay) | `just relay-test`, `just gce-self-hosted-deploy-relay` |
 | iOS client | [`client/ios`](/Users/mau/Development/bb/client/ios) | `just swift-test-target`, `just swift-test-suite`, device recipes |
 | Engine core | [`client/ios/Packages/TurboEngine`](/Users/mau/Development/bb/client/ios/Packages/TurboEngine) | `just engine-test`, `just engine-scenario`, `just engine-fuzz-local` |
 | Scenarios | [`shared/scenarios`](/Users/mau/Development/bb/shared/scenarios) | `just simulator-scenario*`, `just simulator-scenario-suite-self-hosted` |
@@ -18,7 +18,7 @@ Operational command reference for `/Users/mau/Development/bb`. Use [`WORKFLOW.md
 Canonical deployed base URL:
 
 ```text
-https://staging.beepbeep.to
+https://api.beepbeep.to
 ```
 
 The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not add new active backend behavior to the old `turbo.*` Cloud path unless explicitly doing archaeology or maintenance.
@@ -44,10 +44,10 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 | Local websocket probe | `just self-hosted-websocket-probe` | `/tmp/turbo-self-hosted-websocket-probe.json` reports success |
 | Local backend gate | `just beepbeep-backend-gate` | `/tmp/beepbeep-backend-reliability-gate.json` reports no failed step |
 | Dry-run backend gate | `just beepbeep-backend-gate-dry-run local 123 3 /tmp/beepbeep-backend-gate-dry.json` | gate orchestration is valid without running heavy steps |
-| Hosted staging gate | `just beepbeep-backend-staging-gate https://staging.beepbeep.to` | staging route, websocket, fuzz, and probe evidence pass |
+| Hosted production gate | `just beepbeep-backend-production-gate https://api.beepbeep.to` | production route, websocket, fuzz, and probe evidence pass |
 | Release readiness | `just beepbeep-backend-cutover-readiness` | machine-readable readiness artifact has no blocking missing evidence |
 
-Promote staging bugs downward: staging failure -> hosted probe -> self-hosted probe/fuzz -> Rust runtime proof -> Unison kernel proof.
+Promote production bugs downward: hosted failure -> hosted probe -> self-hosted probe/fuzz -> Rust runtime proof -> Unison kernel proof.
 
 ## Local Backend
 
@@ -77,18 +77,18 @@ just self-hosted-down
 
 Some older local scenario recipes still default to `http://localhost:8090/s/turbo`; pass an explicit base URL for the active runtime unless the recipe name says `self-hosted`.
 
-## Deploy And Staging
+## Deploy And Production
 
-The active deployed target is `https://staging.beepbeep.to`.
+The active deployed target is `https://api.beepbeep.to`.
 
 | Need | Command |
 | --- | --- |
 | VM deploy package/proof, dry run | `just gce-self-hosted-deploy-dry-run <gcp-project>` |
 | VM deploy | `just gce-self-hosted-deploy <gcp-project>` |
-| Relay-only VM deploy | `just gce-self-hosted-deploy-relay <gcp-project>` |
-| Hosted synthetic canary | `just postdeploy-check https://staging.beepbeep.to` |
-| Hosted backend stability | `just backend-stability-probe https://staging.beepbeep.to` |
-| Hosted websocket stability | `just websocket-stability-probe https://staging.beepbeep.to` |
+| Backend VM deploy including relay profile | `just gce-self-hosted-deploy-relay <gcp-project>` |
+| Hosted synthetic canary | `just postdeploy-check https://api.beepbeep.to` |
+| Hosted backend stability | `just backend-stability-probe https://api.beepbeep.to` |
+| Hosted websocket stability | `just websocket-stability-probe https://api.beepbeep.to` |
 | Hosted simulator smoke | `just simulator-scenario-suite-hosted-smoke` |
 
 Do not use removed legacy Cloud deploy recipes as the normal release path. If old Cloud behavior must be inspected, use the archive checkout and document that the work is archival.

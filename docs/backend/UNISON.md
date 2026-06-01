@@ -25,7 +25,7 @@ The Rust runtime calls the pure kernel from [`backend/runtime`](/Users/mau/Devel
 | Export corpus JSON for Rust/runtime proof | `just kernel-corpus-json /tmp/turbo-kernel-corpus.json` |
 | Run the backend gate that consumes kernel evidence | `just beepbeep-backend-gate` |
 
-Kernel behavior is not trusted in staging until the Rust runtime gate has exercised the exported corpus or equivalent runtime proof.
+Kernel behavior is not trusted in production until the Rust runtime gate has exercised the exported corpus or equivalent runtime proof.
 
 ## Scratch Files
 

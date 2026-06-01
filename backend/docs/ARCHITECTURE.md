@@ -18,7 +18,7 @@ iOS client
 Default hosted base URL:
 
 ```text
-https://staging.beepbeep.to
+https://api.beepbeep.to
 ```
 
 ## Ownership
@@ -38,10 +38,10 @@ Use:
 
 ```bash
 just beepbeep-backend-gate
-just beepbeep-backend-staging-gate https://staging.beepbeep.to
+just beepbeep-backend-production-gate https://api.beepbeep.to
 ```
 
-The gate regenerates and validates the active proof artifacts. A staging bug is not fixed until it is promoted to the lowest replayable proof lane that owns the failure.
+The gate regenerates and validates the active proof artifacts. A production bug is not fixed until it is promoted to the lowest replayable proof lane that owns the failure.
 
 ## Namespace
 

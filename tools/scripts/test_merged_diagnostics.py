@@ -1173,7 +1173,7 @@ class DownstreamSplitConsumerTests(unittest.TestCase):
         args = argparse.Namespace(
             surface="production",
             incident_id="",
-            base_url="https://staging.beepbeep.to",
+            base_url="https://api.beepbeep.to",
         )
         payload = {
             "reports": [],

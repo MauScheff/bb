@@ -41,7 +41,7 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>TurboBackendBaseURL</key>
-	<string>https://staging.beepbeep.to</string>
+	<string>https://api.beepbeep.to</string>
 	<key>TurboDevUserHandle</key>
 	<string>@turbo-ios</string>
 	<key>UTImportedTypeDeclarations</key>

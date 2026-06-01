@@ -103,7 +103,7 @@ def ack_job(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Drain backend-owned Turbo wake jobs and send APNs PushToTalk pushes.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--bundle-id", default="com.rounded.Turbo")
     parser.add_argument("--interval", type=float, default=0.75)
     parser.add_argument("--worker-secret", default=os.environ.get("TURBO_APNS_WORKER_SECRET", ""))

@@ -9,12 +9,12 @@ Use one VM, but keep separate services:
 | Service | Role | Durable truth |
 | --- | --- | --- |
 | `runtime` | Rust HTTP/WebSocket control plane and effect executor. | Postgres |
-| `relay` | QUIC datagram packet media plus TCP fallback. | None; session state is rebuildable |
+| `relay` | BeepBeep relay module: QUIC datagram packet media plus TCP fallback. | None; session state is rebuildable |
 | `postgres` | Durable runtime state. | Persistent Docker volume |
 | `redis` | TTL presence, owner records, pub/sub, and short-lived coordination. | Rebuildable cache only |
 | compiled Unison kernel | Pure Talk Turn decisions. | Versioned `.uc` artifacts in the image |
 
-Co-location keeps staging and early production simple. Process/container separation keeps logs, restarts, health checks, and later GKE or Cloud SQL migration clean.
+Co-location keeps testing and early production simple. Process/container separation keeps logs, restarts, health checks, and later GKE or Cloud SQL migration clean.
 
 ## Redis Rule
 
@@ -47,7 +47,7 @@ Deploy runtime, Postgres, and Redis to the self-hosted VM:
 just gce-self-hosted-deploy
 ```
 
-Deploy and let Docker Compose own the relay on TCP/UDP `443`:
+Deploy and let Docker Compose own the backend relay profile on TCP/UDP `443`:
 
 ```bash
 just gce-self-hosted-deploy-relay

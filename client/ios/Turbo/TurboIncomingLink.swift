@@ -3,21 +3,21 @@ import Intents
 
 enum TurboIncomingLink {
     private static let shareHost = "beepbeep.to"
-    private static let stagingShareHost = "staging.beepbeep.to"
+    private static let apiShareHost = "api.beepbeep.to"
     private static let didPrefix = "did:web:beepbeep.to:id:"
-    private static let stagingDidPrefix = "did:web:staging.beepbeep.to:id:"
+    private static let apiDidPrefix = "did:web:api.beepbeep.to:id:"
     private static let rootShareLinkPrefix = "https://beepbeep.to/"
-    private static let stagingRootShareLinkPrefix = "https://staging.beepbeep.to/"
+    private static let apiRootShareLinkPrefix = "https://api.beepbeep.to/"
     private static let bareRootShareLinkPrefix = "beepbeep.to/"
-    private static let bareStagingRootShareLinkPrefix = "staging.beepbeep.to/"
+    private static let bareAPIRootShareLinkPrefix = "api.beepbeep.to/"
     private static let handleShareLinkPrefix = "https://beepbeep.to/@"
-    private static let stagingHandleShareLinkPrefix = "https://staging.beepbeep.to/@"
+    private static let apiHandleShareLinkPrefix = "https://api.beepbeep.to/@"
     private static let bareHandleShareLinkPrefix = "beepbeep.to/@"
-    private static let bareStagingHandleShareLinkPrefix = "staging.beepbeep.to/@"
+    private static let bareAPIHandleShareLinkPrefix = "api.beepbeep.to/@"
     private static let legacyShareLinkPrefix = "https://beepbeep.to/p/"
-    private static let stagingLegacyShareLinkPrefix = "https://staging.beepbeep.to/p/"
+    private static let apiLegacyShareLinkPrefix = "https://api.beepbeep.to/p/"
     private static let legacyBareShareLinkPrefix = "beepbeep.to/p/"
-    private static let stagingLegacyBareShareLinkPrefix = "staging.beepbeep.to/p/"
+    private static let apiLegacyBareShareLinkPrefix = "api.beepbeep.to/p/"
 
     static func reference(from url: URL) -> String? {
         if let conversationIntent = conversationOpenIntent(from: url) {
@@ -143,7 +143,7 @@ enum TurboIncomingLink {
 
     private static func isShareHost(_ host: String?) -> Bool {
         guard let host else { return false }
-        return host == shareHost || host == stagingShareHost
+        return host == shareHost || host == apiShareHost
     }
 
     private static func canonicalHandle(fromPathComponent component: String) -> String? {
@@ -165,32 +165,32 @@ enum TurboIncomingLink {
 
         let normalized = trimmed.lowercased()
         let rawPublicID: String
-        if normalized.hasPrefix(stagingDidPrefix) {
-            rawPublicID = String(normalized.dropFirst(stagingDidPrefix.count))
+        if normalized.hasPrefix(apiDidPrefix) {
+            rawPublicID = String(normalized.dropFirst(apiDidPrefix.count))
         } else if normalized.hasPrefix(didPrefix) {
             rawPublicID = String(normalized.dropFirst(didPrefix.count))
-        } else if normalized.hasPrefix(stagingHandleShareLinkPrefix) {
-            rawPublicID = "@\(String(normalized.dropFirst(stagingHandleShareLinkPrefix.count)))"
+        } else if normalized.hasPrefix(apiHandleShareLinkPrefix) {
+            rawPublicID = "@\(String(normalized.dropFirst(apiHandleShareLinkPrefix.count)))"
         } else if normalized.hasPrefix(handleShareLinkPrefix) {
             rawPublicID = "@\(String(normalized.dropFirst(handleShareLinkPrefix.count)))"
-        } else if normalized.hasPrefix(bareStagingHandleShareLinkPrefix) {
-            rawPublicID = "@\(String(normalized.dropFirst(bareStagingHandleShareLinkPrefix.count)))"
+        } else if normalized.hasPrefix(bareAPIHandleShareLinkPrefix) {
+            rawPublicID = "@\(String(normalized.dropFirst(bareAPIHandleShareLinkPrefix.count)))"
         } else if normalized.hasPrefix(bareHandleShareLinkPrefix) {
             rawPublicID = "@\(String(normalized.dropFirst(bareHandleShareLinkPrefix.count)))"
-        } else if normalized.hasPrefix(stagingRootShareLinkPrefix) {
-            rawPublicID = String(normalized.dropFirst(stagingRootShareLinkPrefix.count))
+        } else if normalized.hasPrefix(apiRootShareLinkPrefix) {
+            rawPublicID = String(normalized.dropFirst(apiRootShareLinkPrefix.count))
         } else if normalized.hasPrefix(rootShareLinkPrefix) {
             rawPublicID = String(normalized.dropFirst(rootShareLinkPrefix.count))
-        } else if normalized.hasPrefix(bareStagingRootShareLinkPrefix) {
-            rawPublicID = String(normalized.dropFirst(bareStagingRootShareLinkPrefix.count))
+        } else if normalized.hasPrefix(bareAPIRootShareLinkPrefix) {
+            rawPublicID = String(normalized.dropFirst(bareAPIRootShareLinkPrefix.count))
         } else if normalized.hasPrefix(bareRootShareLinkPrefix) {
             rawPublicID = String(normalized.dropFirst(bareRootShareLinkPrefix.count))
-        } else if normalized.hasPrefix(stagingLegacyShareLinkPrefix) {
-            rawPublicID = String(normalized.dropFirst(stagingLegacyShareLinkPrefix.count))
+        } else if normalized.hasPrefix(apiLegacyShareLinkPrefix) {
+            rawPublicID = String(normalized.dropFirst(apiLegacyShareLinkPrefix.count))
         } else if normalized.hasPrefix(legacyShareLinkPrefix) {
             rawPublicID = String(normalized.dropFirst(legacyShareLinkPrefix.count))
-        } else if normalized.hasPrefix(stagingLegacyBareShareLinkPrefix) {
-            rawPublicID = String(normalized.dropFirst(stagingLegacyBareShareLinkPrefix.count))
+        } else if normalized.hasPrefix(apiLegacyBareShareLinkPrefix) {
+            rawPublicID = String(normalized.dropFirst(apiLegacyBareShareLinkPrefix.count))
         } else if normalized.hasPrefix(legacyBareShareLinkPrefix) {
             rawPublicID = String(normalized.dropFirst(legacyBareShareLinkPrefix.count))
         } else {

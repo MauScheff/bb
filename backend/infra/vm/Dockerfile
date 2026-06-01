@@ -15,7 +15,7 @@ COPY backend/relay backend/relay
 COPY backend/infra/self-hosted backend/infra/self-hosted
 
 RUN cargo build --release -p beepbeep-runtime --bin beepbeep-runtime
-RUN cd backend/relay && CARGO_TARGET_DIR=/src/target cargo build --release --bin relay
+RUN cargo build --release -p beepbeep-relay --bin beepbeep-relay
 
 FROM debian:bookworm-slim
 
@@ -33,7 +33,7 @@ RUN curl -fsSL "$UCM_LINUX_TARBALL_URL" -o /tmp/ucm.tar.gz \
   && rm -rf /tmp/ucm /tmp/ucm.tar.gz
 
 COPY --from=builder /src/target/release/beepbeep-runtime /usr/local/bin/beepbeep-runtime
-COPY --from=builder /src/target/release/relay /usr/local/bin/relay
+COPY --from=builder /src/target/release/beepbeep-relay /usr/local/bin/beepbeep-relay
 COPY backend/infra/vm/build/kernel /app/kernel
 
 ENV TURBO_REPO_ROOT=/app

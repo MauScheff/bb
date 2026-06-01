@@ -3039,7 +3039,7 @@ mod tests {
             method: "POST".to_owned(),
             path: "/v1/profile".to_owned(),
             headers: vec![
-                ("host".to_owned(), "staging.beepbeep.to".to_owned()),
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
                 ("x-forwarded-proto".to_owned(), "https".to_owned()),
                 ("x-turbo-user-handle".to_owned(), "@avery".to_owned()),
             ],
@@ -3055,9 +3055,9 @@ mod tests {
         assert_eq!(response.body["shareCode"], "avery");
         assert_eq!(
             response.body["shareLink"],
-            "https://staging.beepbeep.to/avery"
+            "https://api.beepbeep.to/avery"
         );
-        assert_eq!(response.body["did"], "did:web:staging.beepbeep.to:id:avery");
+        assert_eq!(response.body["did"], "did:web:api.beepbeep.to:id:avery");
     }
 
     #[test]
@@ -3067,12 +3067,12 @@ mod tests {
             method: "POST".to_owned(),
             path: "/v1/identities/resolve".to_owned(),
             headers: vec![
-                ("host".to_owned(), "staging.beepbeep.to".to_owned()),
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
                 ("x-forwarded-proto".to_owned(), "https".to_owned()),
                 ("x-turbo-user-handle".to_owned(), "@avery".to_owned()),
             ],
             body: serde_json::to_vec(&serde_json::json!({
-                "reference": "https://staging.beepbeep.to/mau"
+                "reference": "https://api.beepbeep.to/mau"
             }))
             .expect("body should encode"),
         });
@@ -3082,7 +3082,7 @@ mod tests {
         assert_eq!(response.body["publicId"], "mau");
         assert_eq!(
             response.body["shareLink"],
-            "https://staging.beepbeep.to/mau"
+            "https://api.beepbeep.to/mau"
         );
     }
 
@@ -3093,7 +3093,7 @@ mod tests {
             method: "POST".to_owned(),
             path: "/v1/profile".to_owned(),
             headers: vec![
-                ("host".to_owned(), "staging.beepbeep.to".to_owned()),
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
                 ("x-forwarded-proto".to_owned(), "https".to_owned()),
                 ("x-turbo-user-handle".to_owned(), "@avery".to_owned()),
             ],
@@ -3108,7 +3108,7 @@ mod tests {
             method: "GET".to_owned(),
             path: "/avery".to_owned(),
             headers: vec![
-                ("host".to_owned(), "staging.beepbeep.to".to_owned()),
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
                 ("x-forwarded-proto".to_owned(), "https".to_owned()),
             ],
             body: Vec::new(),
@@ -3119,7 +3119,7 @@ mod tests {
             .as_str()
             .expect("share page should be raw HTML");
         assert!(html.contains("Open in BeepBeep"));
-        assert!(html.contains("https://staging.beepbeep.to/avery"));
+        assert!(html.contains("https://api.beepbeep.to/avery"));
         assert!(html.contains("Avery Radio"));
         assert!(html.contains("apple-itunes-app"));
         assert!(html.contains("app-id=6762493911"));
@@ -3135,17 +3135,17 @@ mod tests {
             method: "GET".to_owned(),
             path: "/id/avery/did.json".to_owned(),
             headers: vec![
-                ("host".to_owned(), "staging.beepbeep.to".to_owned()),
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
                 ("x-forwarded-proto".to_owned(), "https".to_owned()),
             ],
             body: Vec::new(),
         });
 
         assert_eq!(response.status, 200);
-        assert_eq!(response.body["id"], "did:web:staging.beepbeep.to:id:avery");
+        assert_eq!(response.body["id"], "did:web:api.beepbeep.to:id:avery");
         assert_eq!(
             response.body["alsoKnownAs"][0],
-            "https://staging.beepbeep.to/avery"
+            "https://api.beepbeep.to/avery"
         );
     }
 
@@ -3204,7 +3204,7 @@ mod tests {
             body: serde_json::to_vec(&serde_json::json!({
                 "deviceId": "device-a",
                 "appVersion": "route-probe:device-a",
-                "backendBaseURL": "https://staging.beepbeep.to",
+                "backendBaseURL": "https://api.beepbeep.to",
                 "selectedHandle": "@blake",
                 "snapshot": "snapshot",
                 "transcript": "transcript"

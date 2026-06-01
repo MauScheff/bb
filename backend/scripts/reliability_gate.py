@@ -16,7 +16,7 @@ from typing import Any
 
 
 DEFAULT_BASE_URL = os.environ.get(
-    "BEEP_BEEP_BACKEND_BASE_URL", "https://staging.beepbeep.to"
+    "BEEP_BEEP_BACKEND_BASE_URL", "https://api.beepbeep.to"
 )
 DEFAULT_OUTPUT = "/tmp/beepbeep-backend-reliability-gate.json"
 
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the canonical Beep Beep backend reliability gate."
     )
-    parser.add_argument("mode", nargs="?", choices=["local", "staging", "cutover"], default="local")
+    parser.add_argument("mode", nargs="?", choices=["local", "production", "cutover"], default="local")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--seed", default="123")
     parser.add_argument("--count", default="3")
@@ -130,7 +130,7 @@ def planned_steps(args: argparse.Namespace) -> list[dict[str, Any]]:
         {"name": "rust-runtime-integration", "command": ["just", "rust-runtime-integration"]},
     ]
 
-    if args.mode == "staging":
+    if args.mode == "production":
         simulator_base = args.base_url.rstrip("/") + "/s/turbo"
         synthetic_suffix = uuid.uuid4().hex[:8]
         synthetic_caller = f"@gatecaller{synthetic_suffix}"
@@ -193,7 +193,7 @@ def validate_artifacts(args: argparse.Namespace, started_monotonic: float) -> li
         artifact_check("shadow-backend-fuzz", "/tmp/turbo-shadow-backend-fuzz/report.json", lambda p: require_gate(p, "shadow-backend-fuzz")),
         artifact_check("rust-runtime-integration", "/tmp/turbo-rust-runtime-integration.json", require_ok),
     ]
-    if args.mode == "staging":
+    if args.mode == "production":
         checks.append(
             artifact_check("simulator-self-hosted-suite", "/tmp/turbo-simulator-self-hosted-suite.json", require_ok)
         )

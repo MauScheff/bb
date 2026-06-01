@@ -59,7 +59,7 @@ services:
   relay:
     <<: *turbo-service
     profiles: ["relay"]
-    command: ["/usr/local/bin/relay"]
+    command: ["/usr/local/bin/beepbeep-relay"]
     environment:
       TURBO_RELAY_CERT_PEM: ${TURBO_RELAY_CERT_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/fullchain.pem}
       TURBO_RELAY_KEY_PEM: ${TURBO_RELAY_KEY_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/privkey.pem}

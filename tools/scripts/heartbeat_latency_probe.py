@@ -49,7 +49,7 @@ import statistics
 import subprocess
 import time
 
-BASE_URL = "https://staging.beepbeep.to"
+BASE_URL = "https://api.beepbeep.to"
 HANDLE = "@avery"
 ITERATIONS = 30
 TIMEOUT_SECONDS = 8

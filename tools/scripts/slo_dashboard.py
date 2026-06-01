@@ -21,7 +21,7 @@ CRITICAL_CHECKS = (
     "channel-readiness:caller:receiver-ready",
     "channel-readiness:callee:receiver-ready",
     "channel-begin-transmit",
-    "channel-ptt-push-target",
+    "wake-events:recent:after-begin-transmit",
     "channel-end-transmit",
 )
 

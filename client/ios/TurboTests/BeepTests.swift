@@ -35,10 +35,10 @@ struct BeepTests {
         #expect(TurboIncomingLink.publicID(from: "https://beepbeep.to/@maurice") == "@maurice")
         #expect(TurboIncomingLink.publicID(from: "https://beepbeep.to/p/maurice") == "@maurice")
         #expect(TurboIncomingLink.publicID(from: "did:web:beepbeep.to:id:maurice") == "@maurice")
-        #expect(TurboIncomingLink.publicID(from: "https://staging.beepbeep.to/maurice") == "@maurice")
-        #expect(TurboIncomingLink.publicID(from: "https://staging.beepbeep.to/@maurice") == "@maurice")
-        #expect(TurboIncomingLink.publicID(from: "https://staging.beepbeep.to/p/maurice") == "@maurice")
-        #expect(TurboIncomingLink.publicID(from: "did:web:staging.beepbeep.to:id:maurice") == "@maurice")
+        #expect(TurboIncomingLink.publicID(from: "https://api.beepbeep.to/maurice") == "@maurice")
+        #expect(TurboIncomingLink.publicID(from: "https://api.beepbeep.to/@maurice") == "@maurice")
+        #expect(TurboIncomingLink.publicID(from: "https://api.beepbeep.to/p/maurice") == "@maurice")
+        #expect(TurboIncomingLink.publicID(from: "did:web:api.beepbeep.to:id:maurice") == "@maurice")
     }
 
     @MainActor
@@ -786,10 +786,10 @@ struct BeepTests {
         #expect(TurboIncomingLink.reference(from: url) == "https://beepbeep.to/maurice")
     }
 
-    @Test func incomingLinkParsesStagingSharePage() {
-        let url = URL(string: "https://staging.beepbeep.to/maurice?utm_source=test#card")!
+    @Test func incomingLinkParsesAPISharePage() {
+        let url = URL(string: "https://api.beepbeep.to/maurice?utm_source=test#card")!
 
-        #expect(TurboIncomingLink.reference(from: url) == "https://staging.beepbeep.to/maurice")
+        #expect(TurboIncomingLink.reference(from: url) == "https://api.beepbeep.to/maurice")
     }
 
     @Test func incomingLinkParsesCustomSchemeSharePage() {

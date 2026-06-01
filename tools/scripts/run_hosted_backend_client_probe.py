@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the hosted iOS backend client WebSocket probe through the targeted Swift test wrapper."
     )
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--duration", type=int, default=60)
     parser.add_argument("--heartbeat-interval", type=int, default=20)
     parser.add_argument("--telemetry-interval", type=int, default=20)

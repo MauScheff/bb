@@ -14,7 +14,7 @@ def require(condition: bool, message: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify deployed Cloudflare TURN policy wiring.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--handle", default="@quinn")
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument(

@@ -101,7 +101,7 @@ def upload_wake_event(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bridge active Turbo transmit state to real PushToTalk APNs wake pushes.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--handle-a", required=True)
     parser.add_argument("--handle-b", required=True)
     parser.add_argument("--bundle-id", default="com.rounded.Turbo")

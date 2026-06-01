@@ -1,10 +1,10 @@
-# Turbo Media Relay
+# BeepBeep Backend Relay
 
-Canary relay for Turbo audio and peer hint frames.
+Backend-owned relay module for BeepBeep audio and peer hint frames.
 
 Scope:
 
-- Unison remains the control plane.
+- Rust/Unison backend remains the control plane.
 - The relay validates a shared canary token, joins two device IDs into a session, and forwards encrypted audio plus non-authoritative peer hint frames.
 - Preferred live audio is QUIC datagram packet media (`packet-audio`) over UDP `443`.
 - Degraded Fast Relay fallback is explicit TCP/TLS ordered media (`tcp-audio`) over TCP `443`.
@@ -31,17 +31,17 @@ export TURBO_RELAY_SESSION_TTL_SECONDS=180
 ## Build
 
 ```bash
-cargo build --release --bin relay
+cargo build --release -p beepbeep-relay --bin beepbeep-relay
 cargo build --features quinn-probe --bin probe
 ```
 
 ## Run
 
 ```bash
-RUST_LOG=info ./target/release/relay
+RUST_LOG=info ./target/release/beepbeep-relay
 ```
 
-The relay binary uses `quiche` for the UDP/QUIC server. The optional `probe`
+The `beepbeep-relay` binary uses `quiche` for the UDP/QUIC server. The optional `probe`
 binary remains a small Quinn client compatibility probe.
 
 ## Canary Proof

@@ -172,7 +172,7 @@ def summarize(results: list[RequestResult], slow_ms: int) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Probe Turbo backend route stability with repeated simple requests.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--handle", default="@mau")
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=8.0)

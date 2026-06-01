@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the hosted Turbo postdeploy canary and SLO dashboard."
     )
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--caller", default="@quinn")
     parser.add_argument("--callee", default="@sasha")
     parser.add_argument("--iterations", type=int, default=1)

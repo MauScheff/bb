@@ -20,7 +20,7 @@ DEFAULT_REQUIRED_CHECKS = (
     "channel-readiness:caller:receiver-ready",
     "channel-readiness:callee:receiver-ready",
     "channel-begin-transmit",
-    "channel-ptt-push-target",
+    "wake-events:recent:after-begin-transmit",
     "channel-end-transmit",
 )
 
@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run synthetic two-device Turbo conversation probes and write replayable artifacts."
     )
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--caller", default="@quinn")
     parser.add_argument("--callee", default="@sasha")
     parser.add_argument("--iterations", type=int, default=1)

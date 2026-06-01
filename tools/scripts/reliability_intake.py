@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BASE_URL = "https://staging.beepbeep.to"
+DEFAULT_BASE_URL = "https://api.beepbeep.to"
 DEFAULT_OUTPUT_ROOT = Path("/tmp/turbo-reliability-intake")
 DEFAULT_REPLAY_BASE_URL = "http://localhost:8090/s/turbo"
 

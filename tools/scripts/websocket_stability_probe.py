@@ -59,7 +59,7 @@ class ConnectionSummary:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Probe hosted Turbo websocket stability over time.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to")
     parser.add_argument("--caller", default="@quinn")
     parser.add_argument("--callee", default="@sasha")
     parser.add_argument("--duration", type=int, default=90, help="Seconds to hold the websocket pair open.")

@@ -122,8 +122,8 @@ invariant -> observed violation
       `just protocol-model-checks`
 - [ ] Hosted confidence:
       `just reliability-gate-*`, `just postdeploy-check`
-- [ ] Staging backend proof:
-      `just beepbeep-backend-staging-gate` and `just postdeploy-check`
+- [ ] Production backend proof:
+      `just beepbeep-backend-production-gate` and `just postdeploy-check`
 
 ## 9. Release Checklist
 

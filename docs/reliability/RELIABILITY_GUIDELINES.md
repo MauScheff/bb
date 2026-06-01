@@ -67,7 +67,7 @@ Use the thinnest tool that proves the claim. `TOOLING.md` owns command details.
 | Retry/drop/reorder/reconnect families | `just simulator-fuzz-local <seed> <count>` |
 | Protocol interleavings | `just protocol-model-checks` |
 | Hosted route/control-plane confidence | `just synthetic-conversation-probe`, `just slo-dashboard`, or `just postdeploy-check` |
-| Verified staging backend | `just beepbeep-backend-staging-gate` and `just postdeploy-check` |
+| Verified production backend | `just beepbeep-backend-production-gate` and `just postdeploy-check` |
 | Apple/PTT/audio boundary | Physical device check after lower layers are proven |
 
 ## Iteration Rule

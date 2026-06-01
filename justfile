@@ -122,8 +122,8 @@ beepbeep-backend-gate-dry-run mode="local" seed="123" count="3" output="/tmp/bee
     --output "{{output}}" \
     --dry-run
 
-beepbeep-backend-staging-gate base="https://staging.beepbeep.to" seed="123" count="3" output="/tmp/beepbeep-backend-staging-gate.json":
-  python3 backend/scripts/reliability_gate.py staging \
+beepbeep-backend-production-gate base="https://api.beepbeep.to" seed="123" count="3" output="/tmp/beepbeep-backend-production-gate.json":
+  python3 backend/scripts/reliability_gate.py production \
     --base-url "{{base}}" \
     --seed "{{seed}}" \
     --count "{{count}}" \
@@ -213,9 +213,10 @@ multi-node-routing-test:
   cargo test -q -p beepbeep-runtime multi_node_routing
 
 relay-test:
-  sh -c 'cd {{justfile_directory()}}/backend/relay && cargo test -q && cargo build --release --bin relay'
+  cargo test -q -p beepbeep-relay
+  cargo build --release -p beepbeep-relay --bin beepbeep-relay
 
-postdeploy-check base="https://staging.beepbeep.to" caller="@quinn" callee="@sasha" iterations="1" output_dir="/tmp/turbo-postdeploy-check" insecure="--insecure":
+postdeploy-check base="https://api.beepbeep.to" caller="@quinn" callee="@sasha" iterations="1" output_dir="/tmp/turbo-postdeploy-check" insecure="--insecure":
   python3 tools/scripts/postdeploy_check.py \
     --base-url "{{base}}" \
     --caller "{{caller}}" \
@@ -293,22 +294,22 @@ device-ui-test device="" only_testing="TurboUITests":
   python3 tools/scripts/device_app.py test --device "{{device}}" --only-testing "{{only_testing}}"
 
 route-probe:
-  .venv/bin/python tools/scripts/route_probe.py --base-url https://staging.beepbeep.to --caller @quinn --callee @sasha --insecure
+  .venv/bin/python tools/scripts/route_probe.py --base-url https://api.beepbeep.to --caller @quinn --callee @sasha --insecure
 
-backend-stability-probe base="https://staging.beepbeep.to" handle="@mau" iterations="10" timeout="8":
+backend-stability-probe base="https://api.beepbeep.to" handle="@mau" iterations="10" timeout="8":
   python3 tools/scripts/backend_stability_probe.py --base-url "{{base}}" --handle "{{handle}}" --iterations "{{iterations}}" --timeout "{{timeout}}"
 
-websocket-stability-probe base="https://staging.beepbeep.to" caller="@quinn" callee="@sasha" duration="90" heartbeat_interval="20" telemetry_interval="0" insecure="--insecure":
+websocket-stability-probe base="https://api.beepbeep.to" caller="@quinn" callee="@sasha" duration="90" heartbeat_interval="20" telemetry_interval="0" insecure="--insecure":
   python3 tools/scripts/websocket_stability_probe.py --base-url "{{base}}" --caller "{{caller}}" --callee "{{callee}}" --duration "{{duration}}" --heartbeat-interval "{{heartbeat_interval}}" --telemetry-interval "{{telemetry_interval}}" {{insecure}}
 
-hosted-backend-client-probe base="https://staging.beepbeep.to" duration="60" heartbeat_interval="20" telemetry_interval="20" output="/tmp/turbo-debug/hosted_backend_client_probe_latest.json":
+hosted-backend-client-probe base="https://api.beepbeep.to" duration="60" heartbeat_interval="20" telemetry_interval="20" output="/tmp/turbo-debug/hosted_backend_client_probe_latest.json":
   python3 tools/scripts/run_hosted_backend_client_probe.py --base-url "{{base}}" --duration "{{duration}}" --heartbeat-interval "{{heartbeat_interval}}" --telemetry-interval "{{telemetry_interval}}" --output "{{output}}"
 
 direct-quic-provisioning-probe:
-  .venv/bin/python tools/scripts/direct_quic_provisioning_probe.py --base-url https://staging.beepbeep.to --caller @quinn --callee @sasha --insecure
+  .venv/bin/python tools/scripts/direct_quic_provisioning_probe.py --base-url https://api.beepbeep.to --caller @quinn --callee @sasha --insecure
 
 turn-policy-probe require_enabled="":
-  .venv/bin/python tools/scripts/turn_policy_probe.py --base-url https://staging.beepbeep.to --handle @quinn --insecure {{require_enabled}}
+  .venv/bin/python tools/scripts/turn_policy_probe.py --base-url https://api.beepbeep.to --handle @quinn --insecure {{require_enabled}}
 
 route-probe-local base="http://localhost:8090/s/turbo" caller="@avery" callee="@blake":
   .venv/bin/python tools/scripts/route_probe.py --base-url "{{base}}" --caller "{{caller}}" --callee "{{callee}}"
@@ -317,48 +318,48 @@ clean-scratch:
   find . -maxdepth 1 -type f -name '*.u' | sort
   find . -maxdepth 1 -type f -name '*.u' -delete
 
-seed base="https://staging.beepbeep.to" handle="@avery":
+seed base="https://api.beepbeep.to" handle="@avery":
   curl --fail-with-body -i -X POST \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/dev/seed"
 
-reset base="https://staging.beepbeep.to" handle="@avery":
+reset base="https://api.beepbeep.to" handle="@avery":
   curl --fail-with-body -i -X POST \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/dev/reset-state"
 
-reset-all base="https://staging.beepbeep.to" handle="@avery":
+reset-all base="https://api.beepbeep.to" handle="@avery":
   curl --fail-with-body -i -X POST \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/dev/reset-all"
 
-reset-pair-all base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake":
+reset-pair-all base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake":
   just reset-all "{{base}}" "{{handle_a}}"
   just reset-all "{{base}}" "{{handle_b}}"
   just seed "{{base}}" "{{handle_a}}"
 
-diagnostics-latest device_id base="https://staging.beepbeep.to" handle="@turbo-ios":
+diagnostics-latest device_id base="https://api.beepbeep.to" handle="@turbo-ios":
   curl --fail-with-body -sS \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/dev/diagnostics/latest/{{device_id}}/"
 
-diagnostics-latest-current base="https://staging.beepbeep.to" handle="@turbo-ios":
+diagnostics-latest-current base="https://api.beepbeep.to" handle="@turbo-ios":
   curl --fail-with-body -sS \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/dev/diagnostics/latest"
 
-diagnostics-merge base="https://staging.beepbeep.to" handles="" insecure="--insecure":
+diagnostics-merge base="https://api.beepbeep.to" handles="" insecure="--insecure":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} {{handles}}
 
-diagnostics-merge-pair base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+diagnostics-merge-pair base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} "{{handle_a}}" "{{handle_b}}"
 
-reliability-intake handle_a handle_b="" base="https://staging.beepbeep.to" surface="auto" incident_id="" insecure="--insecure":
+reliability-intake handle_a handle_b="" base="https://api.beepbeep.to" surface="auto" incident_id="" insecure="--insecure":
   python3 tools/scripts/reliability_intake.py \
     --base-url "{{base}}" \
     --surface "{{surface}}" \
@@ -366,7 +367,7 @@ reliability-intake handle_a handle_b="" base="https://staging.beepbeep.to" surfa
     {{insecure}} \
     "{{handle_a}}" "{{handle_b}}"
 
-reliability-intake-shake handle incident_id peer="" base="https://staging.beepbeep.to" surface="production" insecure="--insecure":
+reliability-intake-shake handle incident_id peer="" base="https://api.beepbeep.to" surface="production" insecure="--insecure":
   python3 tools/scripts/reliability_intake.py \
     --base-url "{{base}}" \
     --surface "{{surface}}" \
@@ -374,13 +375,13 @@ reliability-intake-shake handle incident_id peer="" base="https://staging.beepbe
     {{insecure}} \
     "{{handle}}" "{{peer}}"
 
-ptt-push-target channel_id base="https://staging.beepbeep.to" handle="@avery":
+ptt-push-target channel_id base="https://api.beepbeep.to" handle="@avery":
   curl --fail-with-body -sS \
     -H "x-turbo-user-handle: {{handle}}" \
     -H "Authorization: Bearer {{handle}}" \
     "{{base}}/v1/channels/{{channel_id}}/ptt-push-target"
 
-ptt-apns-start channel_id base="https://staging.beepbeep.to" handle="@avery" bundle_id="com.rounded.Turbo" insecure="--insecure":
+ptt-apns-start channel_id base="https://api.beepbeep.to" handle="@avery" bundle_id="com.rounded.Turbo" insecure="--insecure":
   python3 tools/scripts/send_ptt_apns.py \
     --base-url "{{base}}" \
     --handle "{{handle}}" \
@@ -388,7 +389,7 @@ ptt-apns-start channel_id base="https://staging.beepbeep.to" handle="@avery" bun
     --bundle-id "{{bundle_id}}" \
     {{insecure}}
 
-ptt-apns-print-only channel_id base="https://staging.beepbeep.to" handle="@avery" bundle_id="com.rounded.Turbo" insecure="--insecure":
+ptt-apns-print-only channel_id base="https://api.beepbeep.to" handle="@avery" bundle_id="com.rounded.Turbo" insecure="--insecure":
   python3 tools/scripts/send_ptt_apns.py \
     --base-url "{{base}}" \
     --handle "{{handle}}" \
@@ -397,7 +398,7 @@ ptt-apns-print-only channel_id base="https://staging.beepbeep.to" handle="@avery
     --print-only \
     {{insecure}}
 
-ptt-apns-bridge base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" bundle_id="com.rounded.Turbo" insecure="--insecure":
+ptt-apns-bridge base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" bundle_id="com.rounded.Turbo" insecure="--insecure":
   python3 tools/scripts/ptt_apns_bridge.py \
     --base-url "{{base}}" \
     --handle-a "{{handle_a}}" \
@@ -405,7 +406,7 @@ ptt-apns-bridge base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@
     --bundle-id "{{bundle_id}}" \
     {{insecure}}
 
-ptt-apns-worker base="https://staging.beepbeep.to" bundle_id="com.rounded.Turbo" insecure="--insecure":
+ptt-apns-worker base="https://api.beepbeep.to" bundle_id="com.rounded.Turbo" insecure="--insecure":
   python3 tools/scripts/ptt_apns_worker.py \
     --base-url "{{base}}" \
     --bundle-id "{{bundle_id}}" \
@@ -447,27 +448,27 @@ telemetry-follow-dev hours="1" limit="50" poll="5" insecure="":
 telemetry-user handle hours="24" limit="50" insecure="":
   sh -c 'handle="{{handle}}"; hours="{{hours}}"; limit="{{limit}}"; insecure="{{insecure}}"; handle="${handle#handle=}"; hours="${hours#hours=}"; limit="${limit#limit=}"; insecure="${insecure#insecure=}"; python3 tools/scripts/query_telemetry.py --hours "$hours" --limit "$limit" --user-handle "$handle" $insecure'
 
-simulator-scenario scenario="" base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+simulator-scenario scenario="" base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   python3 tools/scripts/run_simulator_scenarios.py \
     --scenario "{{scenario}}" \
     --base-url "{{base}}" \
     --handle-a "{{handle_a}}" \
     --handle-b "{{handle_b}}"
 
-simulator-scenario-merge base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+simulator-scenario-merge base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} \
     --device "{{handle_a}}=sim-scenario-avery" \
     --device "{{handle_b}}=sim-scenario-blake"
 
-simulator-scenario-merge-strict base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+simulator-scenario-merge-strict base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} --fail-on-violations \
     --device "{{handle_a}}=sim-scenario-avery" \
     --device "{{handle_b}}=sim-scenario-blake"
 
-simulator-scenario-hosted-strict scenario="" base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+simulator-scenario-hosted-strict scenario="" base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   sh -c 'device_a="sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")"; device_b="sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"; python3 tools/scripts/run_simulator_scenarios.py --scenario "{{scenario}}" --base-url "{{base}}" --handle-a "{{handle_a}}" --handle-b "{{handle_b}}" --device-id-a "$device_a" --device-id-b "$device_b" && python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} --fail-on-violations --device "{{handle_a}}=$device_a" --device "{{handle_b}}=$device_b"'
 
-simulator-scenario-http-control scenario="" base="https://staging.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
+simulator-scenario-http-control scenario="" base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   sh -c 'device_a="sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")"; device_b="sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"; python3 tools/scripts/run_simulator_scenarios.py --scenario "{{scenario}}" --base-url "{{base}}" --handle-a "{{handle_a}}" --handle-b "{{handle_b}}" --device-id-a "$device_a" --device-id-b "$device_b" --control-command-transport-policy "http-only" && python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} --fail-on-violations --device "{{handle_a}}=$device_a" --device "{{handle_b}}=$device_b"'
 
 simulator-scenario-local scenario="" base="http://localhost:8090/s/turbo" handle_a="@avery" handle_b="@blake":
@@ -501,7 +502,7 @@ simulator-scenario-suite:
   just simulator-scenario
 
 simulator-scenario-suite-hosted-smoke:
-  sh -c 'python3 tools/scripts/run_simulator_scenarios.py --scenario "presence_online_projection,beep_accept_ready_refresh_stability" --base-url "https://staging.beepbeep.to" --handle-a "@avery" --handle-b "@blake" --device-id-a "sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")" --device-id-b "sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"'
+  sh -c 'python3 tools/scripts/run_simulator_scenarios.py --scenario "presence_online_projection,beep_accept_ready_refresh_stability" --base-url "https://api.beepbeep.to" --handle-a "@avery" --handle-b "@blake" --device-id-a "sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")" --device-id-b "sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"'
 
 simulator-scenario-suite-local:
   just simulator-scenario-local "" http://localhost:8090/s/turbo
@@ -542,7 +543,7 @@ production-replay diagnostics_json output_dir="/tmp/turbo-production-replay" nam
     --output-dir "{{output_dir}}" \
     --name "{{name}}"
 
-synthetic-conversation-probe base="https://staging.beepbeep.to" caller="@quinn" callee="@sasha" iterations="1" artifact_dir="/tmp/turbo-synthetic-conversation-probe" insecure="--insecure":
+synthetic-conversation-probe base="https://api.beepbeep.to" caller="@quinn" callee="@sasha" iterations="1" artifact_dir="/tmp/turbo-synthetic-conversation-probe" insecure="--insecure":
   python3 tools/scripts/synthetic_conversation_probe.py \
     --base-url "{{base}}" \
     --caller "{{caller}}" \
@@ -581,7 +582,10 @@ protocol-talk-turn-actor-model-check tla_jar="/tmp/tla2tools.jar" output_dir="/t
     --skip-swift-properties
 
 swift-test-target name:
-  python3 tools/scripts/run_targeted_swift_tests.py --name "{{name}}"
+  python3 tools/scripts/run_targeted_swift_tests.py \
+    --project client/ios/Turbo.xcodeproj \
+    --test-source-dir client/ios/TurboTests \
+    --name "{{name}}"
 
 ptt-readiness-fuzz:
   just swift-test-target pttReadinessAdapterFuzz

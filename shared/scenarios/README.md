@@ -174,7 +174,7 @@ For hosted verification, prefer:
 just postdeploy-check
 ```
 
-This runs the synthetic conversation probe, generates the SLO dashboard, and writes timestamped `postdeploy-check.json`. Use `just beepbeep-backend-staging-gate` for the active staging backend gate.
+This runs the synthetic conversation probe, generates the SLO dashboard, and writes timestamped `postdeploy-check.json`. Use `just beepbeep-backend-production-gate` for the active production backend gate.
 
 Turn a synthetic probe summary into a static product-facing SLO dashboard:
 

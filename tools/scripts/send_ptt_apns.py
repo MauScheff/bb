@@ -253,7 +253,7 @@ def send_apns(token: str, payload: dict, jwt_token: str, bundle_id: str) -> tupl
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send a real PushToTalk APNs wake push using Turbo's canonical push-target route.")
-    parser.add_argument("--base-url", default="https://staging.beepbeep.to", help="Turbo backend base URL")
+    parser.add_argument("--base-url", default="https://api.beepbeep.to", help="Turbo backend base URL")
     parser.add_argument("--handle", default="", help="Sender handle")
     parser.add_argument("--channel-id", default="", help="Backend channel id")
     parser.add_argument("--bundle-id", default="com.rounded.Turbo", help="App bundle identifier")

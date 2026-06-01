@@ -206,7 +206,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--base-url",
-        default="https://staging.beepbeep.to",
+        default="https://api.beepbeep.to",
         help="Backend base URL.",
     )
     parser.add_argument(

@@ -306,7 +306,7 @@ def lockscreen_wake_target_preflight(cell: str) -> dict[str, Any]:
             "name": "verify-lockscreen-wake-target",
             "description": "Dry-run the backend PushToTalk APNs target lookup before locking the receiver or sending APNs.",
             "command": (
-                'just ptt-apns-print-only <channel-id> https://staging.beepbeep.to '
+                'just ptt-apns-print-only <channel-id> https://api.beepbeep.to '
                 '<sender-handle> com.rounded.Turbo --insecure'
             ),
         }
