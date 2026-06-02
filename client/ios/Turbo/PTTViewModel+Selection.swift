@@ -70,6 +70,11 @@ struct ContactListSections: Equatable {
 extension PTTViewModel {
     func localTransmitProjection(for contactID: UUID) -> LocalTransmitProjection {
         let snapshot = transmitDomainSnapshot
+        if !snapshot.isPressActive,
+           snapshot.isSystemTransmitting,
+           systemSessionMatches(contactID) {
+            return .stopping
+        }
         return snapshot.localTransmitProjection(
             for: contactID,
             mediaState: mediaConnectionState,

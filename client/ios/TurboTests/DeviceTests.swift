@@ -5628,6 +5628,80 @@ struct DeviceTests {
     }
 
     @MainActor
+    @Test func localTransmitProjectionStaysStoppingUntilSystemTransmitEndsAfterRelease() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-a-b",
+            remoteUserId: "remote-user"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.pttCoordinator.send(
+            .didBeginTransmitting(channelUUID: channelUUID, origin: .foregroundAppPress)
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+
+        #expect(viewModel.transmitDomainSnapshot.isPressActive == false)
+        #expect(viewModel.pttCoordinator.state.isTransmitting)
+        #expect(viewModel.systemSessionMatches(contactID))
+        #expect(viewModel.localTransmitProjection(for: contactID) == .stopping)
+
+        viewModel.syncSelectedConversationProjection()
+
+        #expect(viewModel.selectedConversationState(for: contactID).allowsHoldToTalk == false)
+    }
+
+    @MainActor
+    @Test func beginTransmitIgnoresReentryWhileSystemTransmitIsStillActive() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-a-b",
+            remoteUserId: "remote-user"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.pttCoordinator.send(
+            .didBeginTransmitting(channelUUID: channelUUID, origin: .foregroundAppPress)
+        )
+
+        viewModel.beginTransmit()
+
+        #expect(viewModel.transmitDomainSnapshot.isPressActive == false)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "reason=system-transmit-still-active"
+            )
+        )
+    }
+
+    @MainActor
     @Test func pttAccessoryButtonEventsAreEnabledForJoinedSystemChannel() async {
         let client = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: client)

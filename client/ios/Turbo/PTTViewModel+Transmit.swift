@@ -1239,6 +1239,18 @@ extension PTTViewModel {
             diagnostics.record(.media, message: "Ignored begin transmit request", metadata: ["reason": "no-selected-contact"])
             return
         }
+        guard !pttCoordinator.state.isTransmitting else {
+            diagnostics.record(
+                .media,
+                message: "Ignored begin transmit request",
+                metadata: [
+                    "reason": "system-transmit-still-active",
+                    "contact": contact.handle,
+                    "systemContactId": pttCoordinator.state.activeContactID?.uuidString ?? "none",
+                ]
+            )
+            return
+        }
         guard !transmitRuntime.isPressingTalk else {
             diagnostics.record(
                 .media,
