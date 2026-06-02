@@ -11,6 +11,10 @@ nonisolated enum TurboHandle {
         "p",
         "v1",
     ]
+    static let reservedIdentityBodies: Set<String> = reservedURLBodies.union([
+        "beepbeep",
+        "user",
+    ])
 
     static func normalizedStoredHandle(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -39,6 +43,10 @@ nonisolated enum TurboHandle {
         return normalized.count >= minBodyLength && normalized.count <= maxBodyLength
     }
 
+    static func isValidIdentityBody(_ raw: String) -> Bool {
+        isValidEditableBody(raw) && !isReservedIdentityBody(raw)
+    }
+
     static func canonicalHandle(fromEditableBody raw: String) -> String {
         "@\(normalizedEditableBody(raw))"
     }
@@ -49,6 +57,10 @@ nonisolated enum TurboHandle {
 
     static func isReservedURLBody(_ raw: String) -> Bool {
         reservedURLBodies.contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    static func isReservedIdentityBody(_ raw: String) -> Bool {
+        reservedIdentityBodies.contains(raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     static func suggestedEditableBody(from profileName: String) -> String {

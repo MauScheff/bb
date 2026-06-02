@@ -41,6 +41,39 @@ struct BeepTests {
         #expect(TurboIncomingLink.publicID(from: "did:web:api.beepbeep.to:id:maurice") == "@maurice")
     }
 
+    @Test func incomingLinkRejectsPlaceholderUserIdentity() {
+        #expect(!TurboHandle.isValidIdentityBody("user"))
+        #expect(TurboIncomingLink.publicID(from: "@user") == nil)
+        #expect(TurboIncomingLink.publicID(from: "https://beepbeep.to/user") == nil)
+        #expect(TurboIncomingLink.publicID(from: "https://api.beepbeep.to/user") == nil)
+        #expect(TurboIncomingLink.publicID(from: "did:web:beepbeep.to:id:user") == nil)
+        #expect(TurboIncomingLink.isReservedIdentityReference("https://beepbeep.to/user"))
+    }
+
+    @Test func backendJoinRejectsPlaceholderUserContact() {
+        let viewModel = PTTViewModel()
+        let contact = Contact(
+            id: Contact.stableID(for: "@user"),
+            name: "@user",
+            handle: "@user",
+            isOnline: true,
+            channelId: UUID(),
+            remoteUserId: "user-user"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contact.id
+
+        viewModel.requestBackendJoin(for: contact)
+
+        #expect(viewModel.statusMessage == "Pick another handle")
+        #expect(viewModel.backendStatusMessage == "That handle is only a placeholder")
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Rejected backend join for reserved contact identity"
+            )
+        )
+    }
+
     @MainActor
     @Test func selectedDirectQuicPrewarmRepairsActiveDirectPathSurfacedAsFastRelay() {
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)

@@ -208,8 +208,20 @@ extension PTTViewModel {
 
     func openFriend(reference: String) async {
         let trimmedReference = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReference.isEmpty else { return }
+        guard !TurboIncomingLink.isReservedIdentityReference(trimmedReference) else {
+            backendCommandCoordinator.send(.operationFailed("reserved identity"))
+            statusMessage = "Pick another handle"
+            backendStatusMessage = "That handle is only a placeholder"
+            diagnostics.record(
+                .backend,
+                level: .error,
+                message: "Rejected reserved friend identity",
+                metadata: ["reference": trimmedReference]
+            )
+            return
+        }
         let normalizedReference = TurboIncomingLink.publicID(from: trimmedReference) ?? trimmedReference
-        guard !normalizedReference.isEmpty else { return }
         guard backendServices != nil else {
             backendStatusMessage = "Backend unavailable"
             statusMessage = "Backend unavailable"
@@ -243,6 +255,18 @@ extension PTTViewModel {
     }
 
     func requestBackendJoin(for contact: Contact, intent: BackendJoinIntent = .requestConnection) {
+        guard !TurboHandle.isReservedIdentityBody(TurboHandle.body(from: contact.handle)) else {
+            diagnostics.record(
+                .backend,
+                level: .error,
+                message: "Rejected backend join for reserved contact identity",
+                metadata: ["contactId": contact.id.uuidString, "handle": contact.handle]
+            )
+            backendStatusMessage = "That handle is only a placeholder"
+            statusMessage = "Pick another handle"
+            captureDiagnosticsState("backend-join:reserved-contact-rejected")
+            return
+        }
         let relationship = beepThreadProjection(for: contact.id)
         let incomingBeep = incomingBeepByContactID[contact.id]
         if relationship.hasIncomingBeep {

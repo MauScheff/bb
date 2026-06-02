@@ -1576,7 +1576,7 @@ struct ContentView: View {
     private func createIdentityAndContinue() {
         let profileName = draftProfileName
         let handleBody = TurboHandle.normalizedEditableBody(draftHandleBody)
-        guard TurboHandle.isValidEditableBody(handleBody) else {
+        guard TurboHandle.isValidIdentityBody(handleBody) else {
             handleSetupError = "Use 3–20 lowercase letters or numbers."
             return
         }

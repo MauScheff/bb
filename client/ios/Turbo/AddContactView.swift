@@ -174,6 +174,10 @@ private struct TurboShareIdentitySheet: View {
         URL(string: currentShareLink)
     }
 
+    private var hasShareableIdentity: Bool {
+        !TurboHandle.isReservedIdentityBody(TurboHandle.body(from: currentIdentityHandle))
+    }
+
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
@@ -182,42 +186,60 @@ private struct TurboShareIdentitySheet: View {
                 ScrollView {
                     TurboSection(
                         title: "Share your BeepBeep",
-                        subtitle: "Let someone scan this or open your link.",
+                        subtitle: hasShareableIdentity
+                            ? "Let someone scan this or open your link."
+                            : "Set up a real handle before sharing your BeepBeep.",
                         showsDivider: false
                     ) {
                         VStack(alignment: .center, spacing: 16) {
-                            TurboQRCodeView(payload: currentShareLink)
-                                .frame(width: 188, height: 188)
+                            if hasShareableIdentity {
+                                TurboQRCodeView(payload: currentShareLink)
+                                    .frame(width: 188, height: 188)
 
-                            VStack(spacing: 6) {
-                                Text(currentIdentityHandle)
-                                    .font(.title3.weight(.semibold))
+                                VStack(spacing: 6) {
+                                    Text(currentIdentityHandle)
+                                        .font(.title3.weight(.semibold))
 
-                                Text(currentShareLink)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .textSelection(.enabled)
-                            }
-
-                            HStack(spacing: 10) {
-                                Button("Copy Handle") {
-                                    UIPasteboard.general.string = currentIdentityHandle
-                                    copiedStatus = "Copied handle"
+                                    Text(currentShareLink)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                        .textSelection(.enabled)
                                 }
-                                .buttonStyle(.bordered)
 
-                                Button("Copy Link") {
-                                    UIPasteboard.general.string = currentShareLink
-                                    copiedStatus = "Copied link"
-                                }
-                                .buttonStyle(.bordered)
-
-                                if let shareURL {
-                                    ShareLink(item: shareURL) {
-                                        Text("Share")
+                                HStack(spacing: 10) {
+                                    Button("Copy Handle") {
+                                        UIPasteboard.general.string = currentIdentityHandle
+                                        copiedStatus = "Copied handle"
                                     }
-                                    .buttonStyle(.borderedProminent)
+                                    .buttonStyle(.bordered)
+
+                                    Button("Copy Link") {
+                                        UIPasteboard.general.string = currentShareLink
+                                        copiedStatus = "Copied link"
+                                    }
+                                    .buttonStyle(.bordered)
+
+                                    if let shareURL {
+                                        ShareLink(item: shareURL) {
+                                            Text("Share")
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+                                }
+                            } else {
+                                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                                    .font(.system(size: 52, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+
+                                VStack(spacing: 6) {
+                                    Text(currentIdentityHandle)
+                                        .font(.title3.weight(.semibold))
+
+                                    Text("Open Profile and restore or create your real handle.")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
                                 }
                             }
 

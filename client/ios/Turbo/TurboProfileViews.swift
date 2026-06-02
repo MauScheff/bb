@@ -182,7 +182,7 @@ struct TurboHandleSetupView: View {
     private var validationMessage: String? {
         let trimmed = draftHandleBody.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        guard TurboHandle.isValidEditableBody(trimmed) else {
+        guard TurboHandle.isValidIdentityBody(trimmed) else {
             return "Use 3–20 lowercase letters or numbers."
         }
         return nil
@@ -278,7 +278,7 @@ struct TurboHandleSetupView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .frame(maxWidth: TurboLayout.primaryButtonMaxWidth)
-                        .disabled(!TurboHandle.isValidEditableBody(draftHandleBody) || isSaving)
+                        .disabled(!TurboHandle.isValidIdentityBody(draftHandleBody) || isSaving)
                     }
                     .frame(maxWidth: .infinity)
                 }

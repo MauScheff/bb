@@ -149,18 +149,33 @@ enum TurboIncomingLink {
     private static func canonicalHandle(fromPathComponent component: String) -> String? {
         let canonical = TurboHandle.normalizedStoredHandle(component)
         let body = TurboHandle.body(from: canonical)
-        guard !body.isEmpty, !TurboHandle.isReservedURLBody(body) else { return nil }
+        guard !body.isEmpty, !TurboHandle.isReservedIdentityBody(body) else { return nil }
         return canonical.count > 1 ? canonical : nil
     }
 
     static func publicID(from reference: String) -> String? {
+        guard let publicID = rawPublicID(from: reference) else { return nil }
+        let body = TurboHandle.body(from: publicID)
+        guard !TurboHandle.isReservedIdentityBody(body) else { return nil }
+        let canonical = TurboHandle.normalizedStoredHandle(publicID)
+        return canonical == "@" ? nil : canonical
+    }
+
+    static func isReservedIdentityReference(_ reference: String) -> Bool {
+        guard let publicID = rawPublicID(from: reference) else {
+            return TurboHandle.isReservedIdentityBody(TurboHandle.body(from: reference))
+        }
+        return TurboHandle.isReservedIdentityBody(TurboHandle.body(from: publicID))
+    }
+
+    private static func rawPublicID(from reference: String) -> String? {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         if let url = URL(string: trimmed),
            let normalizedReference = Self.reference(from: url),
            normalizedReference != trimmed {
-            return publicID(from: normalizedReference)
+            return rawPublicID(from: normalizedReference)
         }
 
         let normalized = trimmed.lowercased()
@@ -200,9 +215,6 @@ enum TurboIncomingLink {
         let publicID = rawPublicID.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
             .first
             .map(String.init) ?? rawPublicID
-        let body = TurboHandle.body(from: publicID)
-        guard !TurboHandle.isReservedURLBody(body) else { return nil }
-        let canonical = TurboHandle.normalizedStoredHandle(publicID)
-        return canonical == "@" ? nil : canonical
+        return publicID
     }
 }
