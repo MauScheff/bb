@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RuntimeHttpConfig {
             supports_websocket: true,
             apns_worker: None,
+            ..RuntimeHttpConfig::default()
         },
     )));
     let websocket_hub = AppCompatibleWebSocketHub::new();

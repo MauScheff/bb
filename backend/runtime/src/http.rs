@@ -65,6 +65,9 @@ pub struct RuntimeHttpService<S, W, C = crate::postgres::DurableConversationStor
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeHttpConfig {
     pub supports_websocket: bool,
+    pub supports_direct_quic_upgrade: bool,
+    pub supports_direct_quic_provisioning: bool,
+    pub supports_media_end_to_end_encryption: bool,
     pub apns_worker: Option<RuntimeApnsWorkerConfig>,
 }
 
@@ -81,8 +84,37 @@ impl RuntimeHttpConfig {
     pub fn live_from_env() -> Self {
         Self {
             supports_websocket: true,
+            supports_direct_quic_upgrade: env_flag_default_true(
+                "BEEP_RUNTIME_SUPPORTS_DIRECT_QUIC_UPGRADE",
+            ),
+            supports_direct_quic_provisioning: env_flag_default_true(
+                "BEEP_RUNTIME_SUPPORTS_DIRECT_QUIC_PROVISIONING",
+            ),
+            supports_media_end_to_end_encryption: env_flag_default_false(
+                "BEEP_RUNTIME_SUPPORTS_MEDIA_E2EE",
+            ),
             apns_worker: RuntimeApnsWorkerConfig::from_env(),
         }
+    }
+}
+
+fn env_flag_default_true(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+fn env_flag_default_false(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
     }
 }
 
@@ -317,9 +349,9 @@ where
                     "mode": "self-hosted",
                     "supportsWebSocket": self.runtime_config.supports_websocket,
                     "telemetryEnabled": true,
-                    "supportsDirectQuicUpgrade": false,
-                    "supportsDirectQuicProvisioning": false,
-                    "supportsMediaEndToEndEncryption": false,
+                    "supportsDirectQuicUpgrade": self.runtime_config.supports_direct_quic_upgrade,
+                    "supportsDirectQuicProvisioning": self.runtime_config.supports_direct_quic_provisioning,
+                    "supportsMediaEndToEndEncryption": self.runtime_config.supports_media_end_to_end_encryption,
                     "supportsSignalSessionIds": true,
                     "supportsTransmitIds": true,
                     "supportsProjectionEpochs": true
@@ -3173,6 +3205,34 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_config_advertises_direct_quic_capabilities_from_runtime_config() {
+        let mut service = service_with_config(RuntimeHttpConfig {
+            supports_websocket: true,
+            supports_direct_quic_upgrade: true,
+            supports_direct_quic_provisioning: true,
+            supports_media_end_to_end_encryption: false,
+            apns_worker: None,
+        });
+
+        let response = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/config".to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body["mode"], "self-hosted");
+        assert_eq!(response.body["supportsWebSocket"], true);
+        assert_eq!(response.body["supportsDirectQuicUpgrade"], true);
+        assert_eq!(response.body["supportsDirectQuicProvisioning"], true);
+        assert_eq!(response.body["supportsMediaEndToEndEncryption"], false);
+        assert_eq!(response.body["supportsSignalSessionIds"], true);
+        assert_eq!(response.body["supportsTransmitIds"], true);
+        assert_eq!(response.body["supportsProjectionEpochs"], true);
+    }
+
+    #[test]
     fn self_hosted_http_route_probe_creates_and_lists_beeps_by_direction() {
         let mut service = service();
         let create = service.handle(HttpRequest {
@@ -4468,6 +4528,7 @@ mod tests {
                 use_sandbox: true,
                 timeout_ms: 1_000,
             }),
+            ..RuntimeHttpConfig::default()
         });
         let channel = service.handle(HttpRequest {
             method: "POST".to_owned(),
@@ -4564,6 +4625,7 @@ mod tests {
                 use_sandbox: true,
                 timeout_ms: 1_000,
             }),
+            ..RuntimeHttpConfig::default()
         });
         let channel = service.handle(HttpRequest {
             method: "POST".to_owned(),
