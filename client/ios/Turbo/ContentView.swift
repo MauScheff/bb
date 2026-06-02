@@ -767,7 +767,10 @@ struct ContentView: View {
 
     private func shouldShowCallScreen(for contact: Contact) -> Bool {
         let selectedConversationState = viewModel.selectedConversationState(for: contact.id)
-        if callScreenHasEstablishedSessionClaim(for: contact),
+        if callScreenHasEstablishedSessionClaim(
+            for: contact,
+            selectedConversationState: selectedConversationState
+        ),
            !callScreenShouldHideEstablishedSessionDuringDisconnect(
                 for: contact,
                 selectedConversationState: selectedConversationState
@@ -795,14 +798,17 @@ struct ContentView: View {
         }
     }
 
-    private func callScreenHasEstablishedSessionClaim(for contact: Contact) -> Bool {
-        if viewModel.isJoined, viewModel.activeChannelId == contact.id {
-            return true
-        }
-        if viewModel.systemSessionMatches(contact.id) {
-            return true
-        }
-        return false
+    private func callScreenHasEstablishedSessionClaim(
+        for contact: Contact,
+        selectedConversationState: SelectedConversationState
+    ) -> Bool {
+        ConversationStateMachine.hasEstablishedCallScreenSessionClaim(
+            contactID: contact.id,
+            selectedConversationState: selectedConversationState,
+            isJoined: viewModel.isJoined,
+            activeChannelID: viewModel.activeChannelId,
+            systemSessionMatchesContact: viewModel.systemSessionMatches(contact.id)
+        )
     }
 
     private func callScreenShouldHideEstablishedSessionDuringDisconnect(
@@ -822,7 +828,10 @@ struct ContentView: View {
         for contact: Contact,
         selectedConversationState: SelectedConversationState
     ) -> Bool {
-        if callScreenHasEstablishedSessionClaim(for: contact) {
+        if callScreenHasEstablishedSessionClaim(
+            for: contact,
+            selectedConversationState: selectedConversationState
+        ) {
             return true
         }
         if viewModel.pendingJoinContactId == contact.id {

@@ -928,6 +928,20 @@
       "status": "active"
     },
     {
+      "id": "beep.pending_projection_suppresses_live_membership",
+      "scope": "backend",
+      "owner": "backend",
+      "authoritativeSeam": "backend/runtime/src/http.rs",
+      "predicate": "While a Beep Thread is pending, channel state, readiness, and contact-summary projections for that channel must publish Beep request state with absent membership, inactive readiness, disabled transmit, and unknown audio readiness even if stale joined devices remain from a previous accepted call.",
+      "evidenceFields": ["channelId", "beepId", "beepThreadProjection", "membership", "readiness", "audioReadiness", "canTransmit"],
+      "detectors": ["backend/runtime/src/http.rs", "Turbo/AppDiagnostics.swift"],
+      "regressions": ["backend/runtime/src/http.rs", "TurboTests/ConversationTests.swift"],
+      "repairPolicy": "backend projection repair",
+      "repairAction": "The Rust runtime projects effective membership as absent whenever beep_projection_for_channel returns incoming, outgoing, or mutual pending Beep state; accept/join remains the only transition that can re-publish live membership.",
+      "alertPolicy": "strict diagnostics",
+      "status": "active"
+    },
+    {
       "id": "beep-thread.latest_count_is_monotonic",
       "scope": "backend",
       "owner": "backend",

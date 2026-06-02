@@ -443,6 +443,10 @@ enum BeepThreadProjection: Equatable {
         }
     }
 
+    var hasPendingBeep: Bool {
+        hasIncomingBeep || hasOutgoingBeep
+    }
+
     var fallbackConversationState: ConversationState {
         switch self {
         case .none:
@@ -2618,6 +2622,25 @@ enum ConversationStateMachine {
         case .idle:
             return false
         }
+    }
+
+    static func hasEstablishedCallScreenSessionClaim(
+        contactID: UUID,
+        selectedConversationState: SelectedConversationState,
+        isJoined: Bool,
+        activeChannelID: UUID?,
+        systemSessionMatchesContact: Bool
+    ) -> Bool {
+        guard !selectedConversationState.relationship.hasPendingBeep else {
+            return false
+        }
+        if isJoined, activeChannelID == contactID {
+            return true
+        }
+        if systemSessionMatchesContact {
+            return true
+        }
+        return false
     }
 
     static func reconciliationAction(for context: ConversationDerivationContext) -> SelectedConversationReconciliationAction {

@@ -3612,6 +3612,50 @@ struct ConversationTests {
         ))
     }
 
+    @Test func pendingBeepSuppressesEstablishedCallScreenSessionClaim() {
+        let contactID = UUID()
+        let outgoingState = SelectedConversationState(
+            relationship: .outgoingBeep(requestCount: 1),
+            detail: .outgoingBeep(requestCount: 1),
+            statusMessage: "Beep sent to Blake",
+            canTransmitNow: false
+        )
+        let incomingState = SelectedConversationState(
+            relationship: .incomingBeep(requestCount: 1),
+            detail: .incomingBeep(requestCount: 1),
+            statusMessage: "Blake wants to talk",
+            canTransmitNow: false
+        )
+        let connectedState = SelectedConversationState(
+            relationship: .none,
+            detail: .ready,
+            statusMessage: "Connected",
+            canTransmitNow: true
+        )
+
+        #expect(!ConversationStateMachine.hasEstablishedCallScreenSessionClaim(
+            contactID: contactID,
+            selectedConversationState: outgoingState,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true
+        ))
+        #expect(!ConversationStateMachine.hasEstablishedCallScreenSessionClaim(
+            contactID: contactID,
+            selectedConversationState: incomingState,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true
+        ))
+        #expect(ConversationStateMachine.hasEstablishedCallScreenSessionClaim(
+            contactID: contactID,
+            selectedConversationState: connectedState,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true
+        ))
+    }
+
     @MainActor
     @Test func uiProjectionFlagsVisibleCallScreenForIdlePeer() {
         let projection = UIProjectionDiagnostics(

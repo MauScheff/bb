@@ -1104,18 +1104,20 @@ where
         let membership = self.channel_membership(channel_id, handle);
         let (has_incoming_beep, has_outgoing_beep, request_count) =
             self.beep_projection_for_channel(channel_id, handle)?;
+        let projected_membership =
+            membership.projected_for_pending_beep(has_incoming_beep || has_outgoing_beep);
         let badge_status = summary_status_kind(
             has_incoming_beep,
             has_outgoing_beep,
-            membership.self_joined,
-            membership.peer_joined,
-            membership.peer_device_connected,
+            projected_membership.self_joined,
+            projected_membership.peer_joined,
+            projected_membership.peer_device_connected,
             active_transmitter_for_handle(self.state.channels.get(channel_id), handle),
         );
         let active_transmitter_user_id =
             active_transmitter_user_id(self.state.channels.get(channel_id));
         let peer_user_id = user_id_for_handle(peer_handle);
-        let peer_device_connected = membership.peer_device_connected;
+        let peer_device_connected = projected_membership.peer_device_connected;
         Ok(serde_json::json!({
             "userId": peer_user_id,
             "handle": peer_handle,
@@ -1127,13 +1129,13 @@ where
             "hasIncomingBeep": has_incoming_beep,
             "hasOutgoingBeep": has_outgoing_beep,
             "requestCount": request_count,
-            "selfJoined": membership.self_joined,
-            "peerJoined": membership.peer_joined,
+            "selfJoined": projected_membership.self_joined,
+            "peerJoined": projected_membership.peer_joined,
             "peerDeviceConnected": peer_device_connected,
             "isActiveConversation": has_incoming_beep
                 || has_outgoing_beep
-                || membership.self_joined
-                || membership.peer_joined,
+                || projected_membership.self_joined
+                || projected_membership.peer_joined,
             "badgeStatus": badge_status,
             "beepThreadProjection": beep_thread_projection_payload(
                 has_incoming_beep,
@@ -1141,8 +1143,8 @@ where
                 request_count
             ),
             "membership": membership_payload(
-                membership.self_joined,
-                membership.peer_joined,
+                projected_membership.self_joined,
+                projected_membership.peer_joined,
                 peer_device_connected
             ),
             "summaryStatus": {
@@ -1494,6 +1496,7 @@ where
             },
         };
         let has_pending_beep = has_incoming_beep || has_outgoing_beep;
+        let projected_membership = membership.projected_for_pending_beep(has_pending_beep);
         Ok(serde_json::json!({
             "channelId": channel_id,
             "selfUserId": self_user_id,
@@ -1512,9 +1515,9 @@ where
                 && active_transmitter_user_id.is_none(),
             "status": status,
             "membership": membership_payload(
-                membership.self_joined,
-                membership.peer_joined,
-                peer_device_connected
+                projected_membership.self_joined,
+                projected_membership.peer_joined,
+                projected_membership.peer_device_connected
             ),
             "beepThreadProjection": beep_thread_projection_payload(
                 has_incoming_beep,
@@ -1544,22 +1547,25 @@ where
             self.beep_projection_for_channel(channel_id, handle)?;
         let membership = self.channel_membership(channel_id, handle);
         let has_pending_beep = has_incoming_beep || has_outgoing_beep;
+        let projected_membership = membership.projected_for_pending_beep(has_pending_beep);
         let channel = self.state.channels.get(channel_id);
         let active_transmitter_user_id = active_transmitter_user_id(channel);
         let active_transmit_id = channel
             .and_then(|channel| channel.active_transmit_id.clone())
             .map(Value::String)
             .unwrap_or(Value::Null);
-        let peer_device_connected = membership.peer_device_connected;
+        let peer_device_connected = projected_membership.peer_device_connected;
         let readiness_kind = match active_transmitter_for_handle(channel, handle) {
             Some(true) => "self-transmitting",
             Some(false) => "peer-transmitting",
             None if has_pending_beep => "inactive",
-            None if membership.has_both && peer_device_connected => "ready",
-            None if membership.self_joined || membership.peer_joined => "waiting-for-peer",
+            None if projected_membership.has_both && peer_device_connected => "ready",
+            None if projected_membership.self_joined || projected_membership.peer_joined => {
+                "waiting-for-peer"
+            }
             None => "inactive",
         };
-        let peer_audio_readiness = if membership.peer_joined {
+        let peer_audio_readiness = if projected_membership.peer_joined {
             if peer_device_connected {
                 "ready"
             } else {
@@ -1588,7 +1594,10 @@ where
         } else {
             Value::String("unavailable".to_owned())
         };
-        let peer_target_device_id = membership.peer_device_id.clone().map(Value::String);
+        let peer_target_device_id = projected_membership
+            .peer_device_id
+            .clone()
+            .map(Value::String);
         let self_target_device_id = self_wake_token
             .map(|token| Value::String(token.device_id.clone()))
             .unwrap_or(Value::Null);
@@ -1598,8 +1607,8 @@ where
         Ok(serde_json::json!({
             "channelId": channel_id,
             "peerUserId": peer_user_id,
-            "selfHasActiveDevice": !has_pending_beep && membership.self_joined,
-            "peerHasActiveDevice": !has_pending_beep && membership.peer_joined && peer_device_connected,
+            "selfHasActiveDevice": projected_membership.self_joined,
+            "peerHasActiveDevice": projected_membership.peer_joined && peer_device_connected,
             "stateEpoch": "1",
             "serverTimestamp": "1970-01-01T00:00:00Z",
             "activeTransmitId": active_transmit_id,
@@ -1610,7 +1619,7 @@ where
                 "activeTransmitterUserId": active_transmitter_user_id
             },
             "audioReadiness": {
-                "self": { "kind": if membership.self_joined { "ready" } else { "unknown" } },
+                "self": { "kind": if projected_membership.self_joined { "ready" } else { "unknown" } },
                 "peer": { "kind": peer_audio_readiness },
                 "peerTargetDeviceId": peer_target_device_id.clone().unwrap_or(Value::Null)
             },
@@ -1858,6 +1867,16 @@ struct RuntimeMembership {
     has_both: bool,
     peer_device_connected: bool,
     peer_device_id: Option<String>,
+}
+
+impl RuntimeMembership {
+    fn projected_for_pending_beep(&self, has_pending_beep: bool) -> Self {
+        if has_pending_beep {
+            Self::default()
+        } else {
+            self.clone()
+        }
+    }
 }
 
 pub fn serve_one_connection<S, W>(
@@ -3833,6 +3852,105 @@ mod tests {
             "incoming-beep"
         );
         assert_eq!(recipient_state.body["membership"]["kind"], "absent");
+    }
+
+    #[test]
+    fn self_hosted_http_pending_beep_suppresses_stale_joined_membership_projection() {
+        let mut service = service();
+        let channel = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/channels/direct".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        let channel_id = channel.body["channelId"]
+            .as_str()
+            .expect("channel id")
+            .to_owned();
+
+        for (handle, device_id) in [("@avery", "device-a"), ("@blake", "device-b")] {
+            let join = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: format!("/v1/channels/{channel_id}/join"),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({ "deviceId": device_id }))
+                    .expect("body should encode"),
+            });
+            assert_eq!(join.status, 200);
+        }
+
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake",
+                "operationId": "connect-2"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(
+            create.body["channelId"]
+                .as_str()
+                .expect("created channel id"),
+            channel_id
+        );
+
+        let sender_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let recipient_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-b"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+        let sender_readiness = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/readiness/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let recipient_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-b".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(
+            sender_state.body["conversationStatus"]["kind"],
+            "outgoing-beep"
+        );
+        assert_eq!(sender_state.body["membership"]["kind"], "absent");
+        assert_eq!(sender_state.body["canTransmit"], false);
+        assert_eq!(
+            recipient_state.body["conversationStatus"]["kind"],
+            "incoming-beep"
+        );
+        assert_eq!(recipient_state.body["membership"]["kind"], "absent");
+        assert_eq!(sender_readiness.body["readiness"]["kind"], "inactive");
+        assert_eq!(sender_readiness.body["selfHasActiveDevice"], false);
+        assert_eq!(sender_readiness.body["peerHasActiveDevice"], false);
+        assert_eq!(
+            sender_readiness.body["audioReadiness"]["self"]["kind"],
+            "unknown"
+        );
+        assert_eq!(
+            sender_readiness.body["audioReadiness"]["peer"]["kind"],
+            "unknown"
+        );
+        assert_eq!(
+            recipient_summaries.body[0]["beepThreadProjection"]["kind"],
+            "incoming"
+        );
+        assert_eq!(recipient_summaries.body[0]["membership"]["kind"], "absent");
+        assert_eq!(recipient_summaries.body[0]["selfJoined"], false);
+        assert_eq!(recipient_summaries.body[0]["peerJoined"], false);
     }
 
     #[test]
