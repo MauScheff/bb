@@ -943,7 +943,9 @@ where
             });
         }
         if let Some(channel_id) = legacy_begin_transmit_channel_id(&request.path) {
-            if !body.get("requestingParticipantId").is_some() {
+            if self.state.channels.contains_key(channel_id)
+                || !body.get("requestingParticipantId").is_some()
+            {
                 let handle = request_handle(&request);
                 let device_id = required_string(&body, &["deviceId"], "deviceId")?.to_owned();
                 return Ok(HttpResponse {
@@ -1192,10 +1194,26 @@ where
         handle: &str,
         device_id: &str,
     ) -> Value {
-        self.state.next_transmit_id += 1;
-        let transmit_id = format!("transmit-{}", self.state.next_transmit_id);
         let normalized_handle = normalize_handle(handle);
         let self_user_id = user_id_for_handle(&normalized_handle);
+        let now_ms = runtime_now_millis();
+        if let Some(channel) = self.state.channels.get_mut(channel_id) {
+            clear_expired_app_transmit(channel, now_ms);
+            if let Some(active_handle) = channel.active_transmitter_handle.as_deref() {
+                if active_handle != normalized_handle {
+                    return serde_json::json!({
+                        "channelId": channel_id,
+                        "status": "denied",
+                        "reason": "current-talk-turn-active",
+                        "activeTransmitterUserId": user_id_for_handle(active_handle),
+                        "activeTransmitId": channel.active_transmit_id,
+                        "expiresAt": active_transmit_expires_at_value(Some(channel))
+                    });
+                }
+            }
+        }
+        self.state.next_transmit_id += 1;
+        let transmit_id = format!("transmit-{}", self.state.next_transmit_id);
         let peer_handle = self
             .peer_handle_for_channel(channel_id, handle)
             .unwrap_or_else(|| {
@@ -1218,7 +1236,7 @@ where
                 None
             }
         });
-        let started_at = runtime_iso8601_utc_millis(runtime_now_millis());
+        let started_at = runtime_iso8601_utc_millis(now_ms);
         let channel = self
             .state
             .channels
@@ -4388,6 +4406,71 @@ mod tests {
             body: Vec::new(),
         });
         assert_eq!(sender_after_end.body["conversationStatus"]["kind"], "ready");
+    }
+
+    #[test]
+    fn self_hosted_http_route_probe_full_app_begin_transmit_uses_live_channel_lease() {
+        let mut service = service();
+        let channel = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/channels/direct".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        let channel_id = channel.body["channelId"].as_str().expect("channel id");
+        for (handle, device_id) in [("@avery", "device-a"), ("@blake", "device-b")] {
+            let join = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: format!("/v1/channels/{channel_id}/join"),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({ "deviceId": device_id }))
+                    .expect("body should encode"),
+            });
+            assert_eq!(join.status, 200);
+        }
+
+        let begin = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: format!("/v1/channels/{channel_id}/begin-transmit"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-a",
+                "requestingParticipantId": "user-avery",
+                "requestingSessionEpoch": 0,
+                "targetParticipantId": "user-blake",
+                "operationId": "app-begin-1",
+                "policyVersion": "policy-v1",
+                "kernelVersion": "kernel-contract-v1"
+            }))
+            .expect("body should encode"),
+        });
+
+        assert_eq!(begin.status, 200);
+        assert_eq!(begin.body["status"], "transmitting");
+        assert_eq!(begin.body["targetUserId"], "user-blake");
+        assert_eq!(begin.body["targetDeviceId"], "device-b");
+
+        let simultaneous = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: format!("/v1/channels/{channel_id}/begin-transmit"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "requestingParticipantId": "user-blake",
+                "requestingSessionEpoch": 0,
+                "targetParticipantId": "user-avery",
+                "operationId": "app-begin-2",
+                "policyVersion": "policy-v1",
+                "kernelVersion": "kernel-contract-v1"
+            }))
+            .expect("body should encode"),
+        });
+
+        assert_eq!(simultaneous.status, 200);
+        assert_eq!(simultaneous.body["status"], "denied");
+        assert_eq!(simultaneous.body["reason"], "current-talk-turn-active");
+        assert_eq!(simultaneous.body["activeTransmitterUserId"], "user-avery");
     }
 
     #[test]
