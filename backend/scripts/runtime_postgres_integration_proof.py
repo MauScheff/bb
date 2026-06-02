@@ -48,6 +48,10 @@ REQUIRED_PROOFS = [
         "description": "profile names are stored in Postgres and survive separate runtime store instances",
     },
     {
+        "name": "durable-beep-threads",
+        "description": "Beep Threads, pending projections, and stale-action aliases are stored in Postgres and survive separate runtime store instances",
+    },
+    {
         "name": "redis-owner-record-cas",
         "description": "Redis owner-record CAS accepts fresh leases, rejects stale leases, accepts drain, decodes records, and cleans up keys",
     },

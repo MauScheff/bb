@@ -166,3 +166,36 @@ create table if not exists runtime_profiles (
   profile_name text not null,
   updated_at timestamptz not null default now()
 );
+
+create sequence if not exists runtime_beep_thread_seq;
+
+create table if not exists runtime_beep_threads (
+  beep_id text primary key,
+  channel_id text not null,
+  from_handle text not null,
+  to_handle text not null,
+  status text not null,
+  request_count bigint not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (status in ('pending', 'connected', 'cancelled', 'declined')),
+  check (request_count >= 1)
+);
+
+create unique index if not exists runtime_beep_threads_one_pending_by_channel
+  on runtime_beep_threads (channel_id)
+  where status = 'pending';
+
+create index if not exists runtime_beep_threads_pending_to_handle
+  on runtime_beep_threads (to_handle, updated_at)
+  where status = 'pending';
+
+create index if not exists runtime_beep_threads_pending_from_handle
+  on runtime_beep_threads (from_handle, updated_at)
+  where status = 'pending';
+
+create table if not exists runtime_beep_thread_aliases (
+  alias_beep_id text primary key,
+  channel_id text not null,
+  updated_at timestamptz not null default now()
+);

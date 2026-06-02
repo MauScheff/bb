@@ -41,7 +41,7 @@ Rust may call the kernel once per semantic command. It must not call Unison per 
 
 | State | Owner | Rule |
 | --- | --- | --- |
-| Account identity, profile names, remembered contacts | Postgres | Durable. Must survive runtime restart, deploy, and Redis flush. |
+| Account identity, profile names, remembered contacts, Beep Threads | Postgres | Durable. Must survive runtime restart, deploy, and Redis flush. Beep Thread pending projections and stale-action aliases are derived from this durable row set. |
 | Conversation, Participant, Device, Session, Presence, Readiness snapshots used by kernel decisions | Postgres | Durable enough to rebuild kernel input and fence Talk Turn decisions. |
 | Current Talk Turn, replay facts, operation idempotency, post-commit outbox, websocket authorization facts | Postgres | Durable control-plane truth. |
 | Websocket owner routing, drain/lease records, fast coordination records | Redis | Ephemeral. A Redis flush may force reconnect or re-election but must not delete identity, contacts, Conversation, Participant, Device, or Talk Turn truth. |

@@ -9,8 +9,9 @@ use std::{
 use crate::{
     http::{RuntimeHttpError, RuntimeHttpService, serve_stream_with_committer},
     postgres::{
-        DurableContactStore, KernelDecisionCommitter, RequestTalkTurnKernelWorker,
-        RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter, TalkTurnRenewalCommitter,
+        DurableBeepThreadStore, DurableContactStore, KernelDecisionCommitter,
+        RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter,
+        TalkTurnRenewalCommitter,
     },
     websocket_network::{
         AppCompatibleControlCommand, AppCompatibleControlCommandObserver,
@@ -36,6 +37,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableBeepThreadStore
         + Send
         + 'static,
 {
@@ -60,6 +62,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableBeepThreadStore
         + Send
         + 'static,
 {
@@ -124,6 +127,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableBeepThreadStore
         + Send
         + 'static,
 {

@@ -77,11 +77,24 @@ pub struct DurableConversationStore {
     current_talk_turns: BTreeMap<String, CurrentTalkTurnRow>,
     remembered_contacts_by_handle: BTreeMap<String, BTreeSet<String>>,
     profiles_by_handle: BTreeMap<String, String>,
+    beep_threads: BTreeMap<String, DurableBeepThread>,
+    beep_aliases_by_id: BTreeMap<String, String>,
+    next_beep_id: u64,
     replay_facts: Vec<KernelReplayFact>,
     post_commit_outbox: Vec<PostCommitOutboxRow>,
     operation_results: BTreeMap<(String, String), CommittedEffectPlan>,
     actor_operation_results: BTreeMap<(String, String), TalkTurnActorOperationResult>,
     talk_turn_actor_events: Vec<TalkTurnActorEventRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableBeepThread {
+    pub beep_id: String,
+    pub from_handle: String,
+    pub to_handle: String,
+    pub channel_id: String,
+    pub status: String,
+    pub request_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -337,6 +350,55 @@ pub trait DurableContactStore {
     fn profile_name(&mut self, handle: &str) -> Result<Option<String>, DurablePostgresError>;
 
     fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError>;
+}
+
+pub trait DurableBeepThreadStore {
+    fn create_or_refresh_beep_thread(
+        &mut self,
+        from_handle: &str,
+        to_handle: &str,
+        channel_id: &str,
+    ) -> Result<DurableBeepThread, DurablePostgresError>;
+
+    fn beep_thread(
+        &mut self,
+        beep_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError>;
+
+    fn set_beep_thread_status(
+        &mut self,
+        beep_id: &str,
+        status: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError>;
+
+    fn alias_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+        channel_id: &str,
+    ) -> Result<(), DurablePostgresError>;
+
+    fn alias_channel_for_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError>;
+
+    fn current_pending_beep_thread_id(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError>;
+
+    fn pending_beep_threads_for_handle(
+        &mut self,
+        handle: &str,
+        direction: &str,
+    ) -> Result<Vec<DurableBeepThread>, DurablePostgresError>;
+
+    fn pending_beep_thread_for_channel(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError>;
+
+    fn clear_beep_threads(&mut self) -> Result<usize, DurablePostgresError>;
 }
 
 pub trait PostCommitEffectSink {
@@ -2334,6 +2396,224 @@ impl DurableContactStore for PostgresDecisionCommitter {
     }
 }
 
+impl DurableBeepThreadStore for PostgresDecisionCommitter {
+    fn create_or_refresh_beep_thread(
+        &mut self,
+        from_handle: &str,
+        to_handle: &str,
+        channel_id: &str,
+    ) -> Result<DurableBeepThread, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let mut tx = client.transaction()?;
+        if let Some(row) = tx.query_opt(
+            "update runtime_beep_threads
+             set from_handle = $1,
+                 to_handle = $2,
+                 request_count = request_count + 1,
+                 updated_at = now()
+             where channel_id = $3 and status = 'pending'
+             returning beep_id, from_handle, to_handle, channel_id, status, request_count",
+            &[&from_handle, &to_handle, &channel_id],
+        )? {
+            let thread = beep_thread_from_sql(row)?;
+            tx.commit()?;
+            return Ok(thread);
+        }
+
+        let seq: i64 = tx
+            .query_one("select nextval('runtime_beep_thread_seq')", &[])?
+            .get(0);
+        let beep_id = format!("beep-{seq}");
+        let row = tx.query_one(
+            "insert into runtime_beep_threads (
+                beep_id,
+                channel_id,
+                from_handle,
+                to_handle,
+                status,
+                request_count
+             ) values ($1, $2, $3, $4, 'pending', 1)
+             returning beep_id, from_handle, to_handle, channel_id, status, request_count",
+            &[&beep_id, &channel_id, &from_handle, &to_handle],
+        )?;
+        let thread = beep_thread_from_sql(row)?;
+        tx.commit()?;
+        Ok(thread)
+    }
+
+    fn beep_thread(
+        &mut self,
+        beep_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client
+            .query_opt(
+                "select beep_id, from_handle, to_handle, channel_id, status, request_count
+                 from runtime_beep_threads
+                 where beep_id = $1",
+                &[&beep_id],
+            )?
+            .map(beep_thread_from_sql)
+            .transpose()
+    }
+
+    fn set_beep_thread_status(
+        &mut self,
+        beep_id: &str,
+        status: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client
+            .query_opt(
+                "update runtime_beep_threads
+                 set status = $2, updated_at = now()
+                 where beep_id = $1
+                 returning beep_id, from_handle, to_handle, channel_id, status, request_count",
+                &[&beep_id, &status],
+            )?
+            .map(beep_thread_from_sql)
+            .transpose()
+    }
+
+    fn alias_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+        channel_id: &str,
+    ) -> Result<(), DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client.execute(
+            "insert into runtime_beep_thread_aliases (alias_beep_id, channel_id)
+             values ($1, $2)
+             on conflict (alias_beep_id)
+             do update set channel_id = excluded.channel_id, updated_at = now()",
+            &[&alias_beep_id, &channel_id],
+        )?;
+        Ok(())
+    }
+
+    fn alias_channel_for_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        Ok(client
+            .query_opt(
+                "select channel_id
+                 from runtime_beep_thread_aliases
+                 where alias_beep_id = $1",
+                &[&alias_beep_id],
+            )?
+            .map(|row| row.get::<_, String>("channel_id")))
+    }
+
+    fn current_pending_beep_thread_id(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        Ok(client
+            .query_opt(
+                "select beep_id
+                 from runtime_beep_threads
+                 where channel_id = $1 and status = 'pending'",
+                &[&channel_id],
+            )?
+            .map(|row| row.get::<_, String>("beep_id")))
+    }
+
+    fn pending_beep_threads_for_handle(
+        &mut self,
+        handle: &str,
+        direction: &str,
+    ) -> Result<Vec<DurableBeepThread>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let sql = match direction {
+            "incoming" => {
+                "select beep_id, from_handle, to_handle, channel_id, status, request_count
+                 from runtime_beep_threads
+                 where status = 'pending' and to_handle = $1
+                 order by updated_at, beep_id"
+            }
+            "outgoing" => {
+                "select beep_id, from_handle, to_handle, channel_id, status, request_count
+                 from runtime_beep_threads
+                 where status = 'pending' and from_handle = $1
+                 order by updated_at, beep_id"
+            }
+            _ => return Ok(Vec::new()),
+        };
+        client
+            .query(sql, &[&handle])?
+            .into_iter()
+            .map(beep_thread_from_sql)
+            .collect()
+    }
+
+    fn pending_beep_thread_for_channel(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client
+            .query_opt(
+                "select beep_id, from_handle, to_handle, channel_id, status, request_count
+                 from runtime_beep_threads
+                 where status = 'pending' and channel_id = $1",
+                &[&channel_id],
+            )?
+            .map(beep_thread_from_sql)
+            .transpose()
+    }
+
+    fn clear_beep_threads(&mut self) -> Result<usize, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let mut tx = client.transaction()?;
+        tx.execute("delete from runtime_beep_thread_aliases", &[])?;
+        let removed = tx.execute("delete from runtime_beep_threads", &[])?;
+        tx.commit()?;
+        Ok(removed as usize)
+    }
+}
+
+fn beep_thread_from_sql(row: postgres::Row) -> Result<DurableBeepThread, DurablePostgresError> {
+    let request_count: i64 = row.get("request_count");
+    Ok(DurableBeepThread {
+        beep_id: row.get("beep_id"),
+        from_handle: row.get("from_handle"),
+        to_handle: row.get("to_handle"),
+        channel_id: row.get("channel_id"),
+        status: row.get("status"),
+        request_count: i64_to_u64("request_count", request_count)?,
+    })
+}
+
 fn actor_operation_id(command: &Value) -> Option<String> {
     path_value(command, &["operationId"])
         .and_then(Value::as_str)
@@ -3302,6 +3582,128 @@ impl DurableContactStore for DurableConversationStore {
     fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError> {
         let removed = self.profiles_by_handle.len();
         self.profiles_by_handle.clear();
+        Ok(removed)
+    }
+}
+
+impl DurableBeepThreadStore for DurableConversationStore {
+    fn create_or_refresh_beep_thread(
+        &mut self,
+        from_handle: &str,
+        to_handle: &str,
+        channel_id: &str,
+    ) -> Result<DurableBeepThread, DurablePostgresError> {
+        if let Some(beep_id) = self
+            .beep_threads
+            .values()
+            .find(|thread| thread.channel_id == channel_id && thread.status == "pending")
+            .map(|thread| thread.beep_id.clone())
+        {
+            let thread = self
+                .beep_threads
+                .get_mut(&beep_id)
+                .expect("pending Beep Thread id should exist");
+            thread.from_handle = from_handle.to_owned();
+            thread.to_handle = to_handle.to_owned();
+            thread.request_count += 1;
+            return Ok(thread.clone());
+        }
+
+        self.next_beep_id += 1;
+        let thread = DurableBeepThread {
+            beep_id: format!("beep-{}", self.next_beep_id),
+            from_handle: from_handle.to_owned(),
+            to_handle: to_handle.to_owned(),
+            channel_id: channel_id.to_owned(),
+            status: "pending".to_owned(),
+            request_count: 1,
+        };
+        self.beep_threads
+            .insert(thread.beep_id.clone(), thread.clone());
+        Ok(thread)
+    }
+
+    fn beep_thread(
+        &mut self,
+        beep_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        Ok(self.beep_threads.get(beep_id).cloned())
+    }
+
+    fn set_beep_thread_status(
+        &mut self,
+        beep_id: &str,
+        status: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        let Some(thread) = self.beep_threads.get_mut(beep_id) else {
+            return Ok(None);
+        };
+        thread.status = status.to_owned();
+        Ok(Some(thread.clone()))
+    }
+
+    fn alias_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+        channel_id: &str,
+    ) -> Result<(), DurablePostgresError> {
+        self.beep_aliases_by_id
+            .insert(alias_beep_id.to_owned(), channel_id.to_owned());
+        Ok(())
+    }
+
+    fn alias_channel_for_beep_thread(
+        &mut self,
+        alias_beep_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError> {
+        Ok(self.beep_aliases_by_id.get(alias_beep_id).cloned())
+    }
+
+    fn current_pending_beep_thread_id(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<String>, DurablePostgresError> {
+        Ok(self
+            .beep_threads
+            .values()
+            .find(|thread| thread.channel_id == channel_id && thread.status == "pending")
+            .map(|thread| thread.beep_id.clone()))
+    }
+
+    fn pending_beep_threads_for_handle(
+        &mut self,
+        handle: &str,
+        direction: &str,
+    ) -> Result<Vec<DurableBeepThread>, DurablePostgresError> {
+        Ok(self
+            .beep_threads
+            .values()
+            .filter(|thread| thread.status == "pending")
+            .filter(|thread| match direction {
+                "incoming" => thread.to_handle == handle,
+                "outgoing" => thread.from_handle == handle,
+                _ => false,
+            })
+            .cloned()
+            .collect())
+    }
+
+    fn pending_beep_thread_for_channel(
+        &mut self,
+        channel_id: &str,
+    ) -> Result<Option<DurableBeepThread>, DurablePostgresError> {
+        Ok(self
+            .beep_threads
+            .values()
+            .find(|thread| thread.channel_id == channel_id && thread.status == "pending")
+            .cloned())
+    }
+
+    fn clear_beep_threads(&mut self) -> Result<usize, DurablePostgresError> {
+        let removed = self.beep_threads.len();
+        self.beep_threads.clear();
+        self.beep_aliases_by_id.clear();
+        self.next_beep_id = 0;
         Ok(removed)
     }
 }

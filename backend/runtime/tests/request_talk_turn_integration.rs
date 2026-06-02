@@ -6,8 +6,8 @@ use turbo_runtime::owner_record_transport::{
     OwnerRecordTransport, RedisOwnerRecordTransport, redis_owner_record_key,
 };
 use turbo_runtime::postgres::{
-    DurableContactStore, KernelDecisionCommitter, KernelDecisionEnvelope, POSTGRES_SCHEMA_SQL,
-    PostgresDecisionCommitter, PostgresRequestTalkTurnSnapshotLoader,
+    DurableBeepThreadStore, DurableContactStore, KernelDecisionCommitter, KernelDecisionEnvelope,
+    POSTGRES_SCHEMA_SQL, PostgresDecisionCommitter, PostgresRequestTalkTurnSnapshotLoader,
     RecordingPostCommitEffectSink, RequestTalkTurnSnapshotLoader, SnapshotPolicyConfig,
 };
 use turbo_runtime::websocket::{WebSocketAuthorizationDecision, WebSocketAuthorizationFact};
@@ -28,6 +28,8 @@ fn request_talk_turn_integration_applies_schema_and_enforces_one_current_turn() 
     client
         .batch_execute(
             "truncate table
+                runtime_beep_thread_aliases,
+                runtime_beep_threads,
                 runtime_profiles,
                 runtime_remembered_contacts,
                 runtime_post_commit_outbox,
@@ -183,6 +185,53 @@ fn request_talk_turn_integration_applies_schema_and_enforces_one_current_turn() 
             .profile_name("@integration-b")
             .expect("profile name should reload from Postgres"),
         Some("Integration B".to_owned())
+    );
+    let direct_channel_id = "direct-user-integration-a-user-integration-b";
+    let durable_beep = committer
+        .create_or_refresh_beep_thread("@integration-a", "@integration-b", direct_channel_id)
+        .expect("Postgres committer should persist Beep Threads");
+    assert_eq!(durable_beep.request_count, 1);
+    assert_eq!(durable_beep.status, "pending");
+    committer
+        .alias_beep_thread(&durable_beep.beep_id, &durable_beep.channel_id)
+        .expect("Postgres committer should persist stale Beep Thread aliases");
+    let mut restarted_beep_committer = PostgresDecisionCommitter::new(
+        Client::connect(&database_url, NoTls).expect("restarted Beep committer should connect"),
+    );
+    assert_eq!(
+        restarted_beep_committer
+            .pending_beep_threads_for_handle("@integration-b", "incoming")
+            .expect("incoming Beep Threads should reload from Postgres"),
+        vec![durable_beep.clone()]
+    );
+    assert_eq!(
+        restarted_beep_committer
+            .pending_beep_threads_for_handle("@integration-a", "outgoing")
+            .expect("outgoing Beep Threads should reload from Postgres"),
+        vec![durable_beep.clone()]
+    );
+    assert_eq!(
+        restarted_beep_committer
+            .current_pending_beep_thread_id(direct_channel_id)
+            .expect("current pending Beep Thread should reload from Postgres"),
+        Some(durable_beep.beep_id.clone())
+    );
+    assert_eq!(
+        restarted_beep_committer
+            .alias_channel_for_beep_thread(&durable_beep.beep_id)
+            .expect("stale Beep Thread alias should reload from Postgres"),
+        Some(durable_beep.channel_id.clone())
+    );
+    let connected_beep = restarted_beep_committer
+        .set_beep_thread_status(&durable_beep.beep_id, "connected")
+        .expect("terminal Beep Thread status should persist")
+        .expect("terminal Beep Thread should exist");
+    assert_eq!(connected_beep.status, "connected");
+    assert!(
+        restarted_beep_committer
+            .pending_beep_threads_for_handle("@integration-b", "incoming")
+            .expect("terminal Beep Threads should not project as pending")
+            .is_empty()
     );
 
     let committed = committer

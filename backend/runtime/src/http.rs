@@ -12,9 +12,9 @@ use serde_json::Value;
 
 use crate::{
     postgres::{
-        DurableContactStore, DurablePostgresError, KernelDecisionCommitter,
-        RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter,
-        TalkTurnRenewalCommitter,
+        DurableBeepThread, DurableBeepThreadStore, DurableContactStore, DurablePostgresError,
+        KernelDecisionCommitter, RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader,
+        TalkTurnReleaseCommitter, TalkTurnRenewalCommitter,
     },
     routes::{RuntimeRouteError, SelfHostedRouteService},
     shadow::LegacyBeginTransmitInput,
@@ -116,15 +116,12 @@ impl RuntimeApnsWorkerConfig {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct RuntimeHttpState {
-    beeps: BTreeMap<String, RuntimeBeep>,
-    beep_aliases_by_id: BTreeMap<String, String>,
     channels: BTreeMap<String, RuntimeChannel>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
     wake_events: Vec<Value>,
     invariant_events: Vec<Value>,
-    next_beep_id: u64,
     next_transmit_id: u64,
 }
 
@@ -153,16 +150,6 @@ struct RuntimePresence {
     device_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RuntimeBeep {
-    beep_id: String,
-    from_handle: String,
-    to_handle: String,
-    channel_id: String,
-    status: String,
-    request_count: u64,
-}
-
 struct AppPttPushRequest<'a> {
     event: &'a str,
     channel_id: &'a str,
@@ -184,7 +171,8 @@ where
     C: KernelDecisionCommitter
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
-        + DurableContactStore,
+        + DurableContactStore
+        + DurableBeepThreadStore,
 {
     pub fn new(route_service: SelfHostedRouteService<S, W, C>) -> Self {
         Self {
@@ -339,7 +327,7 @@ where
         if request.method == "GET" {
             if let Some(direction) = beeps_list_direction(&request.path) {
                 let handle = request_handle(&request);
-                let beeps = self.beeps_for_handle(handle, direction);
+                let beeps = self.beeps_for_handle(handle, direction)?;
                 return Ok(HttpResponse {
                     status: 200,
                     body: Value::Array(beeps),
@@ -464,14 +452,14 @@ where
                 let handle = request_handle(&request);
                 return Ok(HttpResponse {
                     status: 200,
-                    body: self.channel_state_response(channel_id, handle),
+                    body: self.channel_state_response(channel_id, handle)?,
                 });
             }
             if let Some((channel_id, _device_id)) = channel_readiness_path(&request.path) {
                 let handle = request_handle(&request);
                 return Ok(HttpResponse {
                     status: 200,
-                    body: self.channel_readiness_response(channel_id, handle),
+                    body: self.channel_readiness_response(channel_id, handle)?,
                 });
             }
         }
@@ -619,7 +607,7 @@ where
             });
         }
         if is_dev_reset_path(&request.path) {
-            let cleared_beeps = self.state.beeps.len();
+            let cleared_beeps = self.route_service.committer_mut().clear_beep_threads()?;
             let cleared_channels = self.state.channels.len();
             let cleared_remembered_contacts = self
                 .route_service
@@ -628,14 +616,12 @@ where
             let cleared_profiles = self.route_service.committer_mut().clear_profiles()?;
             let cleared_direct_quic_identities = self.state.direct_quic_identities_by_device.len();
             let cleared_presence_entries = self.state.presence_by_handle.len();
-            self.state.beeps.clear();
             self.state.channels.clear();
             self.state.direct_quic_identities_by_device.clear();
             self.state.presence_by_handle.clear();
             self.state.diagnostics_by_device.clear();
             self.state.wake_events.clear();
             self.state.invariant_events.clear();
-            self.state.next_beep_id = 0;
             self.state.next_transmit_id = 0;
             return Ok(HttpResponse {
                 status: 200,
@@ -713,7 +699,7 @@ where
                         .map(handle_for_user_id)
                 })
                 .unwrap_or_else(|| "@peer".to_owned());
-            let beep = self.create_beep(handle, &friend_handle);
+            let beep = self.create_beep(handle, &friend_handle)?;
             return Ok(HttpResponse {
                 status: 200,
                 body: beep_response(&beep, handle),
@@ -721,32 +707,47 @@ where
         }
         if let Some((beep_id, action)) = beep_action_path(&request.path) {
             let handle = request_handle(&request);
-            let Some(effective_beep_id) = self.resolve_beep_action_id(beep_id, action) else {
+            let Some(effective_beep_id) = self.resolve_beep_action_id(beep_id, action)? else {
                 return Ok(error_response(404, "beep not found"));
             };
-            let Some(beep) = self.state.beeps.get_mut(&effective_beep_id) else {
+            let Some(beep) = self
+                .route_service
+                .committer_mut()
+                .beep_thread(&effective_beep_id)?
+            else {
                 return Ok(error_response(404, "beep not found"));
             };
             match action {
                 "accept" => {
-                    beep.status = "connected".to_owned();
-                    self.state
-                        .beep_aliases_by_id
-                        .insert(beep.beep_id.clone(), beep.channel_id.clone());
+                    let beep = self
+                        .route_service
+                        .committer_mut()
+                        .set_beep_thread_status(&effective_beep_id, "connected")?
+                        .unwrap_or(beep);
+                    self.route_service
+                        .committer_mut()
+                        .alias_beep_thread(&beep.beep_id, &beep.channel_id)?;
                     return Ok(HttpResponse {
                         status: 200,
-                        body: beep_response(beep, handle),
+                        body: beep_response(&beep, handle),
                     });
                 }
                 "decline" | "cancel" => {
                     let beep = self
-                        .state
-                        .beeps
-                        .remove(&effective_beep_id)
-                        .expect("beep exists");
-                    self.state
-                        .beep_aliases_by_id
-                        .insert(beep.beep_id.clone(), beep.channel_id.clone());
+                        .route_service
+                        .committer_mut()
+                        .set_beep_thread_status(
+                            &effective_beep_id,
+                            if action == "decline" {
+                                "declined"
+                            } else {
+                                "cancelled"
+                            },
+                        )?
+                        .unwrap_or(beep);
+                    self.route_service
+                        .committer_mut()
+                        .alias_beep_thread(&beep.beep_id, &beep.channel_id)?;
                     return Ok(HttpResponse {
                         status: 200,
                         body: beep_response(&beep, handle),
@@ -955,70 +956,70 @@ where
         Ok(error_response(404, "not found"))
     }
 
-    fn create_beep(&mut self, from_handle: &str, to_handle: &str) -> RuntimeBeep {
+    fn create_beep(
+        &mut self,
+        from_handle: &str,
+        to_handle: &str,
+    ) -> Result<DurableBeepThread, RuntimeHttpError> {
         let from_handle = normalize_handle(from_handle);
         let to_handle = normalize_handle(to_handle);
-        if let Some(beep) = self.state.beeps.values_mut().find(|beep| {
-            beep.status == "pending"
-                && ((beep.from_handle == from_handle && beep.to_handle == to_handle)
-                    || (beep.from_handle == to_handle && beep.to_handle == from_handle))
-        }) {
-            beep.from_handle = from_handle;
-            beep.to_handle = to_handle;
-            beep.request_count += 1;
-            return beep.clone();
-        }
-
-        self.state.next_beep_id += 1;
         let channel_id = channel_id_for_pair(&from_handle, &to_handle);
-        let beep = RuntimeBeep {
-            beep_id: format!("beep-{}", self.state.next_beep_id),
-            from_handle,
-            to_handle,
-            channel_id,
-            status: "pending".to_owned(),
-            request_count: 1,
-        };
-        self.state.beeps.insert(beep.beep_id.clone(), beep.clone());
-        self.ensure_channel_participants(&beep.channel_id, &beep.from_handle, &beep.to_handle);
-        beep
+        let beep = self
+            .route_service
+            .committer_mut()
+            .create_or_refresh_beep_thread(&from_handle, &to_handle, &channel_id)?;
+        self.ensure_channel_participants(&channel_id, &from_handle, &to_handle);
+        Ok(beep)
     }
 
-    fn resolve_beep_action_id(&self, requested_beep_id: &str, action: &str) -> Option<String> {
-        if let Some(beep) = self.state.beeps.get(requested_beep_id) {
+    fn resolve_beep_action_id(
+        &mut self,
+        requested_beep_id: &str,
+        action: &str,
+    ) -> Result<Option<String>, RuntimeHttpError> {
+        if let Some(beep) = self
+            .route_service
+            .committer_mut()
+            .beep_thread(requested_beep_id)?
+        {
             if action == "accept" && beep.status != "pending" {
-                if let Some(current_id) = self.current_pending_beep_id_for_channel(&beep.channel_id)
+                if let Some(current_id) = self
+                    .route_service
+                    .committer_mut()
+                    .current_pending_beep_thread_id(&beep.channel_id)?
                 {
-                    return Some(current_id);
+                    return Ok(Some(current_id));
                 }
             }
-            return Some(requested_beep_id.to_owned());
+            return Ok(Some(requested_beep_id.to_owned()));
         }
 
-        let channel_id = self.state.beep_aliases_by_id.get(requested_beep_id)?;
-        self.current_pending_beep_id_for_channel(channel_id)
+        let Some(channel_id) = self
+            .route_service
+            .committer_mut()
+            .alias_channel_for_beep_thread(requested_beep_id)?
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .route_service
+            .committer_mut()
+            .current_pending_beep_thread_id(&channel_id)?)
     }
 
-    fn current_pending_beep_id_for_channel(&self, channel_id: &str) -> Option<String> {
-        self.state
-            .beeps
-            .values()
-            .find(|beep| beep.status == "pending" && beep.channel_id == channel_id)
-            .map(|beep| beep.beep_id.clone())
-    }
-
-    fn beeps_for_handle(&self, handle: &str, direction: &str) -> Vec<Value> {
-        self.state
-            .beeps
-            .values()
-            .filter(|beep| beep.status == "pending")
-            .filter(|beep| match direction {
-                "incoming" => beep.to_handle == normalize_handle(handle),
-                "outgoing" => beep.from_handle == normalize_handle(handle),
-                _ => false,
-            })
-            .map(|beep| beep_response(beep, handle))
-            .collect()
+    fn beeps_for_handle(
+        &mut self,
+        handle: &str,
+        direction: &str,
+    ) -> Result<Vec<Value>, RuntimeHttpError> {
+        let normalized_handle = normalize_handle(handle);
+        Ok(self
+            .route_service
+            .committer_mut()
+            .pending_beep_threads_for_handle(&normalized_handle, direction)?
+            .iter()
+            .map(|beep| beep_response(beep, &normalized_handle))
+            .collect())
     }
 
     fn contact_summaries_for_handle(
@@ -1027,16 +1028,22 @@ where
     ) -> Result<Vec<Value>, RuntimeHttpError> {
         let normalized_handle = normalize_handle(handle);
         let mut peers_by_channel_id = BTreeMap::new();
-        for (channel_id, channel) in &self.state.channels {
+        let transient_channels: Vec<(String, RuntimeChannel)> = self
+            .state
+            .channels
+            .iter()
+            .map(|(channel_id, channel)| (channel_id.clone(), channel.clone()))
+            .collect();
+        for (channel_id, channel) in transient_channels {
             if channel
                 .participants_by_handle
                 .contains_key(&normalized_handle)
             {
-                let membership = self.channel_membership(channel_id, &normalized_handle);
+                let membership = self.channel_membership(&channel_id, &normalized_handle);
                 let (has_incoming_beep, has_outgoing_beep, _) =
-                    self.beep_projection_for_channel(channel_id, &normalized_handle);
+                    self.beep_projection_for_channel(&channel_id, &normalized_handle)?;
                 let has_active_transmit =
-                    active_transmitter_for_handle(Some(channel), &normalized_handle).is_some();
+                    active_transmitter_for_handle(Some(&channel), &normalized_handle).is_some();
                 let should_project_channel = has_incoming_beep
                     || has_outgoing_beep
                     || membership.self_joined
@@ -1053,7 +1060,7 @@ where
                     .find(|candidate| *candidate != &normalized_handle)
                     .cloned();
                 if let Some(peer_handle) = peer_handle {
-                    peers_by_channel_id.insert(channel_id.clone(), peer_handle);
+                    peers_by_channel_id.insert(channel_id, peer_handle);
                 }
             }
         }
@@ -1078,21 +1085,21 @@ where
                 handle,
                 &peer_handle,
                 &profile_name,
-            ));
+            )?);
         }
         Ok(summaries)
     }
 
     fn contact_summary_for_channel(
-        &self,
+        &mut self,
         channel_id: &str,
         handle: &str,
         peer_handle: &str,
         profile_name: &str,
-    ) -> Value {
+    ) -> Result<Value, RuntimeHttpError> {
         let membership = self.channel_membership(channel_id, handle);
         let (has_incoming_beep, has_outgoing_beep, request_count) =
-            self.beep_projection_for_channel(channel_id, handle);
+            self.beep_projection_for_channel(channel_id, handle)?;
         let badge_status = summary_status_kind(
             has_incoming_beep,
             has_outgoing_beep,
@@ -1105,7 +1112,7 @@ where
             active_transmitter_user_id(self.state.channels.get(channel_id));
         let peer_user_id = user_id_for_handle(peer_handle);
         let peer_device_connected = membership.peer_device_connected;
-        serde_json::json!({
+        Ok(serde_json::json!({
             "userId": peer_user_id,
             "handle": peer_handle,
             "publicId": peer_handle,
@@ -1138,7 +1145,7 @@ where
                 "kind": badge_status,
                 "activeTransmitterUserId": active_transmitter_user_id
             }
-        })
+        }))
     }
 
     fn begin_app_transmit_response(
@@ -1447,7 +1454,11 @@ where
         }
     }
 
-    fn channel_state_response(&self, channel_id: &str, handle: &str) -> Value {
+    fn channel_state_response(
+        &mut self,
+        channel_id: &str,
+        handle: &str,
+    ) -> Result<Value, RuntimeHttpError> {
         let self_user_id = user_id_for_handle(handle);
         let peer_handle = self
             .peer_handle_for_channel(channel_id, handle)
@@ -1456,7 +1467,7 @@ where
             });
         let peer_user_id = user_id_for_handle(&peer_handle);
         let (has_incoming_beep, has_outgoing_beep, request_count) =
-            self.beep_projection_for_channel(channel_id, handle);
+            self.beep_projection_for_channel(channel_id, handle)?;
         let membership = self.channel_membership(channel_id, handle);
         let channel = self.state.channels.get(channel_id);
         let active_transmit_id = channel
@@ -1479,7 +1490,7 @@ where
             },
         };
         let has_pending_beep = has_incoming_beep || has_outgoing_beep;
-        serde_json::json!({
+        Ok(serde_json::json!({
             "channelId": channel_id,
             "selfUserId": self_user_id,
             "peerUserId": peer_user_id,
@@ -1510,10 +1521,14 @@ where
                 "kind": status,
                 "activeTransmitterUserId": active_transmitter_user_id
             }
-        })
+        }))
     }
 
-    fn channel_readiness_response(&self, channel_id: &str, handle: &str) -> Value {
+    fn channel_readiness_response(
+        &mut self,
+        channel_id: &str,
+        handle: &str,
+    ) -> Result<Value, RuntimeHttpError> {
         let self_user_id = user_id_for_handle(handle);
         let peer_handle = self
             .peer_handle_for_channel(channel_id, handle)
@@ -1522,7 +1537,7 @@ where
             });
         let peer_user_id = user_id_for_handle(&peer_handle);
         let (has_incoming_beep, has_outgoing_beep, _) =
-            self.beep_projection_for_channel(channel_id, handle);
+            self.beep_projection_for_channel(channel_id, handle)?;
         let membership = self.channel_membership(channel_id, handle);
         let has_pending_beep = has_incoming_beep || has_outgoing_beep;
         let channel = self.state.channels.get(channel_id);
@@ -1576,7 +1591,7 @@ where
         let peer_wake_target_device_id = peer_wake_token
             .map(|token| Value::String(token.device_id.clone()))
             .unwrap_or(Value::Null);
-        serde_json::json!({
+        Ok(serde_json::json!({
             "channelId": channel_id,
             "peerUserId": peer_user_id,
             "selfHasActiveDevice": !has_pending_beep && membership.self_joined,
@@ -1602,27 +1617,27 @@ where
                     "targetDeviceId": peer_wake_target_device_id
                 }
             }
-        })
+        }))
     }
 
-    fn beep_projection_for_channel(&self, channel_id: &str, handle: &str) -> (bool, bool, u64) {
+    fn beep_projection_for_channel(
+        &mut self,
+        channel_id: &str,
+        handle: &str,
+    ) -> Result<(bool, bool, u64), RuntimeHttpError> {
         let normalized_handle = normalize_handle(handle);
-        let mut has_incoming = false;
-        let mut has_outgoing = false;
-        let mut request_count = 0;
-        for beep in self.state.beeps.values() {
-            if beep.channel_id != channel_id || beep.status != "pending" {
-                continue;
-            }
-            if beep.to_handle == normalized_handle {
-                has_incoming = true;
-            }
-            if beep.from_handle == normalized_handle {
-                has_outgoing = true;
-            }
-            request_count = request_count.max(beep.request_count);
-        }
-        (has_incoming, has_outgoing, request_count)
+        let Some(beep) = self
+            .route_service
+            .committer_mut()
+            .pending_beep_thread_for_channel(channel_id)?
+        else {
+            return Ok((false, false, 0));
+        };
+        Ok((
+            beep.to_handle == normalized_handle,
+            beep.from_handle == normalized_handle,
+            beep.request_count,
+        ))
     }
 
     fn ensure_channel_participants(
@@ -1840,8 +1855,10 @@ pub fn serve_one_connection<S, W>(
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    crate::postgres::DurableConversationStore:
-        TalkTurnRenewalCommitter + TalkTurnReleaseCommitter + DurableContactStore,
+    crate::postgres::DurableConversationStore: TalkTurnRenewalCommitter
+        + TalkTurnReleaseCommitter
+        + DurableContactStore
+        + DurableBeepThreadStore,
 {
     let (mut stream, _) = listener.accept()?;
     let request = read_http_request(&mut stream)?;
@@ -1863,7 +1880,8 @@ where
     C: KernelDecisionCommitter
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
-        + DurableContactStore,
+        + DurableContactStore
+        + DurableBeepThreadStore,
 {
     let (mut stream, _) = listener.accept()?;
     serve_stream_with_committer(&mut stream, service)
@@ -1879,7 +1897,8 @@ where
     C: KernelDecisionCommitter
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
-        + DurableContactStore,
+        + DurableContactStore
+        + DurableBeepThreadStore,
 {
     let request = read_http_request(stream)?;
     let response = service
@@ -1900,7 +1919,8 @@ where
     C: KernelDecisionCommitter
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
-        + DurableContactStore,
+        + DurableContactStore
+        + DurableBeepThreadStore,
 {
     loop {
         serve_one_connection_with_committer(listener, service)?;
@@ -2593,7 +2613,7 @@ fn dev_event(handle: &str, body: &Value) -> Value {
     Value::Object(event)
 }
 
-fn beep_response(beep: &RuntimeBeep, handle: &str) -> Value {
+fn beep_response(beep: &DurableBeepThread, handle: &str) -> Value {
     let normalized_handle = normalize_handle(handle);
     let direction = if beep.to_handle == normalized_handle {
         "incoming"
