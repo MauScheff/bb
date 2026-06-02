@@ -1636,6 +1636,12 @@ where
         let peer_wake_target_device_id = peer_wake_token
             .map(|token| Value::String(token.device_id.clone()))
             .unwrap_or(Value::Null);
+        let peer_direct_quic_identity = projected_membership
+            .peer_device_id
+            .as_ref()
+            .and_then(|device_id| self.state.direct_quic_identities_by_device.get(device_id))
+            .cloned()
+            .unwrap_or(Value::Null);
         Ok(serde_json::json!({
             "channelId": channel_id,
             "peerUserId": peer_user_id,
@@ -1661,7 +1667,8 @@ where
                     "kind": peer_wake_readiness,
                     "targetDeviceId": peer_wake_target_device_id
                 }
-            }
+            },
+            "peerDirectQuicIdentity": peer_direct_quic_identity
         }))
     }
 
@@ -4067,6 +4074,27 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_projects_join_membership_by_perspective() {
         let mut service = service();
+        for (handle, device_id, fingerprint) in [
+            ("@avery", "device-a", "sha256:avery-direct-quic"),
+            ("@blake", "device-b", "sha256:blake-direct-quic"),
+        ] {
+            let register = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: "/v1/devices/register".to_owned(),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({
+                    "deviceId": device_id,
+                    "deviceLabel": device_id,
+                    "directQuicIdentity": {
+                        "fingerprint": fingerprint,
+                        "certificateDerBase64": "must-not-leak"
+                    }
+                }))
+                .expect("body should encode"),
+            });
+            assert_eq!(register.status, 200);
+        }
+
         let channel = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/channels/direct".to_owned(),
@@ -4176,6 +4204,18 @@ mod tests {
         assert_eq!(
             a_readiness_after_both_join.body["peerHasActiveDevice"],
             true
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerDirectQuicIdentity"]["fingerprint"],
+            "sha256:blake-direct-quic"
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerDirectQuicIdentity"]["status"],
+            "active"
+        );
+        assert!(
+            a_readiness_after_both_join.body["peerDirectQuicIdentity"]["certificateDerBase64"]
+                .is_null()
         );
 
         let a_summaries_after_both_join = service.handle(HttpRequest {
