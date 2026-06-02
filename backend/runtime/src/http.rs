@@ -1020,6 +1020,22 @@ where
                 .participants_by_handle
                 .contains_key(&normalized_handle)
             {
+                let membership = self.channel_membership(channel_id, &normalized_handle);
+                let (has_incoming_beep, has_outgoing_beep, _) =
+                    self.beep_projection_for_channel(channel_id, &normalized_handle);
+                let has_active_transmit =
+                    active_transmitter_for_handle(Some(channel), &normalized_handle).is_some();
+                let should_project_channel =
+                    has_incoming_beep
+                    || has_outgoing_beep
+                    || membership.self_joined
+                    || membership.peer_joined
+                    || membership.peer_device_connected
+                    || has_active_transmit;
+                if !should_project_channel {
+                    continue;
+                }
+
                 let peer_handle = channel
                     .participants_by_handle
                     .keys()
@@ -3503,6 +3519,43 @@ mod tests {
         );
         assert_eq!(recipient_summaries.body[0]["hasIncomingBeep"], true);
         assert_eq!(recipient_summaries.body[0]["requestCount"], 1);
+    }
+
+    #[test]
+    fn self_hosted_http_route_probe_cancelled_beep_does_not_leave_ghost_contact_summary() {
+        let mut service = service();
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "friendHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        let beep_id = create.body["beepId"].as_str().expect("beep id");
+
+        let cancel = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: format!("/v1/beeps/{beep_id}/cancel"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(cancel.status, 200);
+
+        let avery_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-b".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(avery_summaries.body.as_array().expect("summaries").len(), 0);
+        assert_eq!(blake_summaries.body.as_array().expect("summaries").len(), 0);
     }
 
     #[test]

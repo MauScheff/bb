@@ -895,6 +895,28 @@ extension PTTViewModel {
         }
 
         do {
+            try await deletePendingBeepProjection(
+                for: existingContact,
+                contactID: contactID,
+                backend: backend
+            )
+        } catch {
+            let message = error.localizedDescription
+            backendStatusMessage = "Delete failed: \(message)"
+            diagnostics.record(
+                .backend,
+                level: .error,
+                message: "Delete contact failed while clearing Beep",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "handle": existingContact.handle,
+                    "error": message,
+                ]
+            )
+            return false
+        }
+
+        do {
             _ = try await backend.forgetContact(
                 otherHandle: existingContact.remoteUserId == nil ? existingContact.handle : nil,
                 otherUserId: existingContact.remoteUserId
@@ -950,6 +972,48 @@ extension PTTViewModel {
         await refreshContactSummaries()
         await refreshBeeps()
         return contact(for: contactID) == nil
+    }
+
+    private func deletePendingBeepProjection(
+        for contact: Contact,
+        contactID: UUID,
+        backend: BackendServices
+    ) async throws {
+        if let outgoingBeep = outgoingBeepByContactID[contactID] {
+            do {
+                _ = try await backend.cancelBeep(beepId: outgoingBeep.beepId)
+                await waitForBeepToDisappear(
+                    beepID: outgoingBeep.beepId,
+                    contactID: contactID,
+                    handle: contact.handle,
+                    label: "Deleted contact outgoing Beep cancel",
+                    fetchBeeps: { try await backend.outgoingBeeps() }
+                )
+            } catch {
+                guard shouldIgnoreBeepNotFoundFailure(error) else { throw error }
+            }
+        }
+
+        if let incomingBeep = rawIncomingBeepByContactID[contactID] {
+            do {
+                markIncomingBeepHandledLocally(
+                    contactID: contactID,
+                    beep: incomingBeep,
+                    relationship: beepThreadProjection(for: contactID),
+                    reason: "delete-contact"
+                )
+                _ = try await backend.declineBeep(beepId: incomingBeep.beepId)
+                await waitForBeepToDisappear(
+                    beepID: incomingBeep.beepId,
+                    contactID: contactID,
+                    handle: contact.handle,
+                    label: "Deleted contact incoming Beep decline",
+                    fetchBeeps: { try await backend.incomingBeeps() }
+                )
+            } catch {
+                guard shouldIgnoreBeepNotFoundFailure(error) else { throw error }
+            }
+        }
     }
 
     func beepCooldownRemaining(for contactID: UUID, now: Date = .now) -> Int? {
