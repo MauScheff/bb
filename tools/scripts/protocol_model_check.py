@@ -15,7 +15,7 @@ from typing import Any
 
 
 DEFAULT_OUTPUT_DIR = Path("/tmp/turbo-protocol-model-checks")
-DEFAULT_SPEC_DIR = Path("specs/tla")
+DEFAULT_SPEC_DIR = Path("shared/specs/tla")
 DEFAULT_TLA_JAR = Path(os.environ.get("TLA2TOOLS_JAR", "/tmp/tla2tools.jar"))
 DEFAULT_SWIFT_PROPERTY_TESTS = (
     "conversationProjectionProperties",

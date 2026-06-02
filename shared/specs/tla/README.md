@@ -1,7 +1,9 @@
 # TLA+ Specs
 
 Status: active formal-model reference.
-Authority: bounded communication models under `specs/tla`.
+Authority: bounded communication and session-generation models under
+`shared/specs/tla`. The Rust runtime Talk Turn actor model lives under
+`backend/specs/tla` because backend readiness gates assert that owner path.
 Related docs: [`TLA_PLUS.md`](/Users/mau/Development/bb/docs/reliability/TLA_PLUS.md), [`FINDINGS.md`](/Users/mau/Development/bb/shared/specs/tla/FINDINGS.md), [`COVERAGE.md`](/Users/mau/Development/bb/shared/specs/tla/COVERAGE.md).
 
 Use these specs for invariant discovery and protocol validation. They do not replace Swift tests, backend regressions, simulator scenarios, or diagnostics. A TLC counterexample must be classified, named as an invariant when invalid, then promoted into repo-native proof.
@@ -13,7 +15,7 @@ Use these specs for invariant discovery and protocol validation. They do not rep
 | `TurboCommunication.tla` | Direct-channel kernel: membership, request/decline/accept, local join success/failure, joined/offline presence, receiver audio readiness, wake tokens, transmit epochs, one active transmitter, unreliable control delivery, stale projections, explicit refresh. |
 | `TurboCommunication.cfg` | Default two-device/one-channel bound plus finite `MaxInboxLength`; small traces are easier to promote into `shared/scenarios/*.json`. |
 | `TurboSessionGeneration.tla` | Restart/session-generation kernel: generation-bearing presence, active channel, receiver readiness, active transmit, and snapshot acceptance guarded by current app session plus membership evidence. |
-| `TurboTalkTurnActor.tla` | Self-hosted Rust Conversation actor: one runtime owner, one active Talk Turn, renewal, stale release fencing, lease expiry, policy downgrade, drain/reconnect, and participant disconnects. |
+| `backend/specs/tla/TurboTalkTurnActor.tla` | Self-hosted Rust Conversation actor: one runtime owner, one active Talk Turn, renewal, stale release fencing, lease expiry, policy downgrade, drain/reconnect, and participant disconnects. |
 
 `TurboSessionGeneration.tla` is separate because session generation is high-risk and would make the full signal-delivery state space too broad for default checks.
 
@@ -40,6 +42,10 @@ Use these specs for invariant discovery and protocol validation. They do not rep
 | `receiverReadyGeneration` | backend/app evidence that readiness belongs to current app session |
 
 The specs intentionally abstract over HTTP, Unison storage mechanics, SwiftUI, audio frames, PushToTalk system UI, and APNs internals.
+
+The Talk Turn actor spec intentionally models the Rust runtime/Postgres/Redis
+control-plane ownership boundary and is checked with
+`just protocol-talk-turn-actor-model-check`.
 
 ## Commands
 

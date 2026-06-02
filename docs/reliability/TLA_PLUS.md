@@ -31,9 +31,9 @@ TLA+ is best for discovering unnamed invariants. Treat TLC counterexamples as de
 
 The communication model lives in:
 
-- [`specs/tla/TurboCommunication.tla`](specs/tla/TurboCommunication.tla)
-- [`specs/tla/TurboCommunication.cfg`](specs/tla/TurboCommunication.cfg)
-- [`specs/tla/README.md`](specs/tla/README.md)
+- [`shared/specs/tla/TurboCommunication.tla`](/Users/mau/Development/bb/shared/specs/tla/TurboCommunication.tla)
+- [`shared/specs/tla/TurboCommunication.cfg`](/Users/mau/Development/bb/shared/specs/tla/TurboCommunication.cfg)
+- [`shared/specs/tla/README.md`](/Users/mau/Development/bb/shared/specs/tla/README.md)
 
 It models the direct-channel communication kernel:
 
@@ -51,8 +51,8 @@ Unison storage mechanics, PushToTalk system UI, and APNs internals.
 
 The restart/session-generation model lives in:
 
-- [`specs/tla/TurboSessionGeneration.tla`](specs/tla/TurboSessionGeneration.tla)
-- [`specs/tla/TurboSessionGeneration.cfg`](specs/tla/TurboSessionGeneration.cfg)
+- [`shared/specs/tla/TurboSessionGeneration.tla`](/Users/mau/Development/bb/shared/specs/tla/TurboSessionGeneration.tla)
+- [`shared/specs/tla/TurboSessionGeneration.cfg`](/Users/mau/Development/bb/shared/specs/tla/TurboSessionGeneration.cfg)
 
 It models app session generations, current-session presence, active-channel
 projection, receiver readiness, active transmit ownership, and guarded backend
@@ -61,8 +61,8 @@ so the default communication check stays tractable.
 
 The self-hosted Talk Turn actor model lives in:
 
-- [`specs/tla/TurboTalkTurnActor.tla`](specs/tla/TurboTalkTurnActor.tla)
-- [`specs/tla/TurboTalkTurnActor.cfg`](specs/tla/TurboTalkTurnActor.cfg)
+- [`backend/specs/tla/TurboTalkTurnActor.tla`](/Users/mau/Development/bb/backend/specs/tla/TurboTalkTurnActor.tla)
+- [`backend/specs/tla/TurboTalkTurnActor.cfg`](/Users/mau/Development/bb/backend/specs/tla/TurboTalkTurnActor.cfg)
 
 It models runtime owner leases, one active Talk Turn, stale release fencing,
 lease expiry, policy downgrade, drain/reconnect, and participant disconnects.
@@ -99,7 +99,7 @@ just protocol-model-checks /path/to/tla2tools.jar
 Download or install `tla2tools.jar` if you want to run TLC directly. Then run:
 
 ```sh
-cd specs/tla
+cd shared/specs/tla
 java -cp /path/to/tla2tools.jar tlc2.TLC \
   -deadlock \
   -config TurboCommunication.cfg \
@@ -112,7 +112,7 @@ For a one-off local run, downloading the jar outside the repo is fine:
 curl -L --fail -o /tmp/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 
-cd specs/tla
+cd shared/specs/tla
 java -cp /tmp/tla2tools.jar tlc2.TLC \
   -deadlock \
   -config TurboCommunication.cfg \
@@ -122,7 +122,8 @@ java -cp /tmp/tla2tools.jar tlc2.TLC \
 The harness writes `protocol-model-checks.json`, `tlc-output.txt`,
 `swift-property-tests-output.txt`, and `reproduce.sh` under
 `/tmp/turbo-protocol-model-checks` by default. TLC writes generated state data
-under `specs/tla/states/`; that path is ignored.
+under `shared/specs/tla/states/` or `backend/specs/tla/states/`; those paths
+are ignored.
 
 ## Development Cycle
 

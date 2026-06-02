@@ -14,6 +14,7 @@ scenario, fuzz lane, and owner.
 | --- | --- | --- |
 | TLA+ model plus pure Swift properties | `just protocol-model-checks` | Validate the bounded communication kernel and implementation-side pure rules. |
 | Session-generation model | `just protocol-session-generation-model-check` | Validate restart/session-generation freshness for presence, active channel, readiness, and active transmit. |
+| Talk Turn actor model | `just protocol-talk-turn-actor-model-check` | Validate Rust runtime owner leases, one active Talk Turn, renewal, stale release fencing, drain/reconnect, and participant disconnect safety. |
 | Static model wiring | `just reliability-gate-regressions` | Validate TLA+ spec/config wiring on machines without TLC. |
 | Local deterministic scenario catalog | `just simulator-scenario-suite-local` | Exercise app/backend communication journeys against local Unison Cloud. |
 | Strict local merged diagnostics | `just simulator-scenario-merge-local-strict` | Fail if merged scenario diagnostics contain invariant violations. |
