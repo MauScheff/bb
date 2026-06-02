@@ -212,8 +212,10 @@ where
             "leave-channel" => self.leave_channel(channel_id, &handle, Some(device_id)),
             "receiver-ready" => {
                 self.record_presence(&handle, "online", Some(device_id.to_owned()));
-                self.join_channel(channel_id, &handle, device_id);
-                self.clear_channel_wake_disconnect(channel_id, &handle);
+                if !self.channel_has_pending_beep(channel_id).unwrap_or(true) {
+                    self.join_channel(channel_id, &handle, device_id);
+                    self.clear_channel_wake_disconnect(channel_id, &handle);
+                }
             }
             "receiver-not-ready" => {
                 if payload.is_some_and(|payload| payload.contains("app-background-media-closed")) {
@@ -862,8 +864,10 @@ where
                 .unwrap_or("");
             if signal_type == "receiver-ready" {
                 self.record_presence(handle, "online", Some(device_id.clone()));
-                self.join_channel(channel_id, handle, &device_id);
-                self.clear_channel_wake_disconnect(channel_id, handle);
+                if !self.channel_has_pending_beep(channel_id)? {
+                    self.join_channel(channel_id, handle, &device_id);
+                    self.clear_channel_wake_disconnect(channel_id, handle);
+                }
             } else if payload.contains("app-background-media-closed") {
                 self.record_presence(handle, "background", Some(device_id.clone()));
                 self.mark_channel_wake_disconnected(channel_id, handle, &device_id);
@@ -1638,6 +1642,14 @@ where
             beep.from_handle == normalized_handle,
             beep.request_count,
         ))
+    }
+
+    fn channel_has_pending_beep(&mut self, channel_id: &str) -> Result<bool, RuntimeHttpError> {
+        Ok(self
+            .route_service
+            .committer_mut()
+            .pending_beep_thread_for_channel(channel_id)?
+            .is_some())
     }
 
     fn ensure_channel_participants(
@@ -3768,6 +3780,110 @@ mod tests {
         assert_eq!(recipient_state.body["membership"]["kind"], "absent");
         assert_eq!(recipient_readiness.body["readiness"]["kind"], "inactive");
         assert_eq!(recipient_readiness.body["selfHasActiveDevice"], false);
+    }
+
+    #[test]
+    fn self_hosted_http_receiver_ready_during_pending_beep_does_not_join_membership() {
+        let mut service = service();
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake",
+                "operationId": "connect-1"
+            }))
+            .expect("body should encode"),
+        });
+        let channel_id = create.body["channelId"].as_str().expect("channel id");
+
+        let receiver_ready = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: format!("/v1/channels/{channel_id}/receiver-audio-readiness"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "type": "receiver-ready",
+                "payload": "foreground-beep-prewarm"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(receiver_ready.status, 200);
+
+        let sender_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let recipient_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-b"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(
+            sender_state.body["conversationStatus"]["kind"],
+            "outgoing-beep"
+        );
+        assert_eq!(sender_state.body["membership"]["kind"], "absent");
+        assert_eq!(
+            recipient_state.body["conversationStatus"]["kind"],
+            "incoming-beep"
+        );
+        assert_eq!(recipient_state.body["membership"]["kind"], "absent");
+    }
+
+    #[test]
+    fn self_hosted_http_websocket_receiver_ready_during_pending_beep_does_not_join_membership() {
+        let mut service = service();
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake",
+                "operationId": "connect-1"
+            }))
+            .expect("body should encode"),
+        });
+        let channel_id = create.body["channelId"]
+            .as_str()
+            .expect("channel id")
+            .to_owned();
+
+        service.observe_app_compatible_control_command(
+            "receiver-ready",
+            "user-blake",
+            "device-b",
+            Some(&channel_id),
+            Some("foreground-beep-prewarm"),
+        );
+
+        let sender_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let recipient_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-b"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(sender_state.body["membership"]["kind"], "absent");
+        assert_eq!(recipient_state.body["membership"]["kind"], "absent");
+        assert_eq!(
+            sender_state.body["beepThreadProjection"]["kind"],
+            "outgoing"
+        );
+        assert_eq!(
+            recipient_state.body["beepThreadProjection"]["kind"],
+            "incoming"
+        );
     }
 
     #[test]

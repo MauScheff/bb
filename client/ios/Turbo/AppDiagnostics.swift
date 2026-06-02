@@ -220,6 +220,41 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
 
         var violations: [DiagnosticsInvariantViolationCandidate] = []
 
+        let pendingBeepExpectedPhase: String? =
+            if selectedConversationRelationship.hasPrefix("outgoingBeep") {
+                "outgoingBeep"
+            } else if selectedConversationRelationship.hasPrefix("incomingBeep")
+                || selectedConversationRelationship.hasPrefix("mutualBeep") {
+                "incomingBeep"
+            } else {
+                nil
+            }
+        if let pendingBeepExpectedPhase,
+           phase != pendingBeepExpectedPhase {
+            violations.append(
+                DiagnosticsInvariantViolationCandidate(
+                    invariantID: "selected.pending_beep_dominates_live_projection",
+                    scope: .local,
+                    message: "selected Conversation projected stale live or connectable state while a pending Beep was authoritative",
+                    metadata: [
+                        "selectedConversationPhase": phase,
+                        "selectedConversationPhaseDetail": phaseDetail,
+                        "selectedConversationRelationship": selectedConversationRelationship,
+                        "expectedSelectedConversationPhase": pendingBeepExpectedPhase,
+                        "pendingAction": pendingAction,
+                        "reconciliationAction": reconciliationAction,
+                        "isJoined": String(isJoined),
+                        "systemSession": systemSessionValue,
+                        "backendChannelStatus": backendChannelStatusValue,
+                        "backendReadiness": backendReadinessValue,
+                        "backendSelfJoined": boolMetadata(backendSelfJoined),
+                        "backendPeerJoined": boolMetadata(backendPeerJoined),
+                        "backendCanTransmit": boolMetadata(backendCanTransmit),
+                    ]
+                )
+            )
+        }
+
         let holdToTalkExceptionPhases = Set(["wakeReady", "startingTransmit", "transmitting"])
         if selectedConversationAllowsHoldToTalk,
            !selectedConversationCanTransmit,
@@ -758,6 +793,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
         if backendPeerJoined == true, backendSelfJoined == false {
             let disconnectedPhases = Set(["idle", "outgoingBeep"])
             if disconnectedPhases.contains(phase),
+               selectedConversationRelationship == "none",
                pendingAction == "none",
                !backendJoinSettling,
                !localDevicePTTEvidence {

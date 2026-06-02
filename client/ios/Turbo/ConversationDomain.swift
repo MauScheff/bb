@@ -1606,6 +1606,14 @@ struct ConversationDerivationContext: Equatable {
         localSession.activeChannelID
     }
 
+    var rawLocalDevicePTTEvidencePresent: Bool {
+        isJoined
+            || activeChannelID != nil
+            || systemSessionState != .none
+            || localTransmit.hasTransmitIntent
+            || localTransmit.preservesConnectedDevicePTTContinuity
+    }
+
     var explicitLeaveRequested: Bool {
         switch pendingAction {
         case .leave(.explicit(let contactID)):
@@ -2013,9 +2021,35 @@ enum ConversationStateMachine {
         let devicePTTContinuity = context.devicePTTContinuityProjection
         let connectedExecution = context.connectedExecutionProjection
         let connectedControlPlane = context.connectedControlPlaneProjection
+        let pendingBeepState: () -> SelectedConversationState? = {
+            guard !context.pendingConnectAcceptedIncomingBeep,
+                  context.pendingAction.pendingJoinContactID != context.contactID else {
+                return nil
+            }
+            switch relationship {
+            case .incomingBeep, .mutualBeep:
+                return makeState(
+                    .incomingBeep(requestCount: relationship.requestCount ?? 1),
+                    "\(context.contactName) wants to talk",
+                    false
+                )
+            case .outgoingBeep:
+                return makeState(
+                    .outgoingBeep(requestCount: relationship.requestCount ?? 1),
+                    "Beep sent to \(context.contactName)",
+                    false
+                )
+            case .none:
+                return nil
+            }
+        }
         let fallbackState: () -> SelectedConversationState = {
             let localDevicePTTEvidencePresent = devicePTTContinuity.localDevicePTTEvidencePresent
             let idleIsOnline = context.contactPresence != .offline
+
+            if let pendingBeepState = pendingBeepState() {
+                return pendingBeepState
+            }
 
             if context.backendMembershipIsStaleWithoutDevicePTTEvidence {
                 return makeState(
@@ -2152,6 +2186,15 @@ enum ConversationStateMachine {
         }
 
         let selectedConversationState: SelectedConversationState = {
+            if let pendingBeepState = pendingBeepState() {
+                switch devicePTTContinuity {
+                case .blockedByOtherSession, .systemMismatch, .localJoinFailed:
+                    break
+                case .inactive, .transitioning, .connected, .pendingJoin, .disconnecting:
+                    return pendingBeepState
+                }
+            }
+
             switch devicePTTContinuity {
             case .blockedByOtherSession:
                 return makeState(.blockedByOtherSession, "Another session is active", false)
@@ -2195,7 +2238,7 @@ enum ConversationStateMachine {
             connectedExecution: connectedExecution,
             connectedControlPlane: connectedControlPlane,
             selectedConversationState: selectedConversationState,
-            reconciliationAction: reconcileAction(for: context)
+            reconciliationAction: reconcileAction(for: context, relationship: relationship)
         )
     }
 
@@ -2578,11 +2621,12 @@ enum ConversationStateMachine {
     }
 
     static func reconciliationAction(for context: ConversationDerivationContext) -> SelectedConversationReconciliationAction {
-        reconcileAction(for: context)
+        reconcileAction(for: context, relationship: context.relationship)
     }
 
     private static func reconcileAction(
-        for context: ConversationDerivationContext
+        for context: ConversationDerivationContext,
+        relationship: BeepThreadProjection
     ) -> SelectedConversationReconciliationAction {
         guard context.selectedContactID == context.contactID else {
             return .none
@@ -2618,6 +2662,14 @@ enum ConversationStateMachine {
         }
 
         let localDevicePTTEvidencePresent = context.devicePTTContinuityProjection.localDevicePTTEvidencePresent
+
+        if relationship != .none,
+           !context.pendingConnectAcceptedIncomingBeep,
+           context.pendingAction.pendingJoinContactID != context.contactID,
+           context.rawLocalDevicePTTEvidencePresent,
+           !explicitLeaveRequested {
+            return .teardownDevicePTTSession(contactID: context.contactID)
+        }
 
         if context.localTransmit.preservesConnectedDevicePTTContinuity && localDevicePTTEvidencePresent {
             return .none

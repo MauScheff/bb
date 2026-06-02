@@ -1290,6 +1290,85 @@ struct ConversationTests {
         #expect(state.statusMessage == "Beep sent to Avery")
     }
 
+    @Test func pendingOutgoingBeepDominatesPeerReadyBackendProjection() {
+        let contactID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .outgoingBeep,
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: false,
+            activeChannelID: nil,
+            systemSessionMatchesContact: false,
+            systemSessionState: .none,
+            pendingAction: .none,
+            localJoinFailure: nil,
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .outgoingBeep,
+                    canTransmit: false,
+                    selfJoined: false,
+                    peerJoined: true,
+                    peerDeviceConnected: true,
+                    hasOutgoingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .outgoingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase == .outgoingBeep)
+        #expect(projection.selectedConversationState.conversationState == .outgoingBeep)
+        #expect(projection.selectedConversationState.statusMessage == "Beep sent to Avery")
+        #expect(!projection.selectedConversationState.canTransmitNow)
+        #expect(!projection.selectedConversationState.allowsHoldToTalk)
+        #expect(projection.reconciliationAction == .none)
+    }
+
+    @Test func pendingIncomingBeepDominatesStaleJoinedLocalSession() {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .incomingBeep,
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true,
+            systemSessionState: .active(contactID: contactID, channelUUID: channelUUID),
+            pendingAction: .none,
+            localJoinFailure: nil,
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .incomingBeep,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false,
+                    hasIncomingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .incomingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase == .incomingBeep)
+        #expect(projection.selectedConversationState.conversationState == .incomingBeep)
+        #expect(projection.selectedConversationState.statusMessage == "Avery wants to talk")
+        #expect(!projection.selectedConversationState.canTransmitNow)
+        #expect(!projection.selectedConversationState.allowsHoldToTalk)
+        #expect(projection.reconciliationAction == .teardownDevicePTTSession(contactID: contactID))
+    }
+
     @Test func selectedConversationStatePreservesConnectingWhileAcceptedIncomingBeepIsStillJoining() {
         let contactID = UUID()
         let context = ConversationDerivationContext(

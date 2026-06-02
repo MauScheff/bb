@@ -3418,6 +3418,39 @@ struct DiagnosticsTests {
     }
 
     @MainActor
+    @Test func diagnosticsDoNotFlagPeerJoinedNotConnectableDuringPendingBeepRelationship() {
+        let store = DiagnosticsStore()
+        store.clear()
+
+        captureDevicePTTDiagnosticsState(store,
+            reason: "backend-sync:beeps",
+            fields: [
+                "selectedContact": "@blake",
+                "selectedConversationPhase": "outgoingBeep",
+                "selectedConversationRelationship": "outgoingBeep(requestCount: 1)",
+                "pendingAction": "none",
+                "isJoined": "false",
+                "isTransmitting": "false",
+                "systemSession": "none",
+                "backendChannelStatus": "outgoing-beep",
+                "backendReadiness": "inactive",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "true",
+                "backendPeerDeviceConnected": "true",
+                "selectedConversationStatus": "Beep sent"
+            ]
+        )
+
+        _ = store.exportText(snapshot: "selectedConversationPhase=outgoingBeep")
+
+        #expect(
+            !store.invariantViolations.contains {
+                $0.invariantID == "selected.peer_joined_ui_not_connectable"
+            }
+        )
+    }
+
+    @MainActor
     @Test func diagnosticsExportIncludesWakeCapableReceiverNotConnectableInvariant() {
         let store = DiagnosticsStore()
         store.clear()

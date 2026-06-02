@@ -914,6 +914,20 @@
       "status": "active"
     },
     {
+      "id": "beep.pending_receiver_ready_does_not_join_membership",
+      "scope": "backend",
+      "owner": "backend",
+      "authoritativeSeam": "backend/runtime/src/http.rs",
+      "predicate": "A receiver-ready publication for a channel with a pending Beep Thread may record presence, but must not create live channel membership or active-device readiness before the Beep is accepted.",
+      "evidenceFields": ["channelId", "beepId", "beepStatus", "signalType", "membership", "readiness"],
+      "detectors": ["backend/runtime/src/http.rs"],
+      "regressions": ["backend/runtime/src/http.rs"],
+      "repairPolicy": "backend reject/defer",
+      "repairAction": "The Rust runtime defers receiver-ready membership mutation while pending_beep_thread_for_channel returns a pending Beep Thread; accept/join remains the only live-membership transition.",
+      "alertPolicy": "strict diagnostics",
+      "status": "active"
+    },
+    {
       "id": "beep-thread.latest_count_is_monotonic",
       "scope": "backend",
       "owner": "backend",
@@ -1277,6 +1291,20 @@
       "status": "active"
     },
     {
+      "id": "selected.pending_beep_dominates_live_projection",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/ConversationDomain.swift selected Conversation projection",
+      "predicate": "A pending incoming, outgoing, or mutual Beep is the authoritative selected Conversation state until accepted, cancelled, or replaced; stale local Device PTT or backend membership evidence must not project a live, connecting, ready, or hold-to-talk state.",
+      "evidenceFields": ["selectedConversationPhase", "selectedConversationPhaseDetail", "selectedConversationRelationship", "expectedSelectedConversationPhase", "pendingAction", "reconciliationAction", "isJoined", "systemSession", "backendChannelStatus", "backendReadiness", "backendSelfJoined", "backendPeerJoined", "backendCanTransmit"],
+      "detectors": ["Turbo/ConversationDomain.swift", "Turbo/AppDiagnostics.swift"],
+      "regressions": ["TurboTests/ConversationTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Selected Conversation projection treats pending Beeps as absorbing over stale joined/readiness evidence, disables transmit affordances, and schedules local Device PTT teardown when stale local session evidence survives without an accepted pending join.",
+      "alertPolicy": "strict diagnostics",
+      "status": "active"
+    },
+    {
       "id": "selected.joined_conversation_lost_wake_capability",
       "scope": "backend",
       "owner": "app",
@@ -1322,8 +1350,8 @@
       "scope": "backend",
       "owner": "mixed",
       "authoritativeSeam": "Turbo/AppDiagnostics.swift",
-      "predicate": "Backend says peer is joined while selected UI remains disconnected/non-connectable.",
-      "evidenceFields": ["selectedConversationPhase", "backendSelfJoined", "backendPeerJoined"],
+      "predicate": "Backend says peer is joined while selected UI remains disconnected/non-connectable and there is no pending selected Beep relationship owning the non-connectable projection.",
+      "evidenceFields": ["selectedConversationPhase", "selectedConversationRelationship", "backendSelfJoined", "backendPeerJoined"],
       "detectors": ["Turbo/AppDiagnostics.swift", "tools/scripts/merged_diagnostics.py"],
       "regressions": [],
       "regressionException": "Detector exists in app and merged diagnostics; scenario invariant DSL work will add first-class assertions.",
