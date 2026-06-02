@@ -480,6 +480,11 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             parsed = {"error": text}
         parsed["_httpStatus"] = error.code
         return parsed
+    except OSError as error:
+        return {
+            "_httpStatus": 0,
+            "error": str(error),
+        }
 
 
 def fetch_json(url: str, timeout: float) -> dict[str, Any]:
