@@ -12,3 +12,9 @@ This directory keeps BeepBeep's larger memory without making every historical no
 | Assets | `docs/assets/` | Diagrams and visual references. |
 
 Active implementation should route through root docs first: `AGENTS.md`, `README.md`, `WORKFLOW.md`, `TOOLING.md`, `TESTING.md`, and `GLOSSARY.md`.
+
+Reliability work should route through [`WORKFLOW.md`](/Users/mau/Development/bb/WORKFLOW.md) for the canonical proof model and [`docs/reliability/fuzz.md`](/Users/mau/Development/bb/docs/reliability/fuzz.md) for the operator loop:
+
+```text
+invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate
+```

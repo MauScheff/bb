@@ -11,16 +11,16 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REGISTRY = REPO_ROOT / "invariants" / "registry.json"
+DEFAULT_REGISTRY = REPO_ROOT / "shared" / "invariants" / "registry.json"
 DEFAULT_PROOF_ROOTS = [
-    REPO_ROOT / "Packages" / "TurboEngine" / "Tests",
-    REPO_ROOT / "Packages" / "TurboEngine" / "Sources" / "TurboEngineSimulation",
-    REPO_ROOT / "Packages" / "TurboEngine" / "Fixtures",
-    REPO_ROOT / "TurboTests",
+    REPO_ROOT / "client" / "ios" / "Packages" / "TurboEngine" / "Tests",
+    REPO_ROOT / "client" / "ios" / "Packages" / "TurboEngine" / "Sources" / "TurboEngineSimulation",
+    REPO_ROOT / "client" / "ios" / "Packages" / "TurboEngine" / "Fixtures",
+    REPO_ROOT / "client" / "ios" / "TurboTests",
 ]
 DEFAULT_DETECTOR_ROOTS = [
-    REPO_ROOT / "Packages" / "TurboEngine" / "Sources" / "TurboEngine",
-    REPO_ROOT / "Packages" / "TurboEngine" / "Sources" / "TurboEngineSimulation",
+    REPO_ROOT / "client" / "ios" / "Packages" / "TurboEngine" / "Sources" / "TurboEngine",
+    REPO_ROOT / "client" / "ios" / "Packages" / "TurboEngine" / "Sources" / "TurboEngineSimulation",
 ]
 SOURCE_SUFFIXES = {".swift", ".json"}
 ENGINE_ID_LITERAL_RE = re.compile(r'"(engine\.[a-z0-9_.-]+)"')

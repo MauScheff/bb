@@ -61,8 +61,9 @@ rust-runtime-integration output="/tmp/turbo-rust-runtime-integration.json":
 runtime-postgres-integration output="/tmp/turbo-rust-runtime-integration.json":
   just rust-runtime-integration "{{output}}"
 
-self-hosted-serve bind="127.0.0.1:8091" websocket_mode="single" runtime_id="runtime-single" owner_ttl_ms="15000":
+self-hosted-serve bind="127.0.0.1:8091" websocket_mode="single" runtime_id="runtime-single" owner_ttl_ms="15000" database_url="postgres://turbo_runtime:turbo_runtime@127.0.0.1:55432/turbo_runtime":
   TURBO_RUNTIME_BIND={{bind}} \
+  TURBO_RUNTIME_DATABASE_URL={{database_url}} \
   TURBO_RUNTIME_WEBSOCKET_MODE={{websocket_mode}} \
   TURBO_RUNTIME_ID={{runtime_id}} \
   TURBO_RUNTIME_WEBSOCKET_OWNER_TTL_MS={{owner_ttl_ms}} \
@@ -332,7 +333,7 @@ direct-quic-provisioning-probe:
 turn-policy-probe require_enabled="":
   .venv/bin/python tools/scripts/turn_policy_probe.py --base-url https://api.beepbeep.to --handle @quinn --insecure {{require_enabled}}
 
-route-probe-local base="http://localhost:8090/s/turbo" caller="@avery" callee="@blake":
+route-probe-local base="http://127.0.0.1:8091/s/turbo" caller="@avery" callee="@blake":
   .venv/bin/python tools/scripts/route_probe.py --base-url "{{base}}" --caller "{{caller}}" --callee "{{callee}}"
 
 clean-scratch:
@@ -492,19 +493,19 @@ simulator-scenario-hosted-strict scenario="" base="https://api.beepbeep.to" hand
 simulator-scenario-http-control scenario="" base="https://api.beepbeep.to" handle_a="@avery" handle_b="@blake" insecure="--insecure":
   sh -c 'device_a="sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")"; device_b="sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"; python3 tools/scripts/run_simulator_scenarios.py --scenario "{{scenario}}" --base-url "{{base}}" --handle-a "{{handle_a}}" --handle-b "{{handle_b}}" --device-id-a "$device_a" --device-id-b "$device_b" --control-command-transport-policy "http-only" && python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" {{insecure}} --fail-on-violations --device "{{handle_a}}=$device_a" --device "{{handle_b}}=$device_b"'
 
-simulator-scenario-local scenario="" base="http://localhost:8090/s/turbo" handle_a="@avery" handle_b="@blake":
+simulator-scenario-local scenario="" base="http://127.0.0.1:8091/s/turbo" handle_a="@avery" handle_b="@blake":
   python3 tools/scripts/run_simulator_scenarios.py \
     --scenario "{{scenario}}" \
     --base-url "{{base}}" \
     --handle-a "{{handle_a}}" \
     --handle-b "{{handle_b}}"
 
-simulator-scenario-merge-local base="http://localhost:8090/s/turbo" handle_a="@avery" handle_b="@blake":
+simulator-scenario-merge-local base="http://127.0.0.1:8091/s/turbo" handle_a="@avery" handle_b="@blake":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" --no-telemetry \
     --device "{{handle_a}}=sim-scenario-avery" \
     --device "{{handle_b}}=sim-scenario-blake"
 
-simulator-scenario-merge-local-strict base="http://localhost:8090/s/turbo" handle_a="@avery" handle_b="@blake":
+simulator-scenario-merge-local-strict base="http://127.0.0.1:8091/s/turbo" handle_a="@avery" handle_b="@blake":
   python3 tools/scripts/merged_diagnostics.py --base-url "{{base}}" --no-telemetry --fail-on-violations \
     --device "{{handle_a}}=sim-scenario-avery" \
     --device "{{handle_b}}=sim-scenario-blake"
@@ -526,7 +527,7 @@ simulator-scenario-suite-hosted-smoke:
   sh -c 'python3 tools/scripts/run_simulator_scenarios.py --scenario "presence_online_projection,beep_accept_ready_refresh_stability" --base-url "https://api.beepbeep.to" --handle-a "@avery" --handle-b "@blake" --device-id-a "sim-scenario-avery-$(uuidgen | tr "[:upper:]" "[:lower:]")" --device-id-b "sim-scenario-blake-$(uuidgen | tr "[:upper:]" "[:lower:]")"'
 
 simulator-scenario-suite-local:
-  just simulator-scenario-local "" http://localhost:8090/s/turbo
+  just simulator-scenario-local "" http://127.0.0.1:8091/s/turbo
 
 simulator-scenario-suite-self-hosted base="http://127.0.0.1:8091/s/turbo" output="/tmp/turbo-simulator-self-hosted-suite.json" scenario="" insecure="":
   python3 backend/scripts/simulator_self_hosted_suite_proof.py \
@@ -535,20 +536,20 @@ simulator-scenario-suite-self-hosted base="http://127.0.0.1:8091/s/turbo" output
     --output "{{output}}" \
     {{insecure}}
 
-simulator-fuzz-local seed count base="http://localhost:8090/s/turbo":
+simulator-fuzz-local seed count base="http://127.0.0.1:8091/s/turbo":
   python3 tools/scripts/run_simulator_fuzz.py run \
     --seed "{{seed}}" \
     --count "{{count}}" \
     --base-url "{{base}}"
 
-simulator-fuzz-local-overnight seed count base="http://localhost:8090/s/turbo":
+simulator-fuzz-local-overnight seed count base="http://127.0.0.1:8091/s/turbo":
   python3 tools/scripts/run_simulator_fuzz.py run \
     --seed "{{seed}}" \
     --count "{{count}}" \
     --base-url "{{base}}" \
     --stop-on-first-failure
 
-reliability-fuzz-local-overnight seed count base="http://localhost:8090/s/turbo":
+reliability-fuzz-local-overnight seed count base="http://127.0.0.1:8091/s/turbo":
   just engine-fuzz-local "{{seed}}" "{{count}}" "{{base}}"
   just simulator-fuzz-local-overnight "{{seed}}" "{{count}}" "{{base}}"
 
@@ -638,13 +639,13 @@ engine-test:
 engine-scenario scenario="":
   swift run --package-path client/ios/Packages/TurboEngine turbo-engine scenario "{{scenario}}"
 
-engine-scenario-local scenario="" base="http://localhost:8090/s/turbo":
+engine-scenario-local scenario="" base="http://127.0.0.1:8091/s/turbo":
   swift run --package-path client/ios/Packages/TurboEngine turbo-engine scenario-local "{{scenario}}" "{{base}}"
 
-engine-scenario-diff-local scenario="" base="http://localhost:8090/s/turbo":
+engine-scenario-diff-local scenario="" base="http://127.0.0.1:8091/s/turbo":
   swift run --package-path client/ios/Packages/TurboEngine turbo-engine scenario-diff-local "{{scenario}}" "{{base}}"
 
-engine-fuzz-local seed count base="http://localhost:8090/s/turbo":
+engine-fuzz-local seed count base="http://127.0.0.1:8091/s/turbo":
   swift run --package-path client/ios/Packages/TurboEngine turbo-engine fuzz-local "{{seed}}" "{{count}}" "{{base}}"
 
 engine-fuzz-corpus corpus="client/ios/Packages/TurboEngine/Fixtures/fuzz-corpus.json":
@@ -674,8 +675,8 @@ reliability-gate-regressions:
   python3 tools/scripts/protocol_model_check.py --skip-tlc --skip-swift-properties --output-dir /tmp/turbo-protocol-model-checks-static
   python3 tools/scripts/check_invariant_registry.py
   python3 tools/scripts/check_engine_invariant_coverage.py
-  just swift-test-target signalingJoinDriftReassertsRequestedBackendChannelForActiveLocalSession
-  just swift-test-target selectedPeerReducerConnectionTimeoutClearsRequesterAutoJoinIdleGap
+  just swift-test-target signalingJoinDriftReassertsRequestedBackendChannelForActiveDevicePTTEvidence
+  just swift-test-target selectedConversationReducerConnectionTimeoutClearsSenderAutoJoinIdleGap
   just swift-test-target selectedConnectionTimeoutDoesNotInterruptInFlightBackendConnect
   just swift-test-target scenarioBackendExpectationAcceptsReadyWhenPhaseHasProgressed
 

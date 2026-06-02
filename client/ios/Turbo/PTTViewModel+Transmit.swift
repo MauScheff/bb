@@ -1048,9 +1048,11 @@ extension PTTViewModel {
     func shouldAcceptBackendLocalTransmitProjection(
         backendShowsLocalTransmit: Bool,
         refreshedContactID: UUID,
-        transmitSnapshot: TransmitDomainSnapshot
+        transmitSnapshot: TransmitDomainSnapshot,
+        leaveInFlight: Bool = false
     ) -> Bool {
         backendShowsLocalTransmit
+            && !leaveInFlight
             && !transmitSnapshot.explicitStopRequested
             && (
                 transmitSnapshot.hasTransmitIntent(for: refreshedContactID)
@@ -1073,13 +1075,16 @@ extension PTTViewModel {
 
     func markLocalTransmitStopProjectionGrace(
         for contactID: UUID,
-        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds,
+        nowMilliseconds: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
     ) {
         localTransmitStopProjectionGraceStartedAtNanosecondsByContactID[contactID] = nowNanoseconds
+        localTransmitStopProjectionGraceStartedAtMillisecondsByContactID[contactID] = nowMilliseconds
     }
 
     func clearLocalTransmitStopProjectionGrace(for contactID: UUID) {
         localTransmitStopProjectionGraceStartedAtNanosecondsByContactID[contactID] = nil
+        localTransmitStopProjectionGraceStartedAtMillisecondsByContactID[contactID] = nil
     }
 
     func localTransmitStopProjectionGraceIsActive(
@@ -1390,16 +1395,22 @@ extension PTTViewModel {
         startTransmitStartupTiming(for: request, source: "hold-to-talk")
         // Latch the press locally before the async reducer runs so a single
         // hold gesture cannot enqueue multiple begin-transmit attempts.
+        fenceRemoteAudioReceiveForLocalTransmitStart(
+            contactID: contact.id,
+            reason: "hold-to-talk"
+        )
         cancelDeferredInteractivePrewarmForLocalTransmitIfNeeded(
             contactID: contact.id,
             reason: "begin-transmit"
         )
         transmitRuntime.markPressBegan()
+        transmitRuntime.markControlPlaneBeginHandoffRequested()
         transmitRuntime.syncActiveTarget(transmitCoordinator.state.activeTarget)
         updateStatusForSelectedContact()
         captureDiagnosticsState("transmit-begin:requested")
         Task {
             await transmitCoordinator.handle(.pressRequested(request))
+            transmitRuntime.markControlPlaneBeginHandoffCompleted()
             syncTransmitState()
         }
     }
@@ -1446,6 +1457,10 @@ extension PTTViewModel {
         syncEngineObservedSystemTransmit(
             contactID: request.contactID,
             channelUUID: channelUUID,
+            reason: "system-originated-\(origin.rawValue)"
+        )
+        fenceRemoteAudioReceiveForLocalTransmitStart(
+            contactID: request.contactID,
             reason: "system-originated-\(origin.rawValue)"
         )
         startTransmitStartupTiming(for: request, source: "system-originated-\(origin.rawValue)")
@@ -1540,6 +1555,10 @@ extension PTTViewModel {
         // with release does not look like an unexpected end that should be retried.
         if let activeTarget = transmitCoordinator.state.activeTarget ?? transmitRuntime.activeTarget {
             markLocalTransmitStopProjectionGrace(for: activeTarget.contactID)
+            cutLocalOutgoingAudioImmediatelyForExplicitStop(
+                target: activeTarget,
+                reason: reason
+            )
         } else if let activeChannelId {
             markLocalTransmitStopProjectionGrace(for: activeChannelId)
         }
@@ -1774,6 +1793,11 @@ extension PTTViewModel {
                 reason: "backend-talk-turn-denied"
             )
         }
+        recoverRemoteReceiveAfterBackendTalkTurnDenied(
+            response,
+            request: request,
+            reason: reason
+        )
         await transmitCoordinator.handle(.beginFailed("Peer is talking"))
         syncTransmitState()
         updateStatusForSelectedContact()
@@ -1789,6 +1813,52 @@ extension PTTViewModel {
                 "source": source,
             ]
         )
+    }
+
+    private func recoverRemoteReceiveAfterBackendTalkTurnDenied(
+        _ response: TurboBeginTransmitResponse,
+        request: TransmitRequestContext,
+        reason: String
+    ) {
+        guard backendTalkTurnDeniedBecausePeerIsActive(reason) else { return }
+        let senderDeviceID =
+            response.targetDeviceId
+            ?? directQuicPeerDeviceID(for: request.contactID)
+            ?? "backend-talk-turn-denied-peer"
+        syncEngineRemoteTransmitStarted(
+            contactID: request.contactID,
+            channelID: request.backendChannelID,
+            senderDeviceID: senderDeviceID,
+            source: "backend-talk-turn-denied"
+        )
+        beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: request.contactID,
+            channelID: request.backendChannelID,
+            senderDeviceID: senderDeviceID,
+            source: .transmitStartSignal,
+            controlTransport: "backend-talk-turn-denied"
+        )
+        markRemoteAudioActivity(for: request.contactID, source: .transmitStartSignal)
+        diagnostics.record(
+            .media,
+            message: "Recovered remote receive after backend talk turn denied",
+            metadata: [
+                "contactId": request.contactID.uuidString,
+                "channelId": request.backendChannelID,
+                "reason": reason,
+                "senderDeviceId": senderDeviceID,
+                "source": "backend-talk-turn-denied",
+            ]
+        )
+    }
+
+    private func backendTalkTurnDeniedBecausePeerIsActive(_ reason: String) -> Bool {
+        let normalized = reason
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized == "current-talk-turn-active"
+            || normalized == "active-talk-turn"
+            || normalized == "peer-is-talking"
     }
 
     private func performBeginTransmit(_ request: TransmitRequestContext, workID: Int) async {
@@ -3320,6 +3390,8 @@ extension PTTViewModel {
             reason = "explicit-stop-requested"
         } else if !hasActiveTransmitPressIntent() {
             reason = "press-ended"
+        } else if peerTransmitBlocksLocalSystemActivation(for: target.contactID) {
+            reason = "peer-transmit-authoritative"
         } else if pttCoordinator.state.systemChannelUUID != channelUUID {
             reason = "system-channel-mismatch"
         } else if !pttCoordinator.state.isTransmitting {
@@ -3356,7 +3428,82 @@ extension PTTViewModel {
                 metadata: ["activeTargetMatches": String(activeTarget == target)]
             )
         }
+        if reason == "peer-transmit-authoritative" {
+            cancelLocalSystemTransmitActivationAfterPeerBecameAuthoritative(
+                channelUUID: channelUUID,
+                target: target,
+                stage: stage
+            )
+        }
         return false
+    }
+
+    private func peerTransmitBlocksLocalSystemActivation(for contactID: UUID) -> Bool {
+        let channelSnapshot = selectedChannelSnapshot(for: contactID)
+        let backendPeerIsTransmitting =
+            channelSnapshot?.readinessStatus?.conversationState == .receiving
+            || channelSnapshot?.status == .receiving
+        return backendPeerIsTransmitting || remoteReceiveBlocksLocalTransmit(for: contactID)
+    }
+
+    private func cancelLocalSystemTransmitActivationAfterPeerBecameAuthoritative(
+        channelUUID: UUID,
+        target: TransmitTarget,
+        stage: String
+    ) {
+        let backendSnapshot = selectedChannelSnapshot(for: target.contactID)
+        let hadPendingBegin = transmitRuntime.isSystemTransmitBeginPending(channelUUID: channelUUID)
+        let pttWasTransmitting =
+            pttCoordinator.state.systemChannelUUID == channelUUID
+            && pttCoordinator.state.isTransmitting
+        let activeTarget = transmitCoordinator.state.activeTarget
+
+        transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
+        transmitRuntime.markPressEnded()
+        transmitRuntime.clearSystemTransmitActivation(channelUUID: channelUUID)
+        clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
+        clearTransmitAudioCaptureStartIfInFlight(
+            channelUUID: channelUUID,
+            intent: .systemActivationRefresh
+        )
+        try? pttSystemClient.stopTransmitting(channelUUID: channelUUID)
+        pttCoordinator.send(
+            .didEndTransmitting(
+                channelUUID: channelUUID,
+                origin: .explicitStopReconciliation(source: "peer-transmit-authoritative")
+            )
+        )
+        transmitCoordinator.reset()
+        transmitRuntime.syncActiveTarget(nil)
+        if let activeTarget, let backend = backendServices {
+            scheduleBackendTransmitLeaseGrantedAfterReleaseCleanup(
+                target: activeTarget,
+                backend: backend,
+                source: "peer-transmit-authoritative"
+            )
+        }
+        syncPTTState()
+        syncTransmitState()
+        updateStatusForSelectedContact()
+        diagnostics.record(
+            .pushToTalk,
+            level: .notice,
+            message: "Cancelled local transmit activation because peer became authoritative",
+            metadata: [
+                "contactId": target.contactID.uuidString,
+                "channelId": target.channelID,
+                "channelUUID": channelUUID.uuidString,
+                "stage": stage,
+                "hadPendingSystemBegin": String(hadPendingBegin),
+                "pttWasTransmitting": String(pttWasTransmitting),
+                "backendChannelStatus": backendSnapshot?.status?.rawValue ?? "none",
+                "backendReadiness": backendSnapshot?.readinessStatus?.kind ?? "none",
+                "remoteActivityBlocksTransmit": String(
+                    remoteReceiveBlocksLocalTransmit(for: target.contactID)
+                ),
+            ]
+        )
+        captureDiagnosticsState("transmit-activation:cancelled-peer-active")
     }
 
     func shouldContinuePendingSystemTransmitAudioCapture(
@@ -3377,6 +3524,8 @@ extension PTTViewModel {
             reason = "explicit-stop-requested"
         } else if !hasActiveTransmitPressIntent() {
             reason = "press-ended"
+        } else if peerTransmitBlocksLocalSystemActivation(for: request.contactID) {
+            reason = "peer-transmit-authoritative"
         } else if pttCoordinator.state.systemChannelUUID != request.channelUUID {
             reason = "system-channel-mismatch"
         } else if !pttCoordinator.state.isTransmitting {
@@ -3401,6 +3550,9 @@ extension PTTViewModel {
                 "coordinatorPressActive": String(transmitCoordinator.state.isPressingTalk),
                 "explicitStopRequested": String(transmitRuntime.explicitStopRequested),
                 "requestStillCurrent": String(requestStillCurrent),
+                "remoteActivityBlocksTransmit": String(
+                    remoteReceiveBlocksLocalTransmit(for: request.contactID)
+                ),
             ]
         )
         if recordCompletedSideEffectInvariant {
@@ -3416,7 +3568,76 @@ extension PTTViewModel {
                 ]
             )
         }
+        if reason == "peer-transmit-authoritative" {
+            cancelPendingSystemTransmitActivationAfterPeerBecameAuthoritative(
+                request: request,
+                stage: stage
+            )
+        }
         return false
+    }
+
+    private func cancelPendingSystemTransmitActivationAfterPeerBecameAuthoritative(
+        request: TransmitRequestContext,
+        stage: String
+    ) {
+        let channelUUID = request.channelUUID
+        let backendSnapshot = selectedChannelSnapshot(for: request.contactID)
+        let hadPendingBegin = channelUUID.map {
+            transmitRuntime.isSystemTransmitBeginPending(channelUUID: $0)
+        } ?? false
+        let pttWasTransmitting =
+            channelUUID.map {
+                pttCoordinator.state.systemChannelUUID == $0
+                    && pttCoordinator.state.isTransmitting
+            } ?? false
+
+        if let channelUUID {
+            transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
+            transmitRuntime.clearSystemTransmitActivation(channelUUID: channelUUID)
+            clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
+            clearTransmitAudioCaptureStartIfInFlight(
+                channelUUID: channelUUID,
+                intent: .systemActivationRefresh
+            )
+            try? pttSystemClient.stopTransmitting(channelUUID: channelUUID)
+            pttCoordinator.send(
+                .didEndTransmitting(
+                    channelUUID: channelUUID,
+                    origin: .explicitStopReconciliation(source: "peer-transmit-authoritative")
+                )
+            )
+        } else {
+            transmitRuntime.clearPendingSystemTransmitBegin()
+            transmitRuntime.clearSystemTransmitActivation()
+        }
+        transmitRuntime.markPressEnded()
+        cancelPendingTransmitWork()
+        transmitCoordinator.reset()
+        transmitRuntime.syncActiveTarget(nil)
+        syncPTTState()
+        syncTransmitState()
+        updateStatusForSelectedContact()
+        diagnostics.record(
+            .pushToTalk,
+            level: .notice,
+            message: "Cancelled local transmit activation because peer became authoritative",
+            metadata: [
+                "contactId": request.contactID.uuidString,
+                "channelId": request.backendChannelID,
+                "channelUUID": channelUUID?.uuidString ?? "none",
+                "stage": stage,
+                "requestKind": "pending-system-audio-capture",
+                "hadPendingSystemBegin": String(hadPendingBegin),
+                "pttWasTransmitting": String(pttWasTransmitting),
+                "backendChannelStatus": backendSnapshot?.status?.rawValue ?? "none",
+                "backendReadiness": backendSnapshot?.readinessStatus?.kind ?? "none",
+                "remoteActivityBlocksTransmit": String(
+                    remoteReceiveBlocksLocalTransmit(for: request.contactID)
+                ),
+            ]
+        )
+        captureDiagnosticsState("transmit-activation:cancelled-pending-peer-active")
     }
 
     func hasPreActivationTransmitAudioCaptureEvidence(channelUUID: UUID) -> Bool {
@@ -3729,6 +3950,33 @@ extension PTTViewModel {
             return
         }
         guard transmitRuntime.beginSystemTransmitActivationIfNeeded(channelUUID: channelUUID) else {
+            if hasPreActivationTransmitAudioCaptureEvidence(channelUUID: channelUUID) {
+                do {
+                    guard try await startOrRefreshTransmitAudioCaptureForSystemActivation(
+                        channelUUID: channelUUID,
+                        target: target,
+                        trigger: "duplicate-system-activation",
+                        refreshMessage: "Refreshing prewarmed audio capture after duplicate system audio activation",
+                        duplicateMessage: "Skipping duplicate system audio capture refresh because capture was already refreshed"
+                    ) else {
+                        return
+                    }
+                } catch {
+                    diagnostics.record(
+                        .media,
+                        level: .error,
+                        message: "Duplicate system transmit activation capture refresh failed",
+                        metadata: [
+                            "contactId": target.contactID.uuidString,
+                            "channelId": target.channelID,
+                            "channelUUID": channelUUID.uuidString,
+                            "error": error.localizedDescription,
+                        ]
+                    )
+                    await performStopTransmit(target)
+                }
+                return
+            }
             diagnostics.record(
                 .media,
                 message: "Skipped duplicate system transmit activation",
@@ -3937,18 +4185,17 @@ extension PTTViewModel {
         trigger: String
     ) async {
         guard !usesLocalHTTPBackend else { return }
-        guard hasActiveTransmitPressIntent() else { return }
         guard let request = transmitCoordinator.state.pendingRequest else { return }
         guard request.channelUUID == channelUUID else { return }
         guard pttCoordinator.state.systemChannelUUID == channelUUID else { return }
-        guard isPTTAudioSessionActive else { return }
-        guard mediaSessionContactID == nil || mediaSessionContactID == request.contactID else { return }
         guard shouldContinuePendingSystemTransmitAudioCapture(
             request: request,
             stage: "start"
         ) else {
             return
         }
+        guard isPTTAudioSessionActive else { return }
+        guard mediaSessionContactID == nil || mediaSessionContactID == request.contactID else { return }
         guard pendingSystemTransmitOutgoingAudioTarget(for: request) != nil else {
             diagnostics.record(
                 .media,
@@ -4349,6 +4596,14 @@ extension PTTViewModel {
         let activeSystemChannelUUID = pttCoordinator.state.systemChannelUUID
         let activeTarget = activeSystemChannelUUID.flatMap(activeTransmitTarget(for:))
         let pendingRequest = transmitCoordinator.state.pendingRequest
+        let pendingWake = pttWakeRuntime.pendingIncomingPush
+        let receiveContactIDForActiveSystemChannel = activeSystemChannelUUID.flatMap(contactId(for:))
+        let systemActivationHasAuthoritativeRemoteTransmit =
+            activeTarget == nil
+            && pendingWake == nil
+            && receiveContactIDForActiveSystemChannel.map { contactID in
+                peerTransmitBlocksLocalSystemActivation(for: contactID)
+            } == true
         if let activeSystemChannelUUID {
             recordTransmitStartupTiming(
                 stage: "system-audio-session-activated",
@@ -4373,6 +4628,13 @@ extension PTTViewModel {
         if let activeSystemChannelUUID {
             if activeTarget != nil {
                 await completeSystemTransmitActivation(channelUUID: activeSystemChannelUUID)
+            } else if systemActivationHasAuthoritativeRemoteTransmit,
+                      let pendingRequest,
+                      pendingRequest.channelUUID == activeSystemChannelUUID {
+                cancelPendingSystemTransmitActivationAfterPeerBecameAuthoritative(
+                    request: pendingRequest,
+                    stage: "audio-session-activated-receive-authoritative"
+                )
             } else {
                 await startPendingSystemTransmitAudioCaptureIfPossible(
                     channelUUID: activeSystemChannelUUID,
@@ -4393,7 +4655,6 @@ extension PTTViewModel {
                 ]
             )
         }
-        let pendingWake = pttWakeRuntime.pendingIncomingPush
         if let wake = pendingWake {
             let contactID = wake.contactID
             if wake.activationState == .appManagedFallback,
@@ -4542,19 +4803,15 @@ extension PTTViewModel {
         if activeTarget == nil,
            pendingWake == nil,
            let activeSystemChannelUUID,
-           let receiveContactID = contactId(for: activeSystemChannelUUID),
+           let receiveContactID = receiveContactIDForActiveSystemChannel,
            remoteTransmittingContactIDs.contains(receiveContactID),
-           shouldUseSystemActivatedReceivePlayback(for: receiveContactID) {
+            shouldUseSystemActivatedReceivePlayback(for: receiveContactID) {
             if mediaSessionContactID == receiveContactID,
                mediaConnectionState == .connected || mediaConnectionState == .preparing {
-                await mediaServices.session()?.audioRouteDidChange()
-                diagnostics.record(
-                    .media,
-                    message: "Refreshed foreground receive playback after PTT audio activation",
-                    metadata: [
-                        "contactId": receiveContactID.uuidString,
-                        "channelUUID": activeSystemChannelUUID.uuidString
-                    ]
+                recordDeferredLiveReceiveAudioRouteRefresh(
+                    source: "ptt-audio-activation",
+                    contactID: receiveContactID,
+                    channelUUID: activeSystemChannelUUID
                 )
             }
             if let channelID = contacts.first(where: { $0.id == receiveContactID })?.backendChannelId {
@@ -4577,6 +4834,36 @@ extension PTTViewModel {
                 activationMode: .systemActivated,
                 startupMode: .playbackOnly
             )
+            let bufferedAudioChunks = mediaRuntime.takeForegroundSystemReceiveAudioChunks(
+                for: receiveContactID
+            )
+            if !bufferedAudioChunks.isEmpty {
+                diagnostics.record(
+                    .media,
+                    message: "Flushing buffered foreground receive audio after PTT activation",
+                    metadata: [
+                        "contactId": receiveContactID.uuidString,
+                        "channelUUID": activeSystemChannelUUID.uuidString,
+                        "bufferedChunkCount": String(bufferedAudioChunks.count),
+                    ]
+                )
+                markRemoteAudioActivity(for: receiveContactID, source: .audioChunk)
+                for bufferedAudioChunk in bufferedAudioChunks {
+                    await receiveRemoteAudioChunk(
+                        bufferedAudioChunk.payload,
+                        incomingAudioTransport: bufferedAudioChunk.transport
+                    )
+                }
+            } else {
+                diagnostics.record(
+                    .media,
+                    message: "No buffered foreground receive audio to flush after PTT activation",
+                    metadata: [
+                        "contactId": receiveContactID.uuidString,
+                        "channelUUID": activeSystemChannelUUID.uuidString,
+                    ]
+                )
+            }
         }
 
         if let activeSystemChannelUUID,
@@ -4584,6 +4871,35 @@ extension PTTViewModel {
             configureOutgoingAudioRoute(target: activeTarget)
             await completeSystemTransmitActivation(channelUUID: activeSystemChannelUUID)
         }
+    }
+
+    func shouldDeferAudioRouteRefreshDuringLiveReceive(contactID: UUID? = nil) -> Bool {
+        if let contactID {
+            return remoteTransmittingContactIDs.contains(contactID)
+        }
+        return !remoteTransmittingContactIDs.isEmpty
+    }
+
+    func recordDeferredLiveReceiveAudioRouteRefresh(
+        source: String,
+        contactID: UUID?,
+        channelUUID: UUID? = nil,
+        reason: String? = nil
+    ) {
+        var metadata: [String: String] = [
+            "source": source,
+            "liveReceiveContactCount": String(remoteTransmittingContactIDs.count),
+        ]
+        metadata["contactId"] = contactID?.uuidString ?? "none"
+        metadata["channelUUID"] = channelUUID?.uuidString ?? "none"
+        if let reason {
+            metadata["reason"] = reason
+        }
+        diagnostics.record(
+            .media,
+            message: "Deferred audio route refresh during live receive",
+            metadata: metadata
+        )
     }
 
 }

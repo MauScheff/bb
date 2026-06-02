@@ -580,6 +580,20 @@
       "status": "active"
     },
     {
+      "id": "media.outbound_audio_transport_unavailable_drop",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift",
+      "predicate": "Packet-style live audio transport dropped queued payloads after the active transport send handler became unavailable, so stale speech cannot fail the media session or drain after explicit stop.",
+      "evidenceFields": ["pendingPayloadCount", "droppedPayloadCount", "reason"],
+      "detectors": ["Turbo/PCMWebSocketMediaSession.swift"],
+      "regressions": ["TurboTests/ConnectionTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Packet lanes may clear queued live audio when explicit stop removes the send handler; ordered continuity lanes still fail unavailable transport because they require durable ordered delivery.",
+      "alertPolicy": "strict diagnostics",
+      "status": "active"
+    },
+    {
       "id": "media.incoming_audio_chunk_gap",
       "scope": "local",
       "owner": "app",
@@ -646,6 +660,20 @@
       "regressions": ["TurboTests/TurboTests.swift"],
       "repairPolicy": "app repair",
       "repairAction": "Keep playout buffered by transport profile and use the jitter evidence to separate network delay from playback scheduling problems.",
+      "alertPolicy": "diagnostics",
+      "status": "active"
+    },
+    {
+      "id": "media.playout_large_gap_resync",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift",
+      "predicate": "Live voice playout saw a large missing frame range and resynchronized to received audio instead of scheduling a long PLC run.",
+      "evidenceFields": ["codec", "frameIndex", "playbackProfile", "resynchronizedGapFrameCount", "targetCushionFrames", "bufferDepthFrames", "largestScheduledGapFrames"],
+      "detectors": ["Turbo/PCMWebSocketMediaSession.swift"],
+      "regressions": ["TurboTests/ConnectionTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Skip large live-audio gaps so newly received speech is played promptly instead of being hidden behind synthetic concealment audio.",
       "alertPolicy": "diagnostics",
       "status": "active"
     },
@@ -922,7 +950,7 @@
       "evidenceFields": ["channelId", "beepId", "beepStatus", "signalType", "membership", "readiness"],
       "detectors": ["backend/runtime/src/http.rs"],
       "regressions": ["backend/runtime/src/http.rs"],
-      "repairPolicy": "backend reject/defer",
+      "repairPolicy": "backend repair",
       "repairAction": "The Rust runtime defers receiver-ready membership mutation while pending_beep_thread_for_channel returns a pending Beep Thread; accept/join remains the only live-membership transition.",
       "alertPolicy": "strict diagnostics",
       "status": "active"
@@ -936,7 +964,7 @@
       "evidenceFields": ["channelId", "beepId", "beepThreadProjection", "membership", "readiness", "audioReadiness", "canTransmit"],
       "detectors": ["backend/runtime/src/http.rs", "Turbo/AppDiagnostics.swift"],
       "regressions": ["backend/runtime/src/http.rs", "TurboTests/ConversationTests.swift"],
-      "repairPolicy": "backend projection repair",
+      "repairPolicy": "backend repair",
       "repairAction": "The Rust runtime projects effective membership as absent whenever beep_projection_for_channel returns incoming, outgoing, or mutual pending Beep state; accept/join remains the only transition that can re-publish live membership.",
       "alertPolicy": "strict diagnostics",
       "status": "active"

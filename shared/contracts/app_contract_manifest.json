@@ -615,6 +615,20 @@
       ]
     },
     {
+      "name": "media.outbound_audio_transport_unavailable_drop",
+      "invariantID": "media.outbound_audio_transport_unavailable_drop",
+      "kind": "liveness",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PCMWebSocketMediaSession.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "Packet-style live audio transport should drop queued stale payloads after explicit stop removes the active transport send handler instead of failing the media session or draining delayed speech.",
+      "evidenceFields": [
+        "droppedPayloadCount",
+        "pendingPayloadCount",
+        "reason"
+      ]
+    },
+    {
       "name": "media.codec_negotiation_mismatch",
       "invariantID": "media.codec_negotiation_mismatch",
       "kind": "precondition",

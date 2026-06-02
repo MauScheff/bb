@@ -213,6 +213,16 @@ let simulatorScenarioRuntimeConfigURL = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent(".scenario-runtime-config.json", isDirectory: false)
 
+func simulatorScenarioRuntimeConfigURLs() -> [URL] {
+    var urls: [URL] = []
+    if let override = ProcessInfo.processInfo.environment["SIMULATOR_SCENARIO_RUNTIME_CONFIG"],
+       !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        urls.append(URL(fileURLWithPath: override))
+    }
+    urls.append(simulatorScenarioRuntimeConfigURL)
+    return urls
+}
+
 func simulatorScenarioBackendTransportConfig(
     baseURL: URL
 ) -> TurboBackendHTTPTransportConfig {
@@ -257,18 +267,21 @@ func makeSimulatorScenarioViewModel(
 }
 
 func loadSimulatorScenarioRuntimeConfig() -> SimulatorScenarioRuntimeConfig? {
-    guard
-        let data = try? Data(contentsOf: simulatorScenarioRuntimeConfigURL),
-        let config = try? JSONDecoder().decode(SimulatorScenarioRuntimeConfig.self, from: data)
-    else {
-        return nil
-    }
+    for url in simulatorScenarioRuntimeConfigURLs() {
+        guard
+            let data = try? Data(contentsOf: url),
+            let config = try? JSONDecoder().decode(SimulatorScenarioRuntimeConfig.self, from: data)
+        else {
+            continue
+        }
 
-    guard Date().timeIntervalSince1970 <= config.enabledUntilEpochSeconds else {
-        return nil
-    }
+        guard Date().timeIntervalSince1970 <= config.enabledUntilEpochSeconds else {
+            continue
+        }
 
-    return config
+        return config
+    }
+    return nil
 }
 
 func loadSimulatorScenarioSpecs(runtimeConfig: SimulatorScenarioRuntimeConfig) throws -> [SimulatorScenarioConfig] {

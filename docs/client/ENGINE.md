@@ -41,7 +41,7 @@ UI / platform / backend callbacks
 - PTT audio activation state
 - scheduled synthetic playback facts needed by the reducer
 
-The backend remains authoritative for shared control-plane facts such as Conversation membership, routes, Beeps/Beep Threads, readiness, wake targeting, and Talk Turn transmit grants. The backend is not ported to Swift. `InMemoryEngineBackendPort` exists only for synthetic simulation/fuzzing; live-local engine proof uses the real Unison backend through `turbo.serveLocal`.
+The backend remains authoritative for shared control-plane facts such as Conversation membership, routes, Beeps/Beep Threads, readiness, wake targeting, and Talk Turn transmit grants. The backend is not ported to Swift. `InMemoryEngineBackendPort` exists only for synthetic simulation/fuzzing; live-local engine proof uses the Rust runtime plus Unison kernel through the self-hosted local route.
 
 `PTTViewModel` is an adapter around:
 
@@ -196,7 +196,7 @@ public protocol EngineBackendPort {
 }
 ```
 
-`InMemoryEngineBackendPort` is a fault-injection simulation adapter. It must stay thin and intentionally incomplete; do not mirror backend business logic there. `LiveHTTPWebSocketEngineBackendPort` points the same runner at `turbo.serveLocal`, normally `http://localhost:8090/s/turbo`, and is the preferred proof when backend route semantics matter.
+`InMemoryEngineBackendPort` is a fault-injection simulation adapter. It must stay thin and intentionally incomplete; do not mirror backend business logic there. `LiveHTTPWebSocketEngineBackendPort` points the same runner at the active self-hosted runtime, normally `http://127.0.0.1:8091/s/turbo`, and is the preferred proof when backend route semantics matter.
 
 Keep backend wire strings and compatibility shapes at this edge; normalize them into typed engine evidence before reducer logic depends on them.
 
@@ -257,10 +257,10 @@ Preferred recipes:
 just engine-test
 just engine-scenario foreground_transmit_receive
 just engine-scenario 'fuzz_case:12345:0'
-just engine-scenario-local foreground_transmit_receive http://localhost:8090/s/turbo
-just engine-scenario-diff-local foreground_transmit_receive http://localhost:8090/s/turbo
+just engine-scenario-local foreground_transmit_receive http://127.0.0.1:8091/s/turbo
+just engine-scenario-diff-local foreground_transmit_receive http://127.0.0.1:8091/s/turbo
 just engine-fuzz-corpus
-just engine-fuzz-local 12345 500 http://localhost:8090/s/turbo
+just engine-fuzz-local 12345 500 http://127.0.0.1:8091/s/turbo
 just engine-invariant-coverage
 just engine-trace-replay /tmp/turbo-engine-trace.json
 ```
@@ -276,10 +276,11 @@ swift test --package-path Packages/TurboEngine
 For live-local proof, start the backend separately:
 
 ```bash
-just serve-local
+just self-hosted-up
+just self-hosted-serve 127.0.0.1:8091
 ```
 
-Then run the engine scenario/fuzz entrypoint against `http://localhost:8090/s/turbo`. Live-local engine commands should fail clearly when the backend is unavailable. Use `engine-scenario-diff-local` to compare the same scenario against in-memory simulation and the real local backend.
+Then run the engine scenario/fuzz entrypoint against `http://127.0.0.1:8091/s/turbo`. Live-local engine commands should fail clearly when the backend is unavailable. Use `engine-scenario-diff-local` to compare the same scenario against in-memory simulation and the real local backend.
 
 Existing broader gates still matter after app integration:
 

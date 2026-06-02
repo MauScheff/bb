@@ -96,6 +96,15 @@ extension PTTViewModel {
         }
     }
 
+    func shouldBlockAppInitiatedPTTJoinInCurrentLifecycle(for contactID: UUID) -> Bool {
+        guard currentApplicationState() != .active else { return false }
+        guard !pttWakeRuntime.hasPendingWake(for: contactID),
+              pttWakeRuntime.incomingWakeActivationState(for: contactID) == nil else {
+            return false
+        }
+        return true
+    }
+
     func desiredPTTServiceStatus() -> PTServiceStatus? {
         guard pttCoordinator.state.systemChannelUUID != nil else { return nil }
 
@@ -1155,6 +1164,22 @@ extension PTTViewModel {
         guard pttSystemClient.isReady else {
             statusMessage = "Not ready"
             captureDiagnosticsState("ptt-join:not-ready")
+            return
+        }
+
+        if shouldBlockAppInitiatedPTTJoinInCurrentLifecycle(for: contact.id) {
+            conversationActionCoordinator.clearPendingJoin(for: contact.id)
+            updateStatusForSelectedContact()
+            diagnostics.record(
+                .pushToTalk,
+                message: "Ignored app-initiated PTT join while application is backgrounded",
+                metadata: [
+                    "contactId": contact.id.uuidString,
+                    "channelUUID": contact.channelId.uuidString,
+                    "applicationState": String(describing: currentApplicationState()),
+                ]
+            )
+            captureDiagnosticsState("ptt-join:blocked-by-background")
             return
         }
 

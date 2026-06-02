@@ -18,6 +18,35 @@ report -> diagnostics -> owner -> invariant/regression -> fix -> prove -> releas
 
 Prefer the better long-term design over a quick patch when it removes a class of failures. Refactor aggressively when the current model, contract, or projection is the source of the problem; changing backend models or shared contracts is preferable to adding client compensation that only hides one symptom.
 
+## Reliability Discovery Loop
+
+Use this loop for ongoing reliability work, not only incident response. Fuzzing is the interleaving search engine; invariants are the oracle; replays are the debugging artifact; promoted tests, corpus cases, scenarios, or backend proofs are the durable memory.
+
+```text
+invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate
+```
+
+| Step | Rule | Output |
+| --- | --- | --- |
+| Name the truth | Start from a stable invariant, precondition, postcondition, liveness rule, or convergence rule. | Existing or new `invariantId`, or an explicit reason the rule is not machine-detectable yet. |
+| Generate pressure | Run the cheapest fuzz or scenario lane that can violate that truth. | Seed, count, command, and artifact path. |
+| Stop on first failure | Do not continue sweeping past a serious failure. Replay it exactly; shrink simulator failures. | Stable reproduction and minimized scenario when available. |
+| Classify owner | Identify whether the broken fact belongs to backend/shared truth, engine, Swift adapter/projection, pair convergence, or Apple/PTT/audio boundary. | Owner and proof lane. |
+| Promote downward | Convert the failure into the lowest durable proof that owns the rule. | Kernel corpus case, Rust runtime test, engine corpus/scenario, Swift test, backend proof/probe, or checked-in simulator scenario. |
+| Fix the owner | Change the source subsystem, not only the symptom or projection. | Structural fix plus diagnostics/contract evidence when recurrence must be explainable. |
+| Gate the blast radius | Rerun the narrow proof, then the smallest broader gate that exercises the changed surface. | Passing proof commands and artifact paths. |
+
+Default commands:
+
+```bash
+just reliability-gate-regressions
+just beepbeep-backend-gate local 123 3
+just reliability-fuzz-self-hosted-overnight 12345 500
+just reliability-fuzz-local-overnight 12345 500
+```
+
+Escalate only when the lower lane cannot represent the failure. Device testing is a boundary confirmation step for Apple/PTT/audio/hardware behavior, not the normal discovery mechanism.
+
 ## Ownership
 
 Classify before editing.

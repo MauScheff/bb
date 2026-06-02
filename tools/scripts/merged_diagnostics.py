@@ -2202,6 +2202,7 @@ def analyze_report(report: Report) -> list[InvariantViolation]:
     remote_audio_readiness = snapshot.get("remoteAudioReadiness", "unknown")
     remote_wake_capability_kind = snapshot.get("remoteWakeCapabilityKind", "unavailable")
     phase_detail = snapshot.get("selectedConversationPhaseDetail", "none")
+    selected_relationship = snapshot.get("selectedConversationRelationship", "none")
     pending_action = snapshot.get("pendingAction", "none")
     ui_call_screen_visible = snapshot_bool(snapshot, "uiCallScreenVisible")
     ui_primary_action_kind = snapshot.get("uiPrimaryActionKind", "none")
@@ -2409,7 +2410,15 @@ def analyze_report(report: Report) -> list[InvariantViolation]:
         "transmitting",
         "receiving",
     }:
-        if phase in {"idle", "outgoingBeep"}:
+        stale_disconnected_phase = phase == "idle" or (
+            phase == "outgoingBeep" and selected_relationship == "none"
+        )
+        if (
+            stale_disconnected_phase
+            and pending_action == "none"
+            and snapshot_bool(snapshot, "backendJoinSettling") is not True
+            and not local_device_ptt_evidence
+        ):
             violations.append(
                 build_violation(
                     subject=report.handle,

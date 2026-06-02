@@ -25,6 +25,12 @@ Use [`WORKFLOW.md`](/Users/mau/Development/bb/WORKFLOW.md) as the canonical thin
 report -> diagnostics -> owner -> invariant/regression -> fix -> prove -> release/check
 ```
 
+Use the reliability discovery loop for ongoing bug finding and hardening:
+
+```text
+invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate
+```
+
 Default rules:
 
 - Start from the smallest authoritative docs and source needed for the task.
@@ -34,6 +40,7 @@ Default rules:
 - Think algebraically before patching: choose domain types, monotonic transitions, idempotent operations, and convergence rules that make invalid states unrepresentable or self-resolving.
 - Treat backend/shared truth as backend-owned unless proven otherwise.
 - Convert impossible behavior into a named invariant or regression.
+- Treat fuzzing as a search mode, not a proof by itself; promote useful failures into the lowest durable proof lane.
 - Prove with the narrowest useful automated proof before broader gates.
 - Classify every simulator, physical-device, production, or shake-report failure as `crosses engine boundary`, `app adapter/effect executor`, `distributed integration`, or `Apple/PTT/audio boundary` before choosing a fix.
 - If a failure crosses the engine boundary, extract/replay `engineTrace` first; model it with `TurboEngine` only when trace is unavailable or insufficient.
@@ -72,8 +79,8 @@ Load the smallest row that covers the task.
 | Backend/routes/storage/deploy | `backend/README.md`, `backend/docs/ARCHITECTURE.md`, `TOOLING.md`; add `UNISON_LANGUAGE.md` for kernel syntax and `TLA_PLUS.md` for live-control ownership or reconnect protocol changes | Rust owns effects and storage; Unison owns pure kernel decisions under `beepbeep.*`; prove with `just beepbeep-backend-gate` before trusting production. |
 | Archived Unison Cloud backend archaeology | `/Users/mau/Development/Turbo`, `docs/reference/` | Reference only. Do not put new active backend behavior on the old `turbo.*` Cloud path unless explicitly asked. |
 | Mixed app/backend bug | `WORKFLOW.md`, `TOOLING.md`, `docs/client/ENGINE.md`, `docs/client/SWIFT.md`, `docs/client/SWIFT_DEBUGGING.md`, `backend/docs/ARCHITECTURE.md` | Inspect backend projection/route ownership and client projection before fixing. A frontend-only patch is incomplete when backend truth is wrong. |
-| Invariants/diagnostics/reliability | `WORKFLOW.md`, `docs/reliability/INVARIANTS.md`; add `docs/reliability/SELF_HEALING.md` for repair, `docs/reliability/STATE_MACHINE_TESTING.md` for scenario proofs, `docs/reliability/PRODUCTION_TELEMETRY.md` for telemetry/shake intake, `docs/reliability/RELIABILITY_PLAN.md` for active reliability sprint work | Name the invariant, choose the narrowest detector, keep production-capable evidence machine-readable. |
-| Scenario/fuzz/protocol | `docs/reliability/fuzz.md`, `docs/reliability/STATE_MACHINE_TESTING.md`, `docs/reliability/SIMULATOR_FUZZING.md`, `docs/reliability/TLA_PLUS.md`, `shared/scenarios/README.md` | Prefer engine tests/headless scenarios first. Escalate to simulator when app/backend integration or merged diagnostics are required. |
+| Invariants/diagnostics/reliability | `WORKFLOW.md`, `docs/reliability/INVARIANTS.md`; add `docs/reliability/fuzz.md` for the reliability discovery loop, `docs/reliability/SELF_HEALING.md` for repair, `docs/reliability/STATE_MACHINE_TESTING.md` for scenario proofs, `docs/reliability/PRODUCTION_TELEMETRY.md` for telemetry/shake intake, `docs/reliability/RELIABILITY_PLAN.md` for active reliability sprint work | Name the invariant, choose the narrowest detector, keep production-capable evidence machine-readable, and promote fuzz failures into durable proof. |
+| Scenario/fuzz/protocol | `WORKFLOW.md`, `docs/reliability/fuzz.md`, `docs/reliability/STATE_MACHINE_TESTING.md`, `docs/reliability/SIMULATOR_FUZZING.md`, `docs/reliability/TLA_PLUS.md`, `shared/scenarios/README.md` | Prefer engine tests/headless scenarios first. Escalate to simulator when app/backend integration or merged diagnostics are required. Stop on first serious fuzz failure, replay/shrink, classify, promote, then resume. |
 | Semantic refactor/terminology | `GLOSSARY.md`, `WORKFLOW.md`; add the smallest owner docs for the touched area | Start with an 80/20 concept map when the target is broad. Refactor one concept at a time, update glossary/rename ledger before code renames, and prove semantic equivalence through the narrowest proof lane. |
 | Product/copy/brand | `docs/product/Beep-Beep-Product-Thesis.md`, `GLOSSARY.md`, `docs/product/PRODUCT_BRIEF.md`, `docs/product/BRAND.md` | Treat the thesis as the latest product/brand/marketing source, then use glossary terms and narrower product/brand docs for implementation-facing precision. Keep product-facing text in `README.md` or explicit product docs; other `.md` files are agent-facing. |
 

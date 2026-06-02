@@ -213,6 +213,20 @@ final class RecordingMediaSession: MediaSession {
 
     func hasPendingPlayback() -> Bool { hasPendingPlaybackResult }
 
+    func waitForReceivedChunkCount(
+        _ expectedCount: Int,
+        timeoutNanoseconds: UInt64 = 1_000_000_000
+    ) async -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            if receivedRemoteAudioChunks.count >= expectedCount {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return receivedRemoteAudioChunks.count >= expectedCount
+    }
+
     func close(deactivateAudioSession: Bool) {
         closedDeactivateAudioSessionFlags.append(deactivateAudioSession)
         state = .closed

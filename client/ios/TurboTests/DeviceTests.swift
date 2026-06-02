@@ -1807,6 +1807,7 @@ struct DeviceTests {
         viewModel.isPTTAudioSessionActive = false
         let mediaSession = RecordingMediaSession()
         mediaSession.delegate = viewModel
+        mediaSession.audioRouteDidChangeDelayNanoseconds = 1_000_000_000
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
 
         viewModel.handleIncomingSignal(
@@ -1895,7 +1896,7 @@ struct DeviceTests {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         #expect(viewModel.pttWakeRuntime.pendingIncomingPush == nil)
-        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(mediaSession.receivedRemoteAudioChunks == [])
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Using app-managed wake playback for foreground audio"
@@ -1910,16 +1911,111 @@ struct DeviceTests {
                 "Buffered wake audio chunk until PTT activation"
             ) == false
         )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Buffered foreground receive audio chunk until PTT activation"
+            )
+        )
 
         viewModel.isPTTAudioSessionActive = true
         await viewModel.handleActivatedAudioSession(.sharedInstance())
 
-        #expect(mediaSession.audioRouteDidChangeCallCount == 1)
+        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(mediaSession.audioRouteDidChangeCallCount == 0)
         #expect(viewModel.mediaSessionContactID == contactID)
         #expect(viewModel.mediaConnectionState == .connected)
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Refreshed foreground receive playback after PTT audio activation"
+                "Deferred audio route refresh during live receive"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Flushing buffered foreground receive audio after PTT activation"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func appleGatedForegroundIncomingAudioBufferKeepsOnlyStartupCushionBeforeActivation() async throws {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
+        viewModel.isPTTAudioSessionActive = false
+        let mediaSession = RecordingMediaSession()
+        mediaSession.delegate = viewModel
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+
+        let burstCount = 20
+        for index in 0..<burstCount {
+            await viewModel.handleIncomingAudioPayload(
+                "payload-\(index)",
+                channelID: "channel-123",
+                fromUserID: "peer-user",
+                fromDeviceID: "peer-device",
+                contactID: contactID,
+                incomingAudioTransport: .mediaRelayPacket,
+                transportSequenceNumber: UInt64(index)
+            )
+        }
+
+        #expect(mediaSession.receivedRemoteAudioChunks == [])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "droppedStaleBufferedChunkCount=1"
+            )
+        )
+
+        viewModel.isPTTAudioSessionActive = true
+        await viewModel.handleActivatedAudioSession(.sharedInstance())
+
+        #expect(
+            mediaSession.receivedRemoteAudioChunks == (8..<burstCount).map {
+                "payload-\($0)"
+            }
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Flushing buffered foreground receive audio after PTT activation"
             )
         )
     }
@@ -4813,15 +4909,165 @@ struct DeviceTests {
 
         #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
         #expect(capturedEffects.isEmpty)
+        #expect(
+            viewModel.hasStaleSystemRejoinSuppression(
+                channelUUID: channelUUID,
+                contactID: contactID
+            )
+        )
         let receiverNotReady = client.sentSignalsForTesting().filter { $0.type == .receiverNotReady }
         #expect(receiverNotReady.count == 1)
         #expect(receiverNotReady.first?.payload.contains("\"reason\":\"app-background-media-closed\"") == true)
         #expect(viewModel.localReceiverAudioReadinessPublications[contactID]?.isReady == false)
         #expect(
             viewModel.diagnosticsTranscript.contains(
+                "Treating background system PTT leave as local-only continuity interruption"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
                 "Publishing receiver not-ready after background PTT system leave"
             )
         )
+    }
+
+    @MainActor
+    @Test func backgroundSystemLeaveBlocksStaleRejoinRestoreAndLocalJoinRetry() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .background
+        viewModel.selectedConnectionAttemptTimeoutNanoseconds = 1_000_000
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.conversationActionCoordinator.queueJoin(
+            contactID: contactID,
+            channelUUID: channelUUID
+        )
+        viewModel.syncPTTState()
+
+        viewModel.handleDidLeaveChannel(channelUUID, reason: "PTChannelLeaveReason(rawValue: 2)")
+        await Task.yield()
+        await Task.yield()
+
+        #expect(
+            viewModel.hasStaleSystemRejoinSuppression(
+                channelUUID: channelUUID,
+                contactID: contactID
+            )
+        )
+        #expect(viewModel.conversationActionCoordinator.pendingJoinContactID == nil)
+        #expect(viewModel.conversationActionCoordinator.localJoinAttempt == nil)
+        #expect(viewModel.selectedConnectionAttemptTimeoutTask == nil)
+
+        await viewModel.runSelectedConversationEffect(.restoreDevicePTTSession(contactID: contactID))
+
+        #expect(pttClient.joinRequests.isEmpty)
+        #expect(
+            viewModel.hasStaleSystemRejoinSuppression(
+                channelUUID: channelUUID,
+                contactID: contactID
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignored automatic Device PTT restore after recent system leave"
+            )
+        )
+
+        viewModel.handleDidJoinChannel(channelUUID, reason: "stale-background-rejoin")
+        await Task.yield()
+        await Task.yield()
+
+        #expect(pttClient.leaveRequests == [channelUUID])
+        #expect(pttClient.joinRequests.isEmpty)
+        #expect(viewModel.pttCoordinator.state.isJoined == false)
+        #expect(viewModel.isJoined == false)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignoring stale PTT join after recent system leave"
+            )
+        )
+
+        viewModel.conversationActionCoordinator.queueJoin(
+            contactID: contactID,
+            channelUUID: channelUUID
+        )
+        viewModel.joinPTTChannel(for: contact)
+
+        #expect(pttClient.joinRequests.isEmpty)
+        #expect(viewModel.conversationActionCoordinator.pendingJoinContactID == nil)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignored app-initiated PTT join while application is backgrounded"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func backgroundPTTJoinIsAllowedForIncomingWake() {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        let payload = TurboPTTPushPayload(
+            event: .transmitStart,
+            channelId: "channel-1",
+            activeSpeaker: "@blake",
+            activeSpeakerDisplayName: "Blake",
+            senderUserId: "user-blake",
+            senderDeviceId: "peer-device"
+        )
+        viewModel.applicationStateOverride = .background
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .waitingForPeer,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.pttWakeRuntime.store(
+            PendingIncomingPTTPush(
+                contactID: contactID,
+                channelUUID: channelUUID,
+                payload: payload
+            )
+        )
+
+        viewModel.joinPTTChannel(for: contact)
+
+        #expect(pttClient.joinRequests == [channelUUID])
+        #expect(viewModel.conversationActionCoordinator.pendingJoinContactID == contactID)
     }
 
     @Test func pttSystemPolicyReducerEmitsUploadEffectWhenChannelIsKnown() {

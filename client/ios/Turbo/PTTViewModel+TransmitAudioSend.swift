@@ -341,6 +341,11 @@ extension PTTViewModel {
             && payload.encryptedSequenceNumber == nil
             && expectation.deliveredTransports.contains(payload.transport)
             && (payload.transport == "relay-websocket" || payload.transport == "media-relay-tcp")
+        let unorderedPacketAckForCurrentExpectation =
+            expectation.encryptedSequenceNumber == nil
+            && payload.encryptedSequenceNumber == nil
+            && expectation.deliveredTransports.contains(payload.transport)
+            && (payload.transport == "direct-quic" || payload.transport == "media-relay-packet")
         let deliveredTransportMatches =
             expectation.deliveredTransports.isEmpty
             || expectation.deliveredTransports.contains(payload.transport)
@@ -348,7 +353,9 @@ extension PTTViewModel {
         let packetIdentityMatches: Bool
         if let expectedSequenceNumber, let receivedSequenceNumber {
             packetIdentityMatches = receivedSequenceNumber >= expectedSequenceNumber
-        } else if packetRelayFallbackAck || orderedRelayAckForCurrentExpectation {
+        } else if packetRelayFallbackAck
+                    || orderedRelayAckForCurrentExpectation
+                    || unorderedPacketAckForCurrentExpectation {
             packetIdentityMatches = true
         } else {
             packetIdentityMatches = payload.transportDigest == expectation.transportDigest
@@ -641,6 +648,38 @@ extension PTTViewModel {
             await mediaSession.abortSendingAudio()
         } else {
             try? await mediaSession.stopSendingAudio()
+        }
+    }
+
+    func cutLocalOutgoingAudioImmediatelyForExplicitStop(
+        target: TransmitTarget,
+        reason: String
+    ) {
+        let media = mediaServices
+        let mediaSession = media.session()
+        transmitTaskRuntime.cancelCaptureReassertionTask()
+        media.replaceSendAudioChunk(nil)
+        mediaSession?.updateSendAudioChunk(nil)
+        if let currentSession = media.session(), currentSession !== mediaSession {
+            currentSession.updateSendAudioChunk(nil)
+        }
+        diagnostics.record(
+            .media,
+            message: "Cut local outgoing audio immediately for explicit transmit stop",
+            metadata: [
+                "contactId": target.contactID.uuidString,
+                "channelId": target.channelID,
+                "reason": reason,
+                "transportPath": mediaTransportPathState.rawValue,
+                "transportPolicy": mediaTransportPolicyForOutgoingAudio(for: target.contactID).rawValue,
+            ]
+        )
+        Task { [weak self, weak mediaSession] in
+            guard let self else { return }
+            await self.stopOutgoingAudioForExplicitTransmitStop(
+                mediaSession,
+                target: target
+            )
         }
     }
 
@@ -1038,6 +1077,39 @@ extension PTTViewModel {
                 }
 
                 if routeIsMediaRelayForced {
+                    let shouldUseWebSocketContinuityForUnacknowledgedRelay = await MainActor.run {
+                        self.shouldUseWebSocketContinuityForUnacknowledgedForcedMediaRelay(target: target)
+                    }
+                    if shouldUseWebSocketContinuityForUnacknowledgedRelay {
+                        await MainActor.run {
+                            self.clearMediaRelayClientAfterUnacknowledgedPrewarmIfPresent(
+                                target: target,
+                                localDeviceID: fromDeviceID
+                            )
+                        }
+                        try await relaySend()
+                        scheduleLocalAudioCapturedSync(transportPayload)
+                        await MainActor.run {
+                            _ = self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
+                                transportPayload,
+                                target: target,
+                                deliveredTransports: ["relay-websocket"]
+                            )
+                            if outboundDeliveryDiagnosticsLimiter.take() {
+                                self.diagnostics.record(
+                                    .media,
+                                    message: "Sent outbound audio over WebSocket continuity while forced media relay prewarm is unacknowledged",
+                                    metadata: [
+                                        "contactId": target.contactID.uuidString,
+                                        "channelId": target.channelID,
+                                        "toDeviceId": target.deviceID,
+                                        "transportPath": self.mediaTransportPathState.rawValue,
+                                    ]
+                                )
+                            }
+                        }
+                        return
+                    }
                     if let relayClient = await self.mediaRelayClientForAudioSend(target: target) {
                         let bypassMediaRelayPacket = shouldBypassMediaRelayPacketForLegacyPCM(relayClient)
                         if bypassMediaRelayPacket {
@@ -1174,22 +1246,20 @@ extension PTTViewModel {
                 var shouldShadowMediaRelayTcpOverWebSocket = false
                 let directTransport = directTransportForAudioSend
                 var prearmedDirectAckExpectation = false
+                var directAckPrearmTask: Task<Void, Never>?
                 if let directTransport {
                     do {
                         if directAckPrearmGate.take() {
-                            let ackPrearmStartedAt = DispatchTime.now().uptimeNanoseconds
-                            prearmedDirectAckExpectation = await MainActor.run {
-                                self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
+                            prearmedDirectAckExpectation = true
+                            directAckPrearmTask = Task { @MainActor [weak self] in
+                                guard !Task.isCancelled else { return }
+                                guard let self else { return }
+                                _ = self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
                                     transportPayload,
                                     target: target,
                                     deliveredTransports: ["direct-quic"]
                                 )
                             }
-                            recordSlowOutboundAudioSendStage(
-                                "direct-ack-prearm-mainactor",
-                                ackPrearmStartedAt,
-                                transportPayload.count
-                            )
                         }
                         try Task.checkCancellation()
                         let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
@@ -1217,9 +1287,11 @@ extension PTTViewModel {
                         }
                         return
                     } catch is CancellationError {
+                        directAckPrearmTask?.cancel()
                         throw CancellationError()
                     } catch {
                         deliveryFailures.append(("direct-quic", error))
+                        directAckPrearmTask?.cancel()
                         if prearmedDirectAckExpectation {
                             await MainActor.run {
                                 self.clearFirstAudioPlaybackAckState(
@@ -1492,6 +1564,39 @@ extension PTTViewModel {
         return "relay-websocket"
     }
 
+    func shouldUseWebSocketContinuityForUnacknowledgedForcedMediaRelay(target: TransmitTarget) -> Bool {
+        guard TurboMediaRelayDebugOverride.isForced() else { return false }
+        guard !isDirectPathRelayOnlyForced else { return false }
+        guard backendServices?.supportsWebSocket == true else { return false }
+        let maximumAge = TimeInterval(directQuicAudioFreshnessMilliseconds) / 1_000
+        return !mediaRuntime.receiverPrewarmRequestIsAcknowledged(
+            for: target.contactID,
+            maximumAge: maximumAge
+        )
+    }
+
+    func clearMediaRelayClientAfterUnacknowledgedPrewarmIfPresent(
+        target: TransmitTarget,
+        localDeviceID: String
+    ) {
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: localDeviceID,
+            peerDeviceID: target.deviceID
+        )
+        guard let client = mediaRuntime.existingMediaRelayClient(for: key) else { return }
+        mediaRuntime.clearMediaRelayClient(matching: key, client: client)
+        diagnostics.record(
+            .media,
+            message: "Cleared media relay client after receiver prewarm ACK did not arrive",
+            metadata: [
+                "contactId": target.contactID.uuidString,
+                "channelId": target.channelID,
+                "peerDeviceId": target.deviceID,
+            ]
+        )
+    }
+
     func mediaRelayClientForAudioSend(
         target: TransmitTarget,
         bypassAudioSendSuppression: Bool = false
@@ -1550,12 +1655,14 @@ extension PTTViewModel {
     func connectMediaRelayForReceiveIfNeeded(
         contactID: UUID,
         channelID: String,
-        peerDeviceID: String
+        peerDeviceID: String,
+        allowConfiguredReceiveWithoutLocalToggle: Bool = false
     ) async {
         _ = await mediaRelayClientIfEnabled(
             contactID: contactID,
             channelID: channelID,
             peerDeviceID: peerDeviceID,
+            allowConfiguredReceiveWithoutLocalToggle: allowConfiguredReceiveWithoutLocalToggle,
             missingConfigMessage: "Media relay receive prejoin skipped because relay config is missing",
             connectingMessage: "Prejoining media relay for receive",
             selectedMessage: "Media relay receive prejoin selected",
@@ -1574,6 +1681,7 @@ extension PTTViewModel {
         contactID: UUID,
         channelID: String,
         peerDeviceID: String,
+        allowConfiguredReceiveWithoutLocalToggle: Bool = false,
         missingConfigMessage: String,
         connectingMessage: String,
         selectedMessage: String,
@@ -1583,7 +1691,11 @@ extension PTTViewModel {
     ) async -> TurboMediaRelayClient? {
         let shouldAttempt = await MainActor.run {
             !isDirectPathRelayOnlyForced
-                && (TurboMediaRelayDebugOverride.isEnabled() || TurboMediaRelayDebugOverride.isForced())
+                && (
+                    TurboMediaRelayDebugOverride.isEnabled()
+                    || TurboMediaRelayDebugOverride.isForced()
+                    || allowConfiguredReceiveWithoutLocalToggle
+                )
         }
         guard shouldAttempt else { return nil }
         guard let config = await MainActor.run(body: { TurboMediaRelayDebugOverride.config() }) else {
@@ -2267,6 +2379,23 @@ extension PTTViewModel {
         guard !channelSnapshot.remoteAudioReadyForLiveTransmit else {
             return true
         }
+        if shouldReleaseInitialOutboundAudioSendGateForForegroundDirectQuic(
+            target: target,
+            channelSnapshot: channelSnapshot
+        ) {
+            diagnostics.record(
+                .media,
+                message: "Foreground Direct QUIC receiver is prepared; releasing outbound audio send gate",
+                metadata: [
+                    "contactId": target.contactID.uuidString,
+                    "channelId": target.channelID,
+                    "remoteAudioReadiness": String(describing: channelSnapshot.remoteAudioReadiness),
+                    "readinessStatus": String(describing: channelSnapshot.readinessStatus),
+                    "peerDeviceConnected": String(channelSnapshot.membership.peerDeviceConnected),
+                ]
+            )
+            return true
+        }
         let wakeCapableReceiver: Bool
         if case .wakeCapable = channelSnapshot.remoteWakeCapability {
             wakeCapableReceiver = true
@@ -2399,6 +2528,19 @@ extension PTTViewModel {
 
             try? await Task.sleep(nanoseconds: pollNanoseconds)
         }
+    }
+
+    func shouldReleaseInitialOutboundAudioSendGateForForegroundDirectQuic(
+        target: TransmitTarget,
+        channelSnapshot: ChannelReadinessSnapshot
+    ) -> Bool {
+        guard currentApplicationState() == .active else { return false }
+        guard shouldUseDirectQuicTransport(for: target.contactID) else { return false }
+        guard channelSnapshot.membership.peerDeviceConnected else { return false }
+        if case .wakeCapable = channelSnapshot.remoteWakeCapability {
+            return false
+        }
+        return true
     }
 
     func reconcileExplicitTransmitStopIfNeeded(

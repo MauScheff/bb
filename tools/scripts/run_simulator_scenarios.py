@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-id-b", default="sim-scenario-blake")
     parser.add_argument("--lock-file", default=".scenario-test.lock")
     parser.add_argument("--simulator-lock-file", default="/tmp/turbo-simulator-test.lock")
-    parser.add_argument("--runtime-config", default=".scenario-runtime-config.json")
+    parser.add_argument("--runtime-config", default="client/ios/.scenario-runtime-config.json")
     parser.add_argument("--scenario-file", default="")
     parser.add_argument("--scenario-directory", default="")
     parser.add_argument("--control-command-transport-policy", default="")

@@ -544,14 +544,10 @@ struct DiagnosticsTests {
 
     @MainActor
     @Test func incomingAudioSequenceGapRecordsLivenessContractDuringActiveReceiveEpoch() {
-        let transports: [IncomingAudioPayloadTransport] = [
-            .directQuic,
-            .mediaRelayPacket,
-            .mediaRelayTcp,
-            .relayWebSocket,
-        ]
+        let orderedTransports: [IncomingAudioPayloadTransport] = [.mediaRelayTcp, .relayWebSocket]
+        let packetTransports: [IncomingAudioPayloadTransport] = [.directQuic, .mediaRelayPacket]
 
-        for transport in transports {
+        for transport in orderedTransports {
             let viewModel = PTTViewModel()
             let contactID = UUID()
             viewModel.receiveExecutionCoordinator.effectHandler = { _ in }
@@ -578,6 +574,34 @@ struct DiagnosticsTests {
                         && $0.metadata["previousSequenceNumber"] == "1"
                         && $0.metadata["sequenceNumber"] == "3"
                         && $0.metadata["missingSequenceCount"] == "1"
+                        && $0.metadata["incomingTransport"] == transport.diagnosticsValue
+                }
+            )
+        }
+
+        for transport in packetTransports {
+            let viewModel = PTTViewModel()
+            let contactID = UUID()
+            viewModel.receiveExecutionCoordinator.effectHandler = { _ in }
+            viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+            viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+            viewModel.recordIncomingAudioSequenceContractIfNeeded(
+                contactID: contactID,
+                channelID: "channel-1",
+                incomingAudioTransport: transport,
+                sequenceNumber: 1
+            )
+            viewModel.recordIncomingAudioSequenceContractIfNeeded(
+                contactID: contactID,
+                channelID: "channel-1",
+                incomingAudioTransport: transport,
+                sequenceNumber: 3
+            )
+
+            #expect(
+                !viewModel.diagnostics.invariantViolations.contains {
+                    $0.invariantID == "media.incoming_audio_sequence_gap"
                         && $0.metadata["incomingTransport"] == transport.diagnosticsValue
                 }
             )
@@ -3486,6 +3510,40 @@ struct DiagnosticsTests {
         #expect(
             store.latestError?.message
                 == "backend channel is connectable and receiver wake is available, but selectedConversationPhase is still not connectable"
+        )
+    }
+
+    @MainActor
+    @Test func diagnosticsDoesNotFlagWakeCapableReceiverDuringOutstandingOutgoingBeep() {
+        let store = DiagnosticsStore()
+        store.clear()
+
+        captureDevicePTTDiagnosticsState(store,
+            reason: "receiver-audio-readiness:published",
+            fields: [
+                "selectedContact": "@blake",
+                "selectedConversationPhase": "outgoingBeep",
+                "selectedConversationRelationship": "outgoingBeep(requestCount: 1)",
+                "pendingAction": "none",
+                "isJoined": "false",
+                "isTransmitting": "false",
+                "systemSession": "none",
+                "backendChannelStatus": "waiting-for-peer",
+                "backendReadiness": "waiting-for-peer",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "true",
+                "backendPeerDeviceConnected": "true",
+                "remoteWakeCapabilityKind": "wake-capable",
+                "selectedConversationStatus": "Beep sent to @blake"
+            ]
+        )
+
+        _ = store.exportText(snapshot: "selectedConversationPhase=outgoingBeep")
+
+        #expect(
+            !store.invariantViolations.contains {
+                $0.invariantID == "selected.wake_capable_receiver_ui_not_connectable"
+            }
         )
     }
 

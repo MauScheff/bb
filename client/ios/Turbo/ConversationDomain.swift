@@ -1672,6 +1672,18 @@ struct ConversationDerivationContext: Equatable {
         return channel.readinessStatus == .inactive
     }
 
+    var backendInactiveReadinessInvalidatesLocalDevicePTT: Bool {
+        guard !backendJoinSettling else { return false }
+        guard rawLocalDevicePTTEvidencePresent else { return false }
+        guard let channel else { return false }
+        guard channel.readinessStatus == .inactive else { return false }
+        guard !channel.canTransmit else { return false }
+        guard !wakeRecoveryInFlight else { return false }
+        guard !channelHasBeepThreadProjection else { return false }
+        guard !remoteParticipantSignalIsTransmitting else { return false }
+        return true
+    }
+
     var channelHasBeepThreadProjection: Bool {
         guard relationship == .none else { return true }
         guard let relationship = channel?.beepThreadProjection else { return false }
@@ -1876,6 +1888,23 @@ struct ConversationDerivationContext: Equatable {
         return backendChannelReadiness.hasLocalMembership
     }
 
+    var establishedConnectedSessionLostTransmitAuthorityWaitingForPeer: Bool {
+        guard selectedContactID == contactID else { return false }
+        guard !devicePTTRestoreBarrier.blocksAutomaticRestore else { return false }
+        guard hadConnectedDevicePTTContinuity else { return false }
+        guard devicePTTReadiness == .aligned else { return false }
+        guard !backendJoinSettling else { return false }
+        guard !remoteParticipantSignalIsTransmitting else { return false }
+        guard remoteAudioReadinessState != .ready else { return false }
+        guard case .both(let peerDeviceConnected, let canTransmit, let readinessStatus) = backendChannelReadiness,
+              peerDeviceConnected,
+              !canTransmit,
+              readinessStatus == .waitingForPeer else {
+            return false
+        }
+        return true
+    }
+
     var backendReadyMembershipHasCurrentDeviceEvidence: Bool {
         guard let channel else { return false }
         guard channel.localHasActiveDevice else { return false }
@@ -2026,8 +2055,7 @@ enum ConversationStateMachine {
         let connectedExecution = context.connectedExecutionProjection
         let connectedControlPlane = context.connectedControlPlaneProjection
         let pendingBeepState: () -> SelectedConversationState? = {
-            guard !context.pendingConnectAcceptedIncomingBeep,
-                  context.pendingAction.pendingJoinContactID != context.contactID else {
+            guard context.pendingAction.pendingJoinContactID != context.contactID else {
                 return nil
             }
             switch relationship {
@@ -2716,6 +2744,14 @@ enum ConversationStateMachine {
             return .clearStaleBackendMembership(contactID: context.contactID)
         }
 
+        if context.backendInactiveReadinessInvalidatesLocalDevicePTT {
+            return .teardownDevicePTTSession(contactID: context.contactID)
+        }
+
+        if context.establishedConnectedSessionLostTransmitAuthorityWaitingForPeer {
+            return .teardownDevicePTTSession(contactID: context.contactID)
+        }
+
         switch context.backendChannelReadiness {
         case .absent:
             if localDevicePTTEvidencePresent,
@@ -2883,6 +2919,10 @@ private extension ConversationDerivationContext {
             return .localJoinFailed(recoveryMessage: localJoinFailure.reason.recoveryMessage)
         }
 
+        if devicePTTRestoreBarrier.blocksAutomaticRestore {
+            return .disconnecting
+        }
+
         if pendingAction.isLeaveInFlight(for: contactID) {
             return .disconnecting
         }
@@ -2891,7 +2931,15 @@ private extension ConversationDerivationContext {
             return .disconnecting
         }
 
+        if backendInactiveReadinessInvalidatesLocalDevicePTT {
+            return .disconnecting
+        }
+
         if blockedAutomaticRestoreIsAwaitingBackendConvergence {
+            return .disconnecting
+        }
+
+        if establishedConnectedSessionLostTransmitAuthorityWaitingForPeer {
             return .disconnecting
         }
 

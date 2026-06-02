@@ -294,6 +294,21 @@ struct ControlPlaneSessionState: Equatable {
             }
         }
     }
+
+    mutating func clearCachedReceiverReadyPublicationPreservingDeferredAndNotReady(
+        contactID: UUID
+    ) {
+        switch receiverAudioReadinessStates[contactID] {
+        case .published(let publication) where !publication.isReady:
+            return
+        case .suppressed(let publication) where !publication.isReady:
+            return
+        case .deferred:
+            return
+        case .published, .suppressed, nil:
+            receiverAudioReadinessStates[contactID] = nil
+        }
+    }
 }
 
 enum ControlPlaneEvent: Equatable {
@@ -341,6 +356,10 @@ enum ControlPlaneReducer {
             }
 
             if !peerIsRoutable {
+                if case .published(let publication)? = nextState.receiverAudioReadinessStates[intent.contactID],
+                   publication.isReady == intent.isReady {
+                    break
+                }
                 nextState.receiverAudioReadinessStates[intent.contactID] = .suppressed(intent.suppressedState)
                 break
             }
@@ -374,7 +393,9 @@ enum ControlPlaneReducer {
 
         case .receiverAudioReadinessCacheCleared(let contactID):
             if let contactID {
-                nextState.receiverAudioReadinessStates[contactID] = nil
+                nextState.clearCachedReceiverReadyPublicationPreservingDeferredAndNotReady(
+                    contactID: contactID
+                )
             } else {
                 nextState.clearCachedReceiverAudioReadinessPublicationsPreservingDeferred()
             }

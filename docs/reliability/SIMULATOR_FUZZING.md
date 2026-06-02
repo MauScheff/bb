@@ -13,9 +13,10 @@ Headless engine entrypoints:
 ```sh
 just engine-test
 just engine-scenario foreground_transmit_receive
-just serve-local
-just engine-scenario-local foreground_transmit_receive
-just engine-fuzz-local 12345 500
+just self-hosted-up
+just self-hosted-serve 127.0.0.1:8091
+just engine-scenario-local foreground_transmit_receive http://127.0.0.1:8091/s/turbo
+just engine-fuzz-local 12345 500 http://127.0.0.1:8091/s/turbo
 ```
 
 Engine fuzz artifacts are written under `/tmp/turbo-engine-fuzz/`. Use those first when the failure can be replayed without the iOS simulator.
@@ -23,15 +24,16 @@ Engine fuzz artifacts are written under `/tmp/turbo-engine-fuzz/`. Use those fir
 ## Entry Points
 
 ```sh
-just serve-local
-just simulator-fuzz-local 123 3
-just simulator-fuzz-local-overnight 12345 500
-just reliability-fuzz-local-overnight 12345 500
+just self-hosted-up
+just self-hosted-serve 127.0.0.1:8091
+just simulator-fuzz-local 123 3 http://127.0.0.1:8091/s/turbo
+just simulator-fuzz-local-overnight 12345 500 http://127.0.0.1:8091/s/turbo
+just reliability-fuzz-local-overnight 12345 500 http://127.0.0.1:8091/s/turbo
 just simulator-fuzz-replay /tmp/turbo-scenario-fuzz/<run-id>/seed-<seed>
 just simulator-fuzz-shrink /tmp/turbo-scenario-fuzz/<run-id>/seed-<seed>
 ```
 
-Default base URL: `http://localhost:8090/s/turbo`. Local fuzz assumes `just serve-local` is running.
+Default active runtime URL: `http://127.0.0.1:8091/s/turbo`. Local fuzz assumes `just self-hosted-up` and `just self-hosted-serve` are running.
 
 For end-to-end reliability sweeps that should cover the new engine first, use
 `just reliability-fuzz-local-overnight <seed> <count>`. It runs
@@ -203,7 +205,7 @@ The Python wrapper exposes these as:
 python3 scripts/run_simulator_scenarios.py \
   --scenario-file /tmp/example/scenario.json \
   --scenario fuzz_seed_123 \
-  --base-url http://localhost:8090/s/turbo
+  --base-url http://127.0.0.1:8091/s/turbo
 ```
 
 Use this path for generated/temporary scenarios. Promote only stable, readable regressions into `scenarios/`.
@@ -278,8 +280,9 @@ Use this after changing the fuzz machinery:
 2. Run one generated scenario file through the generated input path:
 
    ```sh
-   just serve-local
-   python3 scripts/run_simulator_fuzz.py run --seed 123 --count 1
+   just self-hosted-up
+   just self-hosted-serve 127.0.0.1:8091
+   python3 scripts/run_simulator_fuzz.py run --seed 123 --count 1 --base-url http://127.0.0.1:8091/s/turbo
    just simulator-fuzz-replay /tmp/turbo-scenario-fuzz/<run-id>/seed-123
    ```
 

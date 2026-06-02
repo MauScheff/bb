@@ -85,6 +85,22 @@ struct TurboEngineCoreTests {
         #expect(report.finalSnapshot.transmit.activeEpoch?.transmitID == "tx-trace")
     }
 
+    @Test func legacyEngineTraceFixtureReplaysDeterministically() throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/trace-replay-smoke.json")
+        let data = try Data(contentsOf: fixture)
+        let trace = try JSONDecoder().decode(EngineTrace.self, from: data)
+
+        #expect(trace.steps.first?.source == "fixture-join")
+
+        let report = EngineTraceReplayer.replay(trace)
+        #expect(report.passed)
+        #expect(report.mismatches.isEmpty)
+    }
+
     @Test func enginePreconditionInvariantsHaveFocusedProofs() {
         var accept = TurboEngine(localDeviceID: "sender-device")
         expectInvariant(

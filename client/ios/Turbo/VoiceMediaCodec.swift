@@ -182,6 +182,10 @@ nonisolated enum VoiceAudioFramePayloadCodec {
         )
     }
 
+    static func mayContainOpusFrame(_ payload: String) -> Bool {
+        payload.contains(kind) && payload.contains(VoiceMediaCapabilities.opusCodec)
+    }
+
     static func decodeTransportFrames(_ payload: String) -> [VoiceAudioTransportFrame]? {
         let chunks = AudioChunkPayloadCodec.decode(payload)
         guard !chunks.isEmpty else { return [] }
@@ -617,6 +621,7 @@ nonisolated struct VoicePlayoutInsertResult: Equatable, Sendable {
     let missingFrameCount: Int
     let plcRecoveryCount: Int
     let fecRecoveryCount: Int
+    let resynchronizedGapFrameCount: Int
     let bufferDepthFrames: Int
     let targetCushionFrames: Int
     let interArrivalGapNanoseconds: UInt64?
@@ -666,6 +671,7 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
                 missingFrameCount: 0,
                 plcRecoveryCount: 0,
                 fecRecoveryCount: 0,
+                resynchronizedGapFrameCount: 0,
                 bufferDepthFrames: bufferedFrames.count,
                 targetCushionFrames: targetCushionFrames(for: playbackProfile),
                 interArrivalGapNanoseconds: interArrivalGap,
@@ -681,6 +687,7 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
                 missingFrameCount: 0,
                 plcRecoveryCount: 0,
                 fecRecoveryCount: 0,
+                resynchronizedGapFrameCount: 0,
                 bufferDepthFrames: bufferedFrames.count,
                 targetCushionFrames: targetCushionFrames(for: playbackProfile),
                 interArrivalGapNanoseconds: interArrivalGap,
@@ -713,6 +720,7 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
                 missingFrameCount: 0,
                 plcRecoveryCount: 0,
                 fecRecoveryCount: 0,
+                resynchronizedGapFrameCount: 0,
                 bufferDepthFrames: bufferedFrames.count,
                 targetCushionFrames: targetCushion,
                 interArrivalGapNanoseconds: interArrivalGap,
@@ -727,6 +735,7 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
         var missingFrameCount = 0
         var plcRecoveryCount = 0
         var fecRecoveryCount = 0
+        var resynchronizedGapFrameCount = 0
         var largestScheduledGapFrames: UInt64 = 0
         while let expected = expectedFrameIndex {
             if let buffered = bufferedFrames.removeValue(forKey: expected) {
@@ -752,6 +761,11 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
             }
             let gap = nextBufferedIndex - expected
             largestScheduledGapFrames = max(largestScheduledGapFrames, gap)
+            if shouldResynchronizeAfterLargeGap(gap, targetCushionFrames: targetCushion) {
+                resynchronizedGapFrameCount += Int(min(gap, UInt64(Int.max)))
+                expectedFrameIndex = nextBufferedIndex
+                continue
+            }
             let nextFrame = bufferedFrames[nextBufferedIndex]?.frame
             for missingIndex in expected ..< nextBufferedIndex {
                 let recoveredWithFEC = missingIndex == (nextBufferedIndex &- 1)
@@ -797,6 +811,7 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
             missingFrameCount: missingFrameCount,
             plcRecoveryCount: plcRecoveryCount,
             fecRecoveryCount: fecRecoveryCount,
+            resynchronizedGapFrameCount: resynchronizedGapFrameCount,
             bufferDepthFrames: bufferedFrames.count,
             targetCushionFrames: targetCushionFrames(for: playbackProfile),
             interArrivalGapNanoseconds: interArrivalGap,
@@ -818,6 +833,14 @@ nonisolated final class AdaptiveVoicePlayoutBuffer {
             base = 8
         }
         return base + adaptiveExtraCushionFrames
+    }
+
+    private func shouldResynchronizeAfterLargeGap(
+        _ gap: UInt64,
+        targetCushionFrames: Int
+    ) -> Bool {
+        let resyncThreshold = max(UInt64(targetCushionFrames * 2), 8)
+        return gap >= resyncThreshold
     }
 
     private func hasStartupWaitElapsed(

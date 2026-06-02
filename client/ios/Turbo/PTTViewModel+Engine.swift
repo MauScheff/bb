@@ -163,6 +163,23 @@ extension PTTViewModel {
             }
             return
         }
+        if let channelUUID = channelUUID(for: contactID),
+           hasStaleSystemRejoinSuppression(channelUUID: channelUUID, contactID: contactID) {
+            diagnostics.record(
+                .backend,
+                message: "Ignored backend joined Conversation after recent system leave",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelUUID": channelUUID.uuidString,
+                    "reason": reason,
+                    "engineConversation": String(describing: engine.snapshot.conversation),
+                ]
+            )
+            if engine.snapshot.conversation.joinedEvidence?.friend.contactID.rawValue == contactID.uuidString {
+                syncEngineDisconnect(contactID: contactID, reason: "joined-refresh-after-recent-system-leave")
+            }
+            return
+        }
 
         if let joined = engineJoinedConversationEvidence(for: contactID) {
             receiveEngineEvent(

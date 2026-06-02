@@ -69,6 +69,7 @@ actor AudioChunkSender {
     private let sendTimeoutNanoseconds: UInt64?
     private let slowSendDropThresholdNanoseconds: UInt64?
     private let dropsPendingPayloadsAfterSlowSend: Bool
+    private let retainedNewestPayloadsAfterSlowSend: Int
     private let stopDrainTimeoutNanoseconds: UInt64?
     private let payloadBatchCollectionPollNanoseconds: UInt64 = 10_000_000
     private let transportAvailabilityPollNanoseconds: UInt64
@@ -130,6 +131,7 @@ actor AudioChunkSender {
             configuration.slowSendDropThresholdNanoseconds
                 ?? (effectiveDropsPendingPayloadsAfterSlowSend ? Self.slowTransportSendThresholdNanoseconds : nil)
         self.dropsPendingPayloadsAfterSlowSend = effectiveDropsPendingPayloadsAfterSlowSend
+        self.retainedNewestPayloadsAfterSlowSend = max(0, configuration.retainedNewestPayloadsAfterSlowSend)
         self.stopDrainTimeoutNanoseconds = configuration.stopDrainTimeoutNanoseconds
         self.transportAvailabilityPollNanoseconds = transportAvailabilityPollNanoseconds
         self.transportAvailabilityMaxAttempts = transportAvailabilityMaxAttempts
@@ -213,10 +215,14 @@ actor AudioChunkSender {
             guard !pendingPayloads.isEmpty else { continue }
             let payload = await nextTransportPayload()
             guard let sendChunk = await waitForTransportIfNeeded() else {
-                transportFailureReported = true
-                await reportFailure("audio send failed: audio transport is not configured")
-                pendingPayloads.removeAll(keepingCapacity: false)
-                break
+                if dropPendingPayloadAfterUnavailableTransportIfPolicyAllows() {
+                    break
+                } else {
+                    transportFailureReported = true
+                    await reportFailure("audio send failed: audio transport is not configured")
+                    pendingPayloads.removeAll(keepingCapacity: false)
+                    break
+                }
             }
             let pendingPayloadCount = pendingPayloads.count
             await waitForPayloadDispatchSpacingIfNeeded(
@@ -528,9 +534,10 @@ actor AudioChunkSender {
         guard dropsPendingPayloadsAfterSlowSend else { return }
         guard let slowSendDropThresholdNanoseconds,
               elapsedNanoseconds >= slowSendDropThresholdNanoseconds else { return }
-        let droppedPayloadCount = pendingPayloads.count
+        let retainedPayloadCount = min(retainedNewestPayloadsAfterSlowSend, pendingPayloads.count)
+        let droppedPayloadCount = pendingPayloads.count - retainedPayloadCount
         guard droppedPayloadCount > 0 else { return }
-        pendingPayloads.removeAll(keepingCapacity: false)
+        pendingPayloads.removeFirst(droppedPayloadCount)
         reportTransportDropIfNeeded(
             droppedPayloadCount: droppedPayloadCount,
             pendingPayloadCount: pendingPayloads.count,
@@ -538,8 +545,22 @@ actor AudioChunkSender {
             reason: "outbound-transport-slow-send",
             additionalMetadata: [
                 "elapsedMilliseconds": String(elapsedNanoseconds / 1_000_000),
+                "retainedPayloadCount": String(retainedPayloadCount),
             ]
         )
+    }
+
+    private func dropPendingPayloadAfterUnavailableTransportIfPolicyAllows() -> Bool {
+        guard dropsPendingPayloadsAfterSlowSend else { return false }
+        let droppedPayloadCount = 1 + pendingPayloads.count
+        pendingPayloads.removeAll(keepingCapacity: false)
+        reportTransportDropIfNeeded(
+            droppedPayloadCount: droppedPayloadCount,
+            pendingPayloadCount: pendingPayloads.count,
+            invariantID: "media.outbound_audio_transport_unavailable_drop",
+            reason: "outbound-transport-unavailable"
+        )
+        return true
     }
 
     private func dropPendingPayloadsAfterStopDrainTimeout(
@@ -1461,6 +1482,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             "missingFrameCount": String(result.missingFrameCount),
             "plcRecoveryCount": String(result.plcRecoveryCount),
             "fecRecoveryCount": String(result.fecRecoveryCount),
+            "resynchronizedGapFrameCount": String(result.resynchronizedGapFrameCount),
             "duplicateDropCount": String(result.duplicateDropCount),
             "lateDropCount": String(result.lateDropCount),
             "largestScheduledGapFrames": String(result.largestScheduledGapFrames),
@@ -1475,6 +1497,9 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         }
         if result.missingFrameCount >= 2 || result.adaptiveCushionIncreased {
             invariantID = "media.playout_repeated_underrun"
+        }
+        if result.resynchronizedGapFrameCount > 0 {
+            invariantID = "media.playout_large_gap_resync"
         }
         if let invariantID,
            opusPlayoutInvariantBudget > 0 {

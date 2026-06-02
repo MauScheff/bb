@@ -12,6 +12,26 @@ Authority: this file is the operator runbook. Detailed simulator generator mecha
 - Do not leave a useful failure as only a seed. Convert it to a package test, engine scenario, Swift test, backend proof, or checked-in simulator scenario.
 - Save exact seed, count, artifact path, failing command, invariant IDs, and replay command in final notes or handoffs.
 
+## Operating Model
+
+Canonical loop:
+
+```text
+invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate
+```
+
+Fuzzing is a search mode, not a proof by itself. A seed is valuable only after it becomes replayable, classified, and promoted into the lowest durable proof lane that owns the broken rule.
+
+| Phase | Action | Done condition |
+| --- | --- | --- |
+| Oracle | Reuse or register the invariant, contract, liveness rule, or convergence rule the sweep should defend. | The expected truth has a stable ID or explicit proof target. |
+| Sweep | Run the cheapest fuzz lane with enough backend/app/transport surface to violate that truth. | Command, seed, count, and artifact path are recorded. |
+| Replay | Stop on first serious failure and replay the exact artifact. | Failure reproduces with the same seed/artifact. |
+| Shrink | Shrink simulator failures; reduce engine/backend failures to a named scenario, corpus case, or focused test when possible. | The reproduction is small enough to debug and promote. |
+| Classify | Assign owner before editing. | Backend/shared truth, engine, Swift adapter/projection, pair convergence, or Apple/PTT/audio boundary is explicit. |
+| Promote | Add the lowest durable proof that would have failed before the fix. | Package test, engine corpus/scenario, Swift test, backend proof/probe, kernel corpus case, or checked-in simulator scenario exists. |
+| Gate | Rerun the narrow proof and a broader gate matching the blast radius. | The fix is proven and the original sweep can resume. |
+
 ## Lanes
 
 | Lane | Command | Owner | First artifact | Done condition |
@@ -20,17 +40,18 @@ Authority: this file is the operator runbook. Detailed simulator generator mecha
 | Engine fuzz corpus | `just engine-fuzz-corpus` | Promoted engine fuzz regressions | `Packages/TurboEngine/Fixtures/fuzz-corpus.json` | Every checked-in fuzz case passes. |
 | PTT readiness adapter fuzz | `just ptt-readiness-fuzz` | Single-agent app adapter/effect readiness contracts | Swift Testing failure output | Generated adapter evidence satisfies PTT readiness contracts or the first failure is promoted. |
 | Audio packet fuzz | `just audio-packet-fuzz` | App media packet, transport envelope, scheduler timing, wake activation, device-derived incident corpus and mutations, and synthetic playout boundary | Swift Testing failure output | Packet gate, transport loopback, scheduler late-IO/cushion drain, wake activation buffering, checked-in incident replay/mutation, and synthetic playout properties pass or the first failure is promoted. |
-| Live-local engine fuzz | `just engine-fuzz-local <seed> <count>` | Engine rules with `turbo.serveLocal` route semantics | `/tmp/turbo-engine-fuzz/` | All reports pass or the first failure is promoted. |
+| Live-local engine fuzz | `just engine-fuzz-local <seed> <count> http://127.0.0.1:8091/s/turbo` | Engine rules with self-hosted runtime route semantics | `/tmp/turbo-engine-fuzz/` | All reports pass or the first failure is promoted. |
 | Simulator fuzz smoke | `just simulator-fuzz-local <seed> <count>` | App/backend scenario DSL, view model, merged diagnostics | `/tmp/turbo-scenario-fuzz/` | All seeds pass strict diagnostics and engine trace replay. |
 | Overnight local reliability fuzz | `just reliability-fuzz-local-overnight <seed> <count>` | Broad local engine plus simulator coverage | `/tmp/turbo-engine-fuzz/`, `/tmp/turbo-scenario-fuzz/` | First failure is fixed/promoted, or all seeds pass. |
 | Physical/device matrix | `RELIABILITY_PLAN.md` cells | Apple/PTT/audio/hardware only | reliability intake artifact | Lower lanes are green and the physical boundary passes. |
 
 ## Daily Workflow
 
-Start local backend:
+Start local backend dependencies and runtime when running live-local engine or simulator fuzz:
 
 ```bash
-just serve-local
+just self-hosted-up
+just self-hosted-serve 127.0.0.1:8091
 ```
 
 Run the cheap baseline:
@@ -54,11 +75,10 @@ just reliability-fuzz-local-overnight 8675309 500
 For a quick smoke after changing fuzz machinery:
 
 ```bash
-just serve-local
 just ptt-readiness-fuzz
 just audio-packet-fuzz
-just engine-fuzz-local 123 3
-just simulator-fuzz-local 123 1
+just engine-fuzz-local 123 3 http://127.0.0.1:8091/s/turbo
+just simulator-fuzz-local 123 1 http://127.0.0.1:8091/s/turbo
 ```
 
 Convert a device or shake report into an audio corpus before asking for another physical retest:

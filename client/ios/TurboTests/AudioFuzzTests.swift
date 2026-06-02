@@ -1447,21 +1447,38 @@ private extension AudioFuzzTests {
             return [URL(fileURLWithPath: bridgedPath)]
         }
 
-        let repoRootURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let corpusDirectoryURL = repoRootURL
-            .appendingPathComponent("fixtures")
-            .appendingPathComponent("audio_incidents")
-        guard FileManager.default.fileExists(atPath: corpusDirectoryURL.path) else {
-            return []
+        var searchRootURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var candidateCorpusDirectoryURLs: [URL] = []
+        while true {
+            candidateCorpusDirectoryURLs.append(
+                searchRootURL
+                    .appendingPathComponent("shared")
+                    .appendingPathComponent("fixtures")
+                    .appendingPathComponent("audio_incidents")
+            )
+            candidateCorpusDirectoryURLs.append(
+                searchRootURL
+                    .appendingPathComponent("fixtures")
+                    .appendingPathComponent("audio_incidents")
+            )
+            let parentURL = searchRootURL.deletingLastPathComponent()
+            guard parentURL.path != searchRootURL.path else { break }
+            searchRootURL = parentURL
         }
-        return try FileManager.default.contentsOfDirectory(
-            at: corpusDirectoryURL,
-            includingPropertiesForKeys: nil
-        )
-        .filter { $0.lastPathComponent.hasSuffix("_corpus.json") }
-        .sorted { $0.path < $1.path }
+
+        for corpusDirectoryURL in candidateCorpusDirectoryURLs
+        where FileManager.default.fileExists(atPath: corpusDirectoryURL.path) {
+            let corpusURLs = try FileManager.default.contentsOfDirectory(
+                at: corpusDirectoryURL,
+                includingPropertiesForKeys: nil
+            )
+            .filter { $0.lastPathComponent.hasSuffix("_corpus.json") }
+            .sorted { $0.path < $1.path }
+            if !corpusURLs.isEmpty {
+                return corpusURLs
+            }
+        }
+        return []
     }
 
     static func replayPacketDeliveries(

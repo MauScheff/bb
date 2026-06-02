@@ -3392,7 +3392,7 @@ struct ConnectionTests {
         #expect(await recorder.snapshot() == ["payload-1"])
     }
 
-    @Test func directQuicAudioPayloadAsyncQueueSerializesLivePayloadHandlersToPreserveAudioOrder() async {
+    @Test func directQuicAudioPayloadAsyncQueueSerializesLivePayloadHandlersByDefault() async {
         actor Recorder {
             private var values: [String] = []
             private var waitersByValue: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -3434,6 +3434,132 @@ struct ConnectionTests {
         await recorder.waitFor("payload-2-start")
         await recorder.waitFor("payload-1-end")
         #expect(await recorder.snapshot() == ["payload-1-start", "payload-1-end", "payload-2-start"])
+    }
+
+    @Test func directQuicAudioPayloadAsyncQueueCanAdmitParallelHandlersWhenConfigured() async {
+        actor Recorder {
+            private var values: [Int] = []
+
+            func append(_ value: Int) {
+                values.append(value)
+            }
+
+            func snapshot() -> [Int] {
+                values
+            }
+        }
+
+        actor Gate {
+            private var isOpen = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    waiters.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiters = self.waiters
+                self.waiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+
+        let startupBurstCount = 16
+        let queue = DirectQuicAudioPayloadAsyncQueue(maxConcurrentHandlers: startupBurstCount)
+        let recorder = Recorder()
+        let gate = Gate()
+
+        for index in 0..<startupBurstCount {
+            queue.enqueue {
+                await recorder.append(index)
+                await gate.wait()
+            }
+        }
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let started = await recorder.snapshot()
+        #expect(Set(started).isSuperset(of: Set(0..<startupBurstCount)))
+        await gate.open()
+    }
+
+    @Test func directQuicProbeControllerAdmitsIncomingAudioBurstConcurrently() async throws {
+        actor Recorder {
+            private var values: [Int] = []
+
+            func append(_ value: Int) {
+                values.append(value)
+            }
+
+            func waitForCount(
+                _ count: Int,
+                timeoutNanoseconds: UInt64 = 500_000_000
+            ) async -> Bool {
+                let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+                while DispatchTime.now().uptimeNanoseconds < deadline {
+                    if values.count >= count { return true }
+                    try? await Task.sleep(nanoseconds: 10_000_000)
+                }
+                return values.count >= count
+            }
+
+            func snapshot() -> [Int] {
+                values
+            }
+        }
+
+        actor Gate {
+            private var isOpen = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    waiters.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiters = self.waiters
+                self.waiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+
+        let burstCount = 16
+        let controller = DirectQuicProbeController()
+        let recorder = Recorder()
+        let gate = Gate()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        try await controller.activateMediaTransport(
+            onIncomingAudioPayload: { payload in
+                await recorder.append(Int(payload.sequenceNumber ?? UInt64.max))
+                await gate.wait()
+            },
+            onPathLost: { _ in }
+        )
+
+        for index in 0..<burstCount {
+            controller.injectIncomingAudioPayloadForTesting(
+                DirectQuicIncomingAudioPayload(
+                    payload: "payload-\(index)",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: UInt64(index),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+        }
+
+        #expect(await recorder.waitForCount(burstCount))
+        #expect(Set(await recorder.snapshot()) == Set(0..<burstCount))
+        await gate.open()
     }
 
     @Test func directQuicAudioPayloadAsyncQueueDropsOldPendingHandlersWhenBackedUp() async {
@@ -3565,18 +3691,33 @@ struct ConnectionTests {
         }
         await recorder.waitFor(0)
 
-        for index in 1...80 {
+        let pendingHandlerCount = DirectQuicAudioPayloadAsyncQueue.defaultMaxPendingHandlers
+        let lastPayloadIndex = pendingHandlerCount + 24
+
+        for index in 1...lastPayloadIndex {
             queue.enqueue {
                 await recorder.append(index)
+                await gate.wait()
             }
         }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
         await gate.open()
-        await recorder.waitFor(80)
+        await recorder.waitFor(lastPayloadIndex)
         try? await Task.sleep(nanoseconds: 50_000_000)
 
-        #expect(await recorder.snapshot() == [0] + Array(17...80))
+        let snapshot = await recorder.snapshot()
+        #expect(
+            Set(snapshot).isSuperset(
+                of: Set((lastPayloadIndex - pendingHandlerCount + 1)...lastPayloadIndex)
+            )
+        )
+        #expect(
+            Set(snapshot).isDisjoint(
+                with: Set(1...(lastPayloadIndex - pendingHandlerCount))
+            )
+        )
+        #expect(snapshot == [0] + Array((lastPayloadIndex - pendingHandlerCount + 1)...lastPayloadIndex))
     }
 
     @Test func directQuicAudioPayloadAsyncQueueUsesLiveAudioPriority() async {
@@ -4113,6 +4254,76 @@ struct ConnectionTests {
                 "Starting fast relay fallback after Direct QUIC path loss"
             )
         )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Media relay receive prejoin selected"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func remoteTransmitStartAttachesMediaRelayReceiveWhenLocalRelayToggleIsOff() async {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboMediaRelayDebugOverride.setEnabled(false)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let contactID = UUID()
+        let viewModel = PTTViewModel()
+        viewModel.replaceBackendConfig(with: makeUnreachableBackendConfig())
+        viewModel.applicationStateOverride = .active
+        viewModel.selectedContactId = contactID
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Peer",
+                handle: "@peer",
+                isOnline: true,
+                channelId: contactID,
+                backendChannelId: "channel-1",
+                remoteUserId: "peer-user"
+            )
+        ]
+
+        var connectRequests: [(contactID: UUID, channelID: String, peerDeviceID: String, localDeviceID: String)] = []
+        viewModel.mediaRelayConnectOverride = { _, _, contactID, channelID, peerDeviceID, localDeviceID in
+            connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
+            return .quicDatagram
+        }
+
+        viewModel.handleIncomingSignal(
+            TurboSignalEnvelope(
+                type: .transmitStart,
+                channelId: "channel-1",
+                fromUserId: "peer-user",
+                fromDeviceId: "peer-device",
+                toUserId: "local-user",
+                toDeviceId: "test-device",
+                payload: "ptt-begin"
+            )
+        )
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(connectRequests.count == 1)
+        #expect(connectRequests.first?.contactID == contactID)
+        #expect(connectRequests.first?.channelID == "channel-1")
+        #expect(connectRequests.first?.peerDeviceID == "peer-device")
+        #expect(connectRequests.first?.localDeviceID == "test-device")
+        #expect(viewModel.mediaRuntime.hasActiveMediaRelayClient)
+        #expect(viewModel.mediaTransportPathState == .fastRelay)
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Media relay receive prejoin selected"
@@ -6194,7 +6405,8 @@ struct ConnectionTests {
             .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
         )
         viewModel.syncPTTState()
-        viewModel.mediaRuntime.attach(session: RecordingMediaSession(), contactID: contactID)
+        let mediaSession = RecordingMediaSession()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.updateConnectionState(.connected)
         viewModel.backendSyncCoordinator.send(
             .channelStateUpdated(
@@ -6917,7 +7129,8 @@ struct ConnectionTests {
             .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
         )
         viewModel.syncPTTState()
-        viewModel.mediaRuntime.attach(session: RecordingMediaSession(), contactID: contactID)
+        let mediaSession = RecordingMediaSession()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.updateConnectionState(.connected)
         viewModel.backendSyncCoordinator.send(
             .channelStateUpdated(
@@ -8737,6 +8950,100 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func duplicateAppleAudioActivationRefreshesPreActivationCaptureWithoutResendingStartSignal() async {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let request = TransmitRequestContext(
+            contactID: contactID,
+            contactHandle: "@blake",
+            backendChannelID: "channel-123",
+            remoteUserID: "peer-user",
+            channelUUID: channelUUID,
+            usesLocalHTTPBackend: false,
+            backendSupportsWebSocket: true
+        )
+        let target = TransmitTarget(
+            contactID: contactID,
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-123"
+        )
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+        client.enableSentSignalCaptureForTesting()
+
+        viewModel.applicationStateOverride = .active
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        viewModel.transmitCoordinator.effectHandler = nil
+        viewModel.startTransmitStartupTiming(for: request, source: "test")
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        await viewModel.transmitCoordinator.handle(.pressRequested(request))
+        await viewModel.transmitCoordinator.handle(.beginSucceeded(target, request))
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.syncTransmitState()
+        viewModel.pttCoordinator.send(
+            .didBeginTransmitting(channelUUID: channelUUID, origin: .foregroundAppPress)
+        )
+        viewModel.isPTTAudioSessionActive = true
+
+        await viewModel.completeSystemTransmitActivation(channelUUID: channelUUID)
+        await viewModel.completeSystemTransmitActivation(channelUUID: channelUUID)
+
+        #expect(mediaSession.startSendingAudioCallCount == 2)
+        #expect(
+            viewModel.transmitStartupTiming.elapsedMilliseconds(
+                for: "audio-capture-refreshed-after-system-activation"
+            ) != nil
+        )
+        #expect(
+            client.sentSignalsForTesting().filter { $0.type == .transmitStart }.count == 1
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Refreshing prewarmed audio capture after duplicate system audio activation"
+            )
+        )
+    }
+
+    @MainActor
     @Test func backgroundSystemAudioActivationStartsCaptureWhenWebSocketUnavailable() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -9438,6 +9745,8 @@ struct ConnectionTests {
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        mediaSession.audioRouteDidChangeDelayNanoseconds = 1_000_000_000
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.setRuntimeConfigForTesting(
             TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
@@ -9467,7 +9776,7 @@ struct ConnectionTests {
             .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
         )
         viewModel.syncPTTState()
-        viewModel.mediaRuntime.attach(session: RecordingMediaSession(), contactID: contactID)
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.updateConnectionState(.connected)
         viewModel.backendSyncCoordinator.send(
             .channelStateUpdated(
@@ -9500,6 +9809,291 @@ struct ConnectionTests {
         #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == ["Blake"])
         #expect(pttClient.activeRemoteParticipantUpdates.map(\.channelUUID) == [channelUUID])
         #expect(viewModel.diagnosticsTranscript.contains("reason=active-talk-turn"))
+        #expect(mediaSession.beginReceiveEpochCallCount == 2)
+        #expect(!viewModel.receiveExecutionCoordinator.state.remoteTransmitStoppedContactIDs.contains(contactID))
+        #expect(viewModel.receiveExecutionCoordinator.state.remoteTransmittingContactIDs.contains(contactID))
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Recovered remote receive after backend talk turn denied"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func lateAppleTransmitActivationIsCancelledWhenPeerBecomesAuthoritative() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+        let leaseFormatter = ISO8601DateFormatter()
+        leaseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, _ in
+            let now = Date()
+            return TurboBeginTransmitResponse(
+                channelId: channelId,
+                status: "transmitting",
+                transmitId: "stale-local-transmit",
+                startedAt: leaseFormatter.string(from: now),
+                expiresAt: leaseFormatter.string(from: now.addingTimeInterval(12)),
+                targetUserId: "peer-user",
+                targetDeviceId: "peer-device"
+            )
+        }
+        defer { TurboBackendCriticalHTTPClient.beginTransmitOverride = nil }
+
+        viewModel.applicationStateOverride = .active
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        viewModel.beginTransmit()
+        try await waitForCondition(
+            "system transmit handoff requested",
+            timeoutNanoseconds: 2_000_000_000,
+            pollNanoseconds: 20_000_000
+        ) {
+            pttClient.beginTransmitRequests == [channelUUID]
+        }
+
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    activeTransmitId: "peer-transmit"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device",
+                    activeTransmitId: "peer-transmit"
+                )
+            )
+        )
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: "test-peer-started"
+        )
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        viewModel.handleDidBeginTransmitting(channelUUID, source: "test-late-apple-begin")
+        try await Task.sleep(nanoseconds: 20_000_000)
+        viewModel.handleDidActivateAudioSession(.sharedInstance())
+
+        try await waitForCondition(
+            "late local activation cancelled after peer became authoritative",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 20_000_000
+        ) {
+            viewModel.diagnosticsTranscript.contains(
+                "Cancelled local transmit activation because peer became authoritative"
+            )
+        }
+
+        #expect(mediaSession.startSendingAudioCallCount == 0)
+        #expect(mediaSession.abortSendingAudioCallCount == 0)
+        #expect(pttClient.stopTransmitRequests.contains(channelUUID))
+        #expect(!viewModel.transmitRuntime.isPressingTalk)
+        #expect(!viewModel.transmitCoordinator.state.isPressingTalk)
+        #expect(viewModel.pttCoordinator.state.isTransmitting == false)
+        #expect(
+            viewModel.receiveExecutionCoordinator.state.remoteTransmittingContactIDs.contains(contactID)
+        )
+    }
+
+    @MainActor
+    @Test func lateAppleAudioActivationForPendingRequestIsCancelledWhenPeerBecomesAuthoritative() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+
+        viewModel.applicationStateOverride = .active
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        let request = TransmitRequestContext(
+            contactID: contactID,
+            contactHandle: "@blake",
+            backendChannelID: "channel-123",
+            remoteUserID: "peer-user",
+            channelUUID: channelUUID,
+            usesLocalHTTPBackend: false,
+            backendSupportsWebSocket: true
+        )
+        viewModel.transmitCoordinator.effectHandler = nil
+        viewModel.startTransmitStartupTiming(for: request, source: "test")
+        viewModel.transmitRuntime.markPressBegan()
+        await viewModel.transmitCoordinator.handle(.pressRequested(request))
+        viewModel.pttCoordinator.send(
+            .didBeginTransmitting(channelUUID: channelUUID, origin: .foregroundAppPress)
+        )
+        viewModel.syncPTTState()
+
+        #expect(viewModel.transmitCoordinator.state.pendingRequest == request)
+        #expect(viewModel.transmitCoordinator.state.activeTarget == nil)
+        #expect(viewModel.pttCoordinator.state.isTransmitting)
+
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    activeTransmitId: "peer-transmit"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device",
+                    activeTransmitId: "peer-transmit"
+                )
+            )
+        )
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: "test-peer-started"
+        )
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        viewModel.handleDidActivateAudioSession(.sharedInstance())
+
+        try await waitForCondition(
+            "late pending local activation cancelled after peer became authoritative",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 20_000_000
+        ) {
+            viewModel.diagnosticsTranscript.contains(
+                "requestKind=pending-system-audio-capture"
+            )
+        }
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "stage=audio-session-activated-receive-authoritative"
+            )
+        )
+        try await waitForCondition(
+            "late pending activation continued receive setup without waiting for route refresh",
+            timeoutNanoseconds: 150_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            viewModel.diagnosticsTranscript.contains(
+                "Preparing receive media session after PTT audio activation"
+            )
+        }
+
+        #expect(mediaSession.startSendingAudioCallCount == 0)
+        #expect(mediaSession.abortSendingAudioCallCount == 0)
+        #expect(mediaSession.audioRouteDidChangeCallCount == 0)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Deferred audio route refresh during live receive"
+            )
+        )
+        #expect(pttClient.stopTransmitRequests.contains(channelUUID))
+        #expect(!viewModel.transmitRuntime.isPressingTalk)
+        #expect(!viewModel.transmitCoordinator.state.isPressingTalk)
+        #expect(viewModel.transmitCoordinator.state.pendingRequest == nil)
+        #expect(viewModel.pttCoordinator.state.isTransmitting == false)
+        #expect(
+            viewModel.receiveExecutionCoordinator.state.remoteTransmittingContactIDs.contains(contactID)
+        )
     }
 
     @MainActor
@@ -11000,6 +11594,147 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func forcedMediaRelayFirstAudioUsesWebSocketContinuityUntilCurrentPrewarmAck() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(true)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        viewModel.contacts = [
+            Contact(
+                id: target.contactID,
+                name: "Peer",
+                handle: "@peer",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: target.channelID,
+                remoteUserId: target.userID
+            )
+        ]
+        viewModel.selectedContactId = target.contactID
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: target.contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: target.contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: true,
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: target.deviceID
+                )
+            )
+        )
+        viewModel.mediaRuntime.replaceReceiverPrewarmRequestID(
+            for: target.contactID,
+            requestID: "current-prewarm"
+        )
+
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let attempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: relayClient))
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .quicDatagram
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+        viewModel.transmitRuntime.markPressBegan()
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+
+        #expect(sentMediaRelayPayloads.isEmpty)
+        let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
+        #expect(sent.count == 1)
+        let envelope = try #require(sent.first)
+        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
+        #expect(relayPayload.payload == "payload-1")
+        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) == nil)
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["relay-websocket"]
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Sent outbound audio over WebSocket continuity while forced media relay prewarm is unacknowledged"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Cleared media relay client after receiver prewarm ACK did not arrive"
+            )
+        )
+    }
+
+    @MainActor
     @Test func forcedMediaRelayPacketUsesWebSocketWakeContinuityWhenReceiverNotReady() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
@@ -11951,6 +12686,8 @@ struct ConnectionTests {
             incomingAudioTransport: .relayWebSocket
         )
 
+        let receivedChunk = await mediaSession.waitForReceivedChunkCount(1)
+        #expect(receivedChunk)
         #expect(mediaSession.receivedRemoteAudioChunks == ["payload-1"])
     }
 
@@ -13250,6 +13987,50 @@ struct ConnectionTests {
         #expect(recoveredReorder.missingFrameCount == 0)
     }
 
+    @Test func adaptiveVoicePlayoutBufferResynchronizesLargeLiveGapInsteadOfSchedulingLongPLC() throws {
+        let buffer = AdaptiveVoicePlayoutBuffer()
+        let packet = Data([1, 2, 3])
+        let pcm = Data(repeating: 4, count: VoiceFrameAccumulator.bytesPerFrame)
+        let plc = Data(repeating: 0, count: VoiceFrameAccumulator.bytesPerFrame)
+        func frame(_ index: UInt64) -> VoiceOpusFramePayload {
+            VoiceOpusFramePayload(
+                frameIndex: index,
+                sampleRate: 48_000,
+                channels: 1,
+                frameDurationMilliseconds: 20,
+                features: [VoiceMediaCapabilities.plcFeature],
+                packet: packet
+            )
+        }
+        func insert(_ index: UInt64) throws -> VoicePlayoutInsertResult {
+            try buffer.insert(
+                frame: frame(index),
+                playbackProfile: .lowLatency,
+                decode: { _ in pcm },
+                decodeFEC: { _ in Data(repeating: 9, count: VoiceFrameAccumulator.bytesPerFrame) },
+                plc: { plc }
+            )
+        }
+
+        _ = try insert(120)
+        _ = try insert(121)
+        _ = try insert(122)
+        let started = try insert(123)
+        #expect(started.framesToPlay.map(\.frameIndex) == [120, 121, 122, 123])
+
+        _ = try insert(138)
+        _ = try insert(139)
+        _ = try insert(140)
+        let resynchronized = try insert(141)
+
+        #expect(resynchronized.framesToPlay.map(\.frameIndex) == [138, 139, 140, 141])
+        #expect(resynchronized.framesToPlay.map(\.recovery) == [.received, .received, .received, .received])
+        #expect(resynchronized.missingFrameCount == 0)
+        #expect(resynchronized.plcRecoveryCount == 0)
+        #expect(resynchronized.resynchronizedGapFrameCount == 14)
+        #expect(resynchronized.largestScheduledGapFrames == 14)
+    }
+
     @Test func adaptiveVoicePlayoutCushionGrowsAfterUnderrunAndResetsForNewTransmit() throws {
         let buffer = AdaptiveVoicePlayoutBuffer()
         let pcm = Data(repeating: 1, count: VoiceFrameAccumulator.bytesPerFrame)
@@ -13384,6 +14165,7 @@ struct ConnectionTests {
                 == 250_000_000
         )
         #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.dropsPendingPayloadsAfterSlowSend)
+        #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.retainedNewestPayloadsAfterSlowSend == 1)
         #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.stopDrainTimeoutNanoseconds == 180_000_000)
         #expect(MediaTransportPolicy.fastRelayBalanced.senderConfiguration.maximumInFlightSends == 4)
         #expect(
@@ -13986,7 +14768,7 @@ struct ConnectionTests {
         #expect(dropMetadata == nil)
     }
 
-    @Test func packetAudioSenderDropsQueuedPayloadsAfterTimedOutTransportSend() async {
+    @Test func packetAudioSenderRetainsNewestLivePayloadAfterTimedOutTransportSend() async {
         actor Gate {
             var isOpen = false
             var continuations: [CheckedContinuation<Void, Never>] = []
@@ -14065,7 +14847,7 @@ struct ConnectionTests {
         await sender.finishDraining(pollNanoseconds: 1_000_000)
 
         let completedPayloads = await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode)
-        #expect(completedPayloads.isEmpty)
+        #expect(completedPayloads == ["chunk-12"])
 
         let slowMetadata = await recorder.firstMetadata(
             for: "Outbound audio transport send was slow"
@@ -14077,8 +14859,57 @@ struct ConnectionTests {
             for: "Dropped stale outbound audio transport payload"
         )
         #expect(dropMetadata?["invariantID"] == "media.outbound_audio_transport_slow_send_drop")
-        #expect(dropMetadata?["droppedPayloadCount"] == "12")
+        #expect(dropMetadata?["droppedPayloadCount"] == "11")
+        #expect(dropMetadata?["pendingPayloadCount"] == "1")
+        #expect(dropMetadata?["retainedPayloadCount"] == "1")
         #expect(dropMetadata?["reason"] == "outbound-transport-slow-send")
+    }
+
+    @Test func packetAudioSenderDropsLivePayloadsWhenTransportIsUnavailableWithoutFailingSession() async {
+        actor Recorder {
+            var failures: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func appendFailure(_ message: String) {
+                failures.append(message)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: nil,
+            reportFailure: { message in
+                await recorder.appendFailure(message)
+            },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            configuration: .directLowLatency,
+            maximumPendingPayloads: 16,
+            maximumPayloadsPerMessage: 1,
+            transportAvailabilityPollNanoseconds: 1_000_000,
+            transportAvailabilityMaxAttempts: 1
+        )
+
+        await sender.enqueue(["chunk-0", "chunk-1", "chunk-2"])
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        #expect(await recorder.failures.isEmpty)
+        let dropMetadata = await recorder.firstMetadata(
+            for: "Dropped stale outbound audio transport payload"
+        )
+        #expect(dropMetadata?["invariantID"] == "media.outbound_audio_transport_unavailable_drop")
+        #expect(dropMetadata?["droppedPayloadCount"] == "3")
+        #expect(dropMetadata?["pendingPayloadCount"] == "0")
+        #expect(dropMetadata?["reason"] == "outbound-transport-unavailable")
     }
 
     @Test func packetAudioSenderPacesOpusFramesAtVoiceFrameCadence() async {
@@ -14260,11 +15091,26 @@ struct ConnectionTests {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         #expect(viewModel.pttWakeRuntime.pendingIncomingPush == nil)
-        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(mediaSession.receivedRemoteAudioChunks == [])
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Using app-managed wake playback for foreground audio"
             ) == false
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Buffered foreground receive audio chunk until PTT activation"
+            )
+        )
+
+        viewModel.isPTTAudioSessionActive = true
+        await viewModel.handleActivatedAudioSession(.sharedInstance())
+
+        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Flushing buffered foreground receive audio after PTT activation"
+            )
         )
     }
 
@@ -14499,9 +15345,15 @@ struct ConnectionTests {
             viewModel.applyDirectQuicUpgradeTransition(direct, for: contactID)
         }
 
+        let opusPayload = try #require(
+            VoiceAudioFramePayloadCodec.encodeOpus(
+                packet: Data([0x78, 0x82, 0x01, 0x02, 0x03]),
+                frameIndex: 43
+            )
+        )
         await viewModel.handleIncomingDirectQuicAudioPayload(
             DirectQuicIncomingAudioPayload(
-                payload: "AQI=",
+                payload: opusPayload,
                 datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 5_000_000,
                 sequenceNumber: 43,
                 sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 5
@@ -14511,7 +15363,7 @@ struct ConnectionTests {
         )
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(mediaSession.receivedRemoteAudioChunks == [opusPayload])
         #expect(mediaSession.beginReceiveEpochCallCount == 0)
         #expect(viewModel.engineSnapshot.scheduledPlaybackCount > 0)
         #expect(
@@ -14600,7 +15452,299 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func defaultDirectQuicAudioQueueBacklogDropsLivePayloadBeforeItCanLagPlayback() async throws {
+    @Test func expiredDirectQuicLiveBacklogDuringActiveReceiveResetsEpochForFreshAudio() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 250_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 500_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 10_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 10_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "expired-live-packet",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 50_000_000,
+                sequenceNumber: 12,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 50
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(mediaSession.beginReceiveEpochCallCount == 1)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset remote audio receive epoch after expired Direct QUIC live backlog"
+                    && $0.metadata["directQuicSequenceNumber"] == "12"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset Direct QUIC incoming audio payload queue"
+                    && $0.metadata["reason"] == "expired-live-backlog"
+            }
+        )
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-after-reset",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 13,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-after-reset"])
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_chunk_gap"
+                    && $0.metadata["incomingTransport"] == "direct-quic"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func expiredDirectQuicLiveBacklogWhileAwaitingFirstAudioResetsEpochForFreshAudio() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 250_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 500_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 10_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 10_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        let didBeginReceive = viewModel.beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: .transmitPrepareSignal,
+            controlTransport: "direct-quic"
+        )
+        #expect(didBeginReceive)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        #expect(
+            viewModel.receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase
+                == .awaitingFirstAudioChunk
+        )
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "expired-before-first-audio",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 50_000_000,
+                sequenceNumber: 0,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 50
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-after-awaiting-reset",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 1,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.contains("fresh-after-awaiting-reset"))
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset engine remote receive epoch after expired Direct QUIC live backlog"
+                    && $0.metadata["directQuicSequenceNumber"] == "0"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func expiredDirectQuicLiveBacklogResetsEnginePlayoutSequenceForFreshAudio() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 250_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 500_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 10_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 10_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        for sequence in 0..<3 {
+            await viewModel.handleIncomingDirectQuicAudioPayload(
+                DirectQuicIncomingAudioPayload(
+                    payload: "accepted-\(sequence)",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: UInt64(sequence),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                ),
+                contactID: contactID,
+                attemptID: "attempt-1"
+            )
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "expired-live-packet",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 50_000_000,
+                sequenceNumber: 3,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 50
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-after-reset",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 4,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.contains("fresh-after-reset"))
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset engine remote receive epoch after expired Direct QUIC live backlog"
+                    && $0.metadata["directQuicSequenceNumber"] == "3"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped media frame before playback"
+                    && $0.metadata["reason"] == "late"
+                    && $0.metadata["source"] == "remote-audio-received:incoming-direct-quic"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func defaultDirectQuicAudioQueueBacklogPreservesAppleStartupDelayBeforeHardLiveExpiry() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -14641,9 +15785,79 @@ struct ConnectionTests {
         await viewModel.handleIncomingDirectQuicAudioPayload(
             DirectQuicIncomingAudioPayload(
                 payload: "AQI=",
-                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 300_000_000,
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 500_000_000,
                 sequenceNumber: 44,
-                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 300
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 500
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(viewModel.engineSnapshot.scheduledPlaybackCount > 0)
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["contractKind"] == "liveness"
+                    && $0.metadata["directQuicSequenceNumber"] == "44"
+                    && $0.metadata["action"] == "preserved"
+                    && $0.metadata["thresholdMs"] == "240"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func nearOneSecondDirectQuicOpusBacklogDropsBeforePlayout() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        if let direct = viewModel.mediaRuntime.directQuicUpgrade.markDirectPathActivated(
+            for: contactID,
+            attemptID: "attempt-1",
+            nominatedPath: makeDirectQuicNominatedPath()
+        ) {
+            viewModel.applyDirectQuicUpgradeTransition(direct, for: contactID)
+        }
+
+        let opusPayload = try #require(
+            VoiceAudioFramePayloadCodec.encodeOpus(
+                packet: Data([0x78, 0x82, 0x01, 0x02, 0x03]),
+                frameIndex: 127
+            )
+        )
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: opusPayload,
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 997_000_000,
+                sequenceNumber: 251,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 929
             ),
             contactID: contactID,
             attemptID: "attempt-1"
@@ -14656,9 +15870,10 @@ struct ConnectionTests {
             viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["contractKind"] == "liveness"
-                    && $0.metadata["directQuicSequenceNumber"] == "44"
+                    && $0.metadata["directQuicSequenceNumber"] == "251"
                     && $0.metadata["action"] == "dropped-expired-live-backlog"
-                    && $0.metadata["thresholdMs"] == "240"
+                    && $0.metadata["localQueueDelayMs"] != nil
+                    && $0.metadata["thresholdMs"] == "800"
             }
         )
     }
@@ -14914,12 +16129,11 @@ struct ConnectionTests {
         )
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.connectionState = .connected
-        let controller = DirectQuicProbeController()
+        let controller = viewModel.directQuicProbeController()
         controller.installVerifiedNominatedPathForTesting(
             makeDirectQuicNominatedPath(attemptID: "attempt-1"),
             peerCertificateFingerprint: "peer-fingerprint"
         )
-        viewModel.mediaRuntime.directQuicProbeController = controller
         let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
             contactID: contactID,
             channelID: "channel-123",
@@ -14993,12 +16207,11 @@ struct ConnectionTests {
         )
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.connectionState = .connected
-        let controller = DirectQuicProbeController()
+        let controller = viewModel.directQuicProbeController()
         controller.installVerifiedNominatedPathForTesting(
             makeDirectQuicNominatedPath(attemptID: "attempt-1"),
             peerCertificateFingerprint: "peer-fingerprint"
         )
-        viewModel.mediaRuntime.directQuicProbeController = controller
         let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
             contactID: contactID,
             channelID: "channel-123",
@@ -15040,6 +16253,91 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func directQuicIncomingOpusBurstStaysLiveWithoutReceiveQueueDelay() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 0)
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 80_000_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 150_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 1_000_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+
+        let burstCount = 32
+        let receivedAt = DispatchTime.now().uptimeNanoseconds
+        for index in 0..<burstCount {
+            let payload = try #require(
+                VoiceAudioFramePayloadCodec.encodeOpus(
+                    packet: Data([UInt8(index), 0x78, 0x82, 0x01, 0x02, 0x03]),
+                    frameIndex: UInt64(index)
+                )
+            )
+            controller.injectIncomingAudioPayloadForTesting(
+                DirectQuicIncomingAudioPayload(
+                    payload: payload,
+                    datagramReceivedAtNanoseconds: receivedAt,
+                    sequenceNumber: UInt64(index),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+        }
+
+        #expect(await mediaSession.waitForReceivedChunkCount(burstCount, timeoutNanoseconds: 1_000_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks.count == burstCount)
+        #expect(Set(mediaSession.receivedOnMainThread) == [false])
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && ($0.metadata["action"] == "dropped-expired-live-backlog"
+                        || $0.metadata["action"] == "dropped-severe-live-backlog")
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_sequence_gap"
+                    && $0.metadata["incomingTransport"] == "direct-quic"
+            }
+        )
+    }
+
+    @MainActor
     @Test func directQuicIncomingAudioQueueResetCancelsMainActorPendingPackets() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -15070,12 +16368,11 @@ struct ConnectionTests {
         )
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.connectionState = .connected
-        let controller = DirectQuicProbeController()
+        let controller = viewModel.directQuicProbeController()
         controller.installVerifiedNominatedPathForTesting(
             makeDirectQuicNominatedPath(attemptID: "attempt-1"),
             peerCertificateFingerprint: "peer-fingerprint"
         )
-        viewModel.mediaRuntime.directQuicProbeController = controller
         let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
             contactID: contactID,
             channelID: "channel-123",
@@ -15117,7 +16414,553 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func severeDirectQuicAudioQueueDelayPreservationDiagnosticsAreBudgeted() async throws {
+    @Test func directQuicAudioAfterRemoteTransmitStopIsDroppedUntilNextReceiveEpoch() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        viewModel.markRemoteTransmitStoppedPreservingPlaybackDrain(for: contactID)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "stale-after-stop",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 155,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped Direct QUIC audio payload after remote transmit stop"
+                    && $0.metadata["directQuicSequenceNumber"] == "155"
+                    && $0.metadata["reason"] == "remote-transmit-stopped"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Incoming audio ingress summary"
+                    && $0.metadata["transport"] == "direct-quic"
+                    && $0.metadata["freshnessDecision"] == "dropped-after-remote-stop"
+                    && $0.metadata["playbackDecision"] == "rejected"
+            }
+        )
+
+        let didBeginNextEpoch = viewModel.beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: .transmitPrepareSignal,
+            controlTransport: "direct-quic"
+        )
+        #expect(didBeginNextEpoch)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-next-turn",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 0,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-next-turn"])
+    }
+
+    @MainActor
+    @Test func localTransmitStartFencesPreviousDirectQuicReceiveEpoch() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        viewModel.fenceRemoteAudioReceiveForLocalTransmitStart(
+            contactID: contactID,
+            reason: "test-fast-role-swap"
+        )
+        #expect(mediaSession.beginReceiveEpochCallCount == 1)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "stale-previous-speaker",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 155,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Fenced remote audio receive before local transmit"
+                    && $0.metadata["reason"] == "test-fast-role-swap"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped Direct QUIC audio payload after remote transmit stop"
+                    && $0.metadata["directQuicSequenceNumber"] == "155"
+            }
+        )
+
+        let didBeginNextEpoch = viewModel.beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: .transmitPrepareSignal,
+            controlTransport: "direct-quic"
+        )
+        #expect(didBeginNextEpoch)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-next-speaker",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 0,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-next-speaker"])
+    }
+
+    @MainActor
+    @Test func postLocalStopDirectQuicAudioCanStartNextRemoteTurnBeforeControlSignal() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        viewModel.fenceRemoteAudioReceiveForLocalTransmitStart(
+            contactID: contactID,
+            reason: "test-fast-role-swap"
+        )
+        viewModel.markLocalTransmitStopProjectionGrace(for: contactID)
+        let localStopStartedAt = try #require(
+            viewModel.localTransmitStopProjectionGraceStartedAtNanosecondsByContactID[contactID]
+        )
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "stale-before-release",
+                datagramReceivedAtNanoseconds: localStopStartedAt - 1,
+                sequenceNumber: 10,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(
+            viewModel.receiveExecutionCoordinator.state.remoteTransmitStoppedContactIDs
+                .contains(contactID)
+        )
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-after-release-before-control",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 11,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-after-release-before-control"])
+        #expect(
+            !viewModel.receiveExecutionCoordinator.state.remoteTransmitStoppedContactIDs
+                .contains(contactID)
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reopened remote receive from fresh Direct QUIC audio after local stop"
+                    && $0.metadata["directQuicSequenceNumber"] == "11"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func directQuicContinuityGapResetsReceiveEpochBeforePlayback() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.remoteAudioChunkContinuityGapNanoseconds = 1
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "first-live-packet",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 440,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.beginReceiveEpochCallCount == 0)
+        #expect(
+            viewModel.receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase
+                == .receivingAudio
+        )
+
+        try await Task.sleep(nanoseconds: 1_000_000)
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh-packet-after-gap",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 441,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["first-live-packet", "fresh-packet-after-gap"])
+        #expect(mediaSession.beginReceiveEpochCallCount == 1)
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_chunk_gap"
+                    && $0.metadata["incomingTransport"] == "direct-quic"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset remote audio receive epoch after incoming audio continuity gap"
+                    && $0.metadata["incomingTransport"] == "direct-quic"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func expiredDirectQuicAudioBacklogDoesNotCancelFreshPacketBehindIt() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 80_000_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 220_000_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 300_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 300_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+
+        Task.detached(priority: .userInitiated) {
+            controller.injectIncomingAudioPayloadForTesting(
+                DirectQuicIncomingAudioPayload(
+                    payload: "stale",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: 1,
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+            try? await Task.sleep(nanoseconds: 340_000_000)
+            controller.injectIncomingAudioPayloadForTesting(
+                DirectQuicIncomingAudioPayload(
+                    payload: "fresh",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: 2,
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+        }
+
+        let mainActorBlockDeadline = DispatchTime.now().uptimeNanoseconds + 400_000_000
+        while DispatchTime.now().uptimeNanoseconds < mainActorBlockDeadline {}
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 700_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh"])
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["action"] == "dropped-expired-live-backlog"
+                    && $0.metadata["directQuicSequenceNumber"] == "1"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func incomingDirectQuicAudioCapturedBeforeReceiveEpochResetDoesNotPlayAfterReset() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+
+        let capturedReceiveEpoch = viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
+        viewModel.mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+
+        await viewModel.handleIncomingAudioPayload(
+            "stale-direct-packet",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .directQuic,
+            transportSequenceNumber: 586,
+            expectedReceiveEpoch: capturedReceiveEpoch,
+            ingressContext: IncomingAudioIngressContext(
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 586,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                source: "direct-quic"
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped incoming audio after receive epoch changed"
+                    && $0.metadata["incomingTransport"] == "direct-quic"
+                    && $0.metadata["sequenceNumber"] == "586"
+                    && $0.metadata["expectedReceiveEpoch"] == String(capturedReceiveEpoch)
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Incoming audio ingress summary"
+                    && $0.metadata["transport"] == "direct-quic"
+                    && $0.metadata["freshnessDecision"] == "dropped-stale-receive-epoch"
+                    && $0.metadata["playbackDecision"] == "rejected"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func severeDirectQuicAudioQueueDelayDropsLiveBacklogDiagnosticsAreBudgeted() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -15172,17 +17015,102 @@ struct ConnectionTests {
 
         let severeDelayViolations = viewModel.diagnostics.invariantViolations.filter {
             $0.invariantID == "media.incoming_audio_queue_delay"
-                && $0.metadata["action"] == "preserved-severe"
+                && $0.metadata["action"] == "dropped-severe-live-backlog"
         }
         let suppressionNotices = viewModel.diagnostics.entries.filter {
             $0.message == "Suppressing repetitive Direct QUIC audio queue delay diagnostics"
-                && $0.metadata["action"] == "preserved-severe"
+                && $0.metadata["action"] == "dropped-severe-live-backlog"
         }
 
         #expect(severeDelayViolations.count == 3)
         #expect(suppressionNotices.count == 1)
         #expect(suppressionNotices.first?.metadata["detailedReportLimit"] == "3")
-        #expect(mediaSession.receivedRemoteAudioChunks == Array(repeating: "AQI=", count: 6))
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+    }
+
+    @MainActor
+    @Test func severeDirectQuicAudioQueueDelayResetsBacklogAndAcceptsFreshPayload() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 50_000_000
+        viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 100_000_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 1_500_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let controller = viewModel.directQuicProbeController()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
+
+        controller.injectIncomingAudioPayloadForTesting(
+            DirectQuicIncomingAudioPayload(
+                payload: "stale",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 200_000_000,
+                sequenceNumber: 1,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 200
+            )
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["action"] == "dropped-severe-live-backlog"
+                    && $0.metadata["directQuicSequenceNumber"] == "1"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Reset Direct QUIC incoming audio payload queue"
+                    && $0.metadata["reason"] == "severe-live-backlog"
+            }
+        )
+
+        controller.injectIncomingAudioPayloadForTesting(
+            DirectQuicIncomingAudioPayload(
+                payload: "fresh",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 2,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh"])
     }
 
     @MainActor
@@ -15191,6 +17119,7 @@ struct ConnectionTests {
 
         #expect(viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds == 240_000_000)
         #expect(viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds == 1_000_000_000)
+        #expect(viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds == 800_000_000)
         #expect(viewModel.incomingLiveAudioBacklogExpirationNanoseconds == 2_000_000_000)
         #expect(
             viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds
@@ -15209,6 +17138,14 @@ struct ConnectionTests {
                 > viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds
         )
         #expect(
+            viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds
+                > viewModel.remoteAudioChunkContinuityGapNanoseconds
+        )
+        #expect(
+            viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds
+                < viewModel.incomingLiveAudioBacklogExpirationNanoseconds
+        )
+        #expect(
             viewModel.incomingLiveAudioBacklogExpirationNanoseconds
                 == viewModel.firstAudioPlaybackAckTimeoutNanoseconds
         )
@@ -15219,7 +17156,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func directQuicAudioSequenceGapRecordsBeforePlayback() async throws {
+    @Test func directQuicAudioSequenceGapDoesNotRecordOrderedLivenessContract() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -15279,11 +17216,8 @@ struct ConnectionTests {
 
         #expect(mediaSession.receivedRemoteAudioChunks == ["AQE=", "AQM="])
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_sequence_gap"
-                    && $0.metadata["previousSequenceNumber"] == "1"
-                    && $0.metadata["sequenceNumber"] == "3"
-                    && $0.metadata["missingSequenceCount"] == "1"
                     && $0.metadata["incomingTransport"] == "direct-quic"
             }
         )

@@ -396,7 +396,17 @@ where
                 });
             }
             if is_latest_diagnostics_path(&request.path) {
-                let Some(report) = self.state.diagnostics_by_device.values().next_back() else {
+                let handle = request_handle(&request);
+                let user_id = user_id_for_handle(&normalize_handle(handle));
+                let Some(report) = self
+                    .state
+                    .diagnostics_by_device
+                    .values()
+                    .rev()
+                    .find(|report| {
+                        report.get("userId").and_then(Value::as_str) == Some(user_id.as_str())
+                    })
+                else {
                     return Ok(error_response(404, "not found"));
                 };
                 return Ok(HttpResponse {
@@ -2673,6 +2683,7 @@ fn diagnostics_report(handle: &str, body: &Value) -> Result<Value, RuntimeHttpEr
     let normalized = normalize_handle(handle);
     Ok(serde_json::json!({
         "userId": user_id_for_handle(&normalized),
+        "handle": normalized,
         "deviceId": required_string(body, &["deviceId"], "deviceId")?,
         "appVersion": required_string(body, &["appVersion"], "appVersion")?,
         "backendBaseURL": required_string(body, &["backendBaseURL"], "backendBaseURL")?,
@@ -3498,6 +3509,48 @@ mod tests {
         assert_eq!(latest.status, 200);
         assert_eq!(latest.body["status"], "ok");
         assert_eq!(latest.body["report"]["deviceId"], "device-a");
+    }
+
+    #[test]
+    fn self_hosted_diagnostics_latest_is_scoped_to_request_handle() {
+        let mut service = service();
+        for (handle, device_id) in [("@avery", "device-a"), ("@blake", "device-b")] {
+            let upload = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: "/v1/dev/diagnostics".to_owned(),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({
+                    "deviceId": device_id,
+                    "appVersion": format!("route-probe:{device_id}"),
+                    "backendBaseURL": "https://api.beepbeep.to",
+                    "selectedHandle": "@peer",
+                    "snapshot": "snapshot",
+                    "transcript": "transcript"
+                }))
+                .expect("body should encode"),
+            });
+            assert_eq!(upload.status, 200);
+        }
+
+        let avery_latest = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/diagnostics/latest".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_latest = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/diagnostics/latest".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(avery_latest.status, 200);
+        assert_eq!(avery_latest.body["report"]["handle"], "@avery");
+        assert_eq!(avery_latest.body["report"]["deviceId"], "device-a");
+        assert_eq!(blake_latest.status, 200);
+        assert_eq!(blake_latest.body["report"]["handle"], "@blake");
+        assert_eq!(blake_latest.body["report"]["deviceId"], "device-b");
     }
 
     #[test]

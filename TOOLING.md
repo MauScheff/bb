@@ -28,6 +28,8 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 - Start at the narrowest proof lane that owns the behavior.
 - Prefer `just` recipes over lower-level SwiftPM, Xcode, Python, Cargo, Docker, or UCM commands.
 - Backend/shared truth is backend-owned unless the owner has been proven elsewhere.
+- For reliability sweeps, use `WORKFLOW.md`'s discovery loop: invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate.
+- Treat fuzz seeds as temporary evidence until the failure is replayed, classified, and promoted into a durable proof.
 - Use simulator scenarios only when the app target, backend route/projection behavior, scenario DSL, or merged diagnostics must be exercised.
 - Use physical devices only for real Apple PushToTalk, permissions, backgrounding, audio-session activation, microphone capture, speaker output, and hardware-only behavior.
 - Keep fuzz seeds, scenario names, artifact paths, and exact commands in handoffs or final notes when a failure matters.
@@ -77,7 +79,7 @@ Stop dependencies with:
 just self-hosted-down
 ```
 
-Some older local scenario recipes still default to `http://localhost:8090/s/turbo`; pass an explicit base URL for the active runtime unless the recipe name says `self-hosted`.
+Local scenario and fuzz recipes default to the active self-hosted runtime base URL, `http://127.0.0.1:8091/s/turbo`; pass an explicit base URL only when targeting a different runtime.
 
 ## Deploy And Production
 
@@ -150,6 +152,8 @@ Use physical devices only after lower lanes are green or inapplicable.
 `<device>` may be a hardware UDID, CoreDevice identifier, serial number, or exact device name. If exactly one physical iOS device is connected, most device recipes can infer it.
 
 ## Reliability And Fuzzing
+
+Use [`docs/reliability/fuzz.md`](/Users/mau/Development/bb/docs/reliability/fuzz.md) for the operator loop, replay/shrink rules, artifact layout, and promotion rules.
 
 | Confidence level | Command | Use when |
 | --- | --- | --- |

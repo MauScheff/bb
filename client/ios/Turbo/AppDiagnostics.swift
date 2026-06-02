@@ -842,8 +842,13 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
         let connectableWakeStatuses = Set(["waiting-for-peer", "ready", "transmitting", "receiving"])
         if remoteWakeCapabilityKindValue == "wake-capable",
            connectableWakeStatuses.contains(backendChannelStatusValue) {
-            let disconnectedPhases = Set(["idle", "outgoingBeep"])
-            if disconnectedPhases.contains(phase) {
+            let staleDisconnectedPhase =
+                phase == "idle"
+                || (phase == "outgoingBeep" && selectedConversationRelationship == "none")
+            if staleDisconnectedPhase,
+               pendingAction == "none",
+               !backendJoinSettling,
+               !localDevicePTTEvidence {
                 violations.append(
                     DiagnosticsInvariantViolationCandidate(
                         invariantID: "selected.wake_capable_receiver_ui_not_connectable",
@@ -851,6 +856,9 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                         message: "backend channel is connectable and receiver wake is available, but selectedConversationPhase is still not connectable",
                         metadata: [
                             "selectedConversationPhase": phase,
+                            "selectedConversationRelationship": selectedConversationRelationship,
+                            "pendingAction": pendingAction,
+                            "backendJoinSettling": String(backendJoinSettling),
                             "backendChannelStatus": backendChannelStatusValue,
                             "backendReadiness": backendReadinessValue,
                             "remoteWakeCapabilityKind": remoteWakeCapabilityKindValue,

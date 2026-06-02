@@ -469,6 +469,7 @@ extension PTTViewModel {
         contactID: UUID,
         channelID: String,
         incomingAudioTransport: IncomingAudioPayloadTransport,
+        fromDeviceID: String = "unknown",
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
         let thresholdNanoseconds = incomingAudioChunkContinuityGapNanoseconds(
@@ -526,6 +527,53 @@ extension PTTViewModel {
         case .suppressed:
             break
         }
+        resetRemoteReceiveEpochAfterIncomingAudioContinuityGapIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            observation: observation,
+            thresholdNanoseconds: thresholdNanoseconds
+        )
+    }
+
+    private func resetRemoteReceiveEpochAfterIncomingAudioContinuityGapIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        observation: IncomingAudioContinuityObservation,
+        thresholdNanoseconds: UInt64
+    ) {
+        guard incomingAudioTransport == .directQuic else { return }
+        guard let gapNanoseconds = observation.gapNanoseconds else { return }
+
+        mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
+        mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
+        mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+            reason: "incoming-audio-continuity-gap"
+        )
+        mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        clearFirstAudioPlaybackAckSentState(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: fromDeviceID
+        )
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Reset remote audio receive epoch after incoming audio continuity gap",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": fromDeviceID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "gapMilliseconds": String(gapNanoseconds / 1_000_000),
+                "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
+            ]
+        )
     }
 
     func incomingAudioChunkContinuityGapNanoseconds(
@@ -552,6 +600,9 @@ extension PTTViewModel {
             transport: incomingAudioTransport,
             sequenceNumber: sequenceNumber
         )
+        guard !incomingAudioTransport.isUnreliablePacketMedia else {
+            return
+        }
         guard let previousSequenceNumber = observation.previousSequenceNumber,
               let missingSequenceCount = observation.missingSequenceCount,
               receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase == .receivingAudio else {
@@ -611,6 +662,7 @@ extension PTTViewModel {
         contactID: UUID,
         incomingAudioTransport: IncomingAudioPayloadTransport = .relayWebSocket,
         transportSequenceNumber: UInt64? = nil,
+        expectedReceiveEpoch: UInt64? = nil,
         ingressContext: IncomingAudioIngressContext? = nil
     ) async {
         let applicationState = currentApplicationState()
@@ -629,7 +681,8 @@ extension PTTViewModel {
                 incomingAudioTransport: incomingAudioTransport,
                 transportSequenceNumber: transportSequenceNumber,
                 ingressContext: ingressContext,
-                receiveEpoch: mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
+                receiveEpoch: expectedReceiveEpoch
+                    ?? mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
             ),
             policy: IncomingAudioIngressConfiguration(
                 mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
@@ -871,6 +924,36 @@ extension PTTViewModel {
         let senderSentAtMilliseconds = admittedPacket.senderSentAtMilliseconds
         let localQueueDelayNanoseconds = admittedPacket.localQueueDelayNanoseconds
         let frameDurationNanoseconds = admittedPacket.frameDurationNanoseconds
+        if let expectedReceiveEpoch,
+           mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != expectedReceiveEpoch {
+            recordIncomingAudioIngressSummaryIfNeeded(
+                contactID: contactID,
+                channelID: channelID,
+                fromDeviceID: fromDeviceID,
+                incomingAudioTransport: incomingAudioTransport,
+                sequenceNumber: playbackSequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                freshnessDecision: "dropped-stale-receive-epoch",
+                playbackAccepted: false,
+                source: ingressContext?.source ?? "incoming-audio"
+            )
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped incoming audio after receive epoch changed",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                    "sequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
+                    "expectedReceiveEpoch": String(expectedReceiveEpoch),
+                    "currentReceiveEpoch": String(mediaRuntime.incomingAudioReceiveEpoch(for: contactID)),
+                ]
+            )
+            return
+        }
         if admittedPacket.shouldLogPlaintextFallback,
            mediaRuntime.takeShouldLogMediaEncryptionPlaintextFallback(
             contactID: contactID,
@@ -998,6 +1081,15 @@ extension PTTViewModel {
                 for: contactID,
                 channelID: channelID
             )
+        }
+        if bufferForegroundSystemReceiveAudioChunkUntilPTTActivation(
+            audioPayload,
+            channelID: channelID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            applicationState: applicationState
+        ) {
+            return
         }
         if bufferWakeAudioChunkUntilPTTActivation(
             audioPayload,
@@ -1172,6 +1264,10 @@ extension PTTViewModel {
             applicationState: applicationState,
             incomingAudioTransport: incomingAudioTransport
         ) else { return false }
+        guard !shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+            for: contactID,
+            applicationState: applicationState
+        ) else { return false }
         return true
     }
 
@@ -1213,7 +1309,8 @@ extension PTTViewModel {
         recordIncomingAudioContinuityContractIfNeeded(
             contactID: contactID,
             channelID: channelID,
-            incomingAudioTransport: incomingAudioTransport
+            incomingAudioTransport: incomingAudioTransport,
+            fromDeviceID: fromDeviceID
         )
     }
 
@@ -1245,8 +1342,11 @@ extension PTTViewModel {
         ingressSource: String
     ) async {
         if playbackAccepted {
+            let ackIdentityPayload = MediaEncryptedAudioPacket.isEncodedPacket(incomingMediaPayload)
+                ? incomingMediaPayload
+                : audioPayload
             await sendFirstAudioPlaybackStartedAckIfNeeded(
-                originalPayload: incomingMediaPayload,
+                originalPayload: ackIdentityPayload,
                 channelID: channelID,
                 fromUserID: fromUserID,
                 fromDeviceID: fromDeviceID,
@@ -1716,7 +1816,8 @@ extension PTTViewModel {
                     await connectMediaRelayForReceiveIfNeeded(
                         contactID: contactID,
                         channelID: envelope.channelId,
-                        peerDeviceID: envelope.fromDeviceId
+                        peerDeviceID: envelope.fromDeviceId,
+                        allowConfiguredReceiveWithoutLocalToggle: true
                     )
                 }
                 recordWakeReceiveTiming(
@@ -2468,17 +2569,11 @@ extension PTTViewModel {
                 effectiveChannelState: effectiveChannelState,
                 localDevicePTTEvidenceCleared: localDevicePTTEvidenceCleared
             ) {
-                diagnostics.recordInvariantViolation(
-                    invariantID: "selected.stale_joined_refresh_during_leave",
-                    scope: .local,
-                    message: "Ignored backend channel refresh that preserved joined membership while explicit leave was in flight",
-                    metadata: [
-                        "contactId": contactID.uuidString,
-                        "channelId": backendChannelId,
-                        "backendStatus": effectiveChannelState.status,
-                        "backendMembership": String(describing: effectiveChannelState.membership),
-                        "backendReadiness": effectiveChannelReadiness?.statusKind ?? "none",
-                    ]
+                recordStaleJoinedChannelRefreshRepairDuringLeave(
+                    contactID: contactID,
+                    backendChannelID: backendChannelId,
+                    effectiveChannelState: effectiveChannelState,
+                    effectiveChannelReadiness: effectiveChannelReadiness
                 )
                 backendSyncCoordinator.send(.channelStateCleared(contactID: contactID))
                 controlPlaneCoordinator.send(.receiverAudioReadinessCacheCleared(contactID: contactID))
@@ -2651,7 +2746,9 @@ extension PTTViewModel {
                 let shouldAcceptBackendLocalTransmit = shouldAcceptBackendLocalTransmitProjection(
                     backendShowsLocalTransmit: backendShowsLocalTransmit,
                     refreshedContactID: contactID,
-                    transmitSnapshot: transmitSnapshot
+                    transmitSnapshot: transmitSnapshot,
+                    leaveInFlight: leaveWasInFlight
+                        || conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID)
                 )
                 let shouldPreserveTransmitState = shouldPreserveLocalTransmitState(
                     selectedContactID: selectedContactId,
@@ -2889,6 +2986,27 @@ extension PTTViewModel {
             captureDiagnosticsState("backend-sync:beeps-failed")
             await reconcileSelectedConversationIfNeeded()
         }
+    }
+
+    func recordStaleJoinedChannelRefreshRepairDuringLeave(
+        contactID: UUID,
+        backendChannelID: String,
+        effectiveChannelState: TurboChannelStateResponse,
+        effectiveChannelReadiness: TurboChannelReadinessResponse?
+    ) {
+        diagnostics.record(
+            .state,
+            message: "Ignored backend channel refresh that preserved joined membership while explicit leave was in flight",
+            metadata: [
+                "repairDecision": "ignored-stale-joined-refresh",
+                "invariantId": "selected.stale_joined_refresh_during_leave",
+                "contactId": contactID.uuidString,
+                "channelId": backendChannelID,
+                "backendStatus": effectiveChannelState.status,
+                "backendMembership": String(describing: effectiveChannelState.membership),
+                "backendReadiness": effectiveChannelReadiness?.statusKind ?? "none",
+            ]
+        )
     }
 
     func recordBeepSyncPartialRecovery(failedRoute: String, error: Error) {

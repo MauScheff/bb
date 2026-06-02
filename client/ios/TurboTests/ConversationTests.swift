@@ -651,6 +651,44 @@ struct ConversationTests {
         )
     }
 
+    @Test func backendJoinedRefreshDoesNotReopenEngineConversationAfterRecentSystemLeave() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(
+            contactID: contactID,
+            backendChannelID: "channel-1"
+        )
+        viewModel.markStaleSystemRejoinSuppression(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "recent-system-leave"
+        )
+
+        #expect(viewModel.isJoined)
+
+        viewModel.syncEngineJoinedConversation(contactID: contactID, reason: "stale-channel-refresh")
+
+        #expect(!viewModel.isJoined)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Ignored backend joined Conversation after recent system leave"
+            }
+        )
+    }
+
     @Test func queueJoinDoesNotOverrideExplicitLeave() {
         var coordinator = ConversationActionCoordinatorState()
         let contactID = UUID()
@@ -1288,6 +1326,46 @@ struct ConversationTests {
         #expect(state.phase == .outgoingBeep)
         #expect(state.conversationState == .outgoingBeep)
         #expect(state.statusMessage == "Beep sent to Avery")
+    }
+
+    @Test func acceptedIncomingBeepRequestSubmissionKeepsBeepProjectionOutOfWaiting() {
+        let contactID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .incomingBeep,
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: false,
+            activeChannelID: nil,
+            systemSessionMatchesContact: false,
+            systemSessionState: .none,
+            pendingAction: .connect(.requestingBackend(contactID: contactID)),
+            pendingConnectAcceptedIncomingBeep: true,
+            localJoinFailure: nil,
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .incomingBeep,
+                    canTransmit: false,
+                    selfJoined: false,
+                    peerJoined: false,
+                    peerDeviceConnected: false,
+                    hasIncomingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .incomingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase == .incomingBeep)
+        #expect(projection.selectedConversationState.conversationState == .incomingBeep)
+        #expect(projection.selectedConversationState.statusMessage == "Avery wants to talk")
+        #expect(!projection.selectedConversationState.canTransmitNow)
+        #expect(!projection.selectedConversationState.allowsHoldToTalk)
+        #expect(projection.reconciliationAction == .none)
     }
 
     @Test func pendingOutgoingBeepDominatesPeerReadyBackendProjection() {

@@ -2196,8 +2196,9 @@ nonisolated final class DirectQuicSerialAsyncQueue: @unchecked Sendable {
 }
 
 nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
-    // Direct audio must enter playback admission in receive order. Bound pending work so
-    // overload drops old live datagrams instead of reordering audio frames.
+    // The default is serial for explicit ordering tests and ordered fallback-style
+    // use. Direct packet media controllers opt into bounded concurrency because
+    // Opus playout is keyed by frame index and can absorb packet reordering.
     static let defaultMaxConcurrentHandlers = 1
     static let defaultMaxPendingHandlers = 64
 
@@ -2294,6 +2295,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
+    private static let liveAudioMaxConcurrentIncomingHandlers = 16
     static let liveAudioDatagramWaitsForProcessing = false
     // Apple PTT activation can hold the first transmit/receive path for several
     // seconds. Keep the app-level consent watchdog longer than that activation
@@ -2302,7 +2304,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "Turbo.DirectQuicProbe")
     private let stateLock = NSLock()
-    private let incomingAudioPayloadQueue = DirectQuicAudioPayloadAsyncQueue()
+    private let incomingAudioPayloadQueue: DirectQuicAudioPayloadAsyncQueue
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
 
     private var listener: NWListener?
@@ -2334,8 +2336,13 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 #endif
 
     init(
+        incomingAudioMaxConcurrentHandlers: Int = DirectQuicProbeController
+            .liveAudioMaxConcurrentIncomingHandlers,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil
     ) {
+        self.incomingAudioPayloadQueue = DirectQuicAudioPayloadAsyncQueue(
+            maxConcurrentHandlers: incomingAudioMaxConcurrentHandlers
+        )
         self.reportEvent = reportEvent
     }
 

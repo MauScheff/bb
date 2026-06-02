@@ -17,6 +17,10 @@ import reliability_intake
 import slo_dashboard
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PRODUCTION_REPLAY_FIXTURES = REPO_ROOT / "shared" / "fixtures" / "production_replay"
+
+
 def sample_report(
     *,
     handle: str = "@avery",
@@ -1012,6 +1016,35 @@ class MergedDiagnosticsClassificationTests(unittest.TestCase):
             [violation.invariant_id for violation in violations],
         )
 
+    def test_wake_capable_receiver_allows_outstanding_outgoing_beep(self) -> None:
+        report = sample_report(
+            snapshot={
+                "selectedConversationPhase": "outgoingBeep",
+                "selectedConversationStatus": "Beep sent",
+                "selectedContact": "@blake",
+                "selectedConversationRelationship": "outgoingBeep(requestCount: 1)",
+                "pendingAction": "none",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "true",
+                "backendPeerDeviceConnected": "true",
+                "backendChannelStatus": "waiting-for-peer",
+                "backendReadiness": "waiting-for-peer",
+                "remoteWakeCapabilityKind": "wake-capable",
+                "isJoined": "false",
+                "systemSession": "none",
+            },
+        )
+
+        violations = merged_diagnostics.analyze_reports(
+            [report],
+            include_recorded_violations=False,
+        )
+
+        self.assertNotIn(
+            "selected.wake_capable_receiver_ui_not_connectable",
+            [violation.invariant_id for violation in violations],
+        )
+
 
 class ProductionReplayInvariantIDTests(unittest.TestCase):
     def test_invariant_ids_include_current_and_historical_violation_lists(self) -> None:
@@ -1030,7 +1063,7 @@ class ProductionReplayInvariantIDTests(unittest.TestCase):
         )
 
     def test_mixed_fixture_preserves_current_and_historical_violation_lists(self) -> None:
-        fixture_path = Path(__file__).resolve().parent.parent / "fixtures" / "production_replay" / "merged_diagnostics_mixed.json"
+        fixture_path = PRODUCTION_REPLAY_FIXTURES / "merged_diagnostics_mixed.json"
         with fixture_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
 
@@ -1048,7 +1081,7 @@ class ProductionReplayInvariantIDTests(unittest.TestCase):
         )
 
     def test_pair_matrix_fixture_preserves_multiple_current_pair_violations(self) -> None:
-        fixture_path = Path(__file__).resolve().parent.parent / "fixtures" / "production_replay" / "merged_diagnostics_pair_matrix.json"
+        fixture_path = PRODUCTION_REPLAY_FIXTURES / "merged_diagnostics_pair_matrix.json"
         with fixture_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
 
@@ -1148,7 +1181,7 @@ class DownstreamSplitConsumerTests(unittest.TestCase):
         self.assertEqual(objective.details["historicalCount"], 1)
 
     def test_slo_dashboard_counts_multiple_current_pair_violations_from_fixture(self) -> None:
-        fixture_path = Path(__file__).resolve().parent.parent / "fixtures" / "production_replay" / "merged_diagnostics_pair_matrix.json"
+        fixture_path = PRODUCTION_REPLAY_FIXTURES / "merged_diagnostics_pair_matrix.json"
         with fixture_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
 
@@ -1219,6 +1252,8 @@ class DownstreamSplitConsumerTests(unittest.TestCase):
                 json_error="",
                 replay_result=None,
                 replay_dir=Path(temp_dir) / "replay",
+                audio_corpus_result=None,
+                audio_corpus_path=Path(temp_dir) / "audio-incident-corpus.json",
             )
             summary = summary_path.read_text(encoding="utf-8")
 

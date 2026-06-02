@@ -2,6 +2,16 @@
 
 Repo-specific proof rules. Prefer `just` wrappers; they encode simulator locking, selector validation, and zero-test guardrails.
 
+## Reliability Discovery Proofs
+
+Use [`WORKFLOW.md`](/Users/mau/Development/bb/WORKFLOW.md) for the canonical reliability discovery loop and [`docs/reliability/fuzz.md`](/Users/mau/Development/bb/docs/reliability/fuzz.md) for fuzz operator mechanics:
+
+```text
+invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate
+```
+
+Fuzz failures are not done as seeds. A useful failure must be replayed, classified, and promoted into the lowest durable proof that owns the broken rule before the broader gate is treated as meaningful.
+
 ## TurboEngine package tests
 
 Use `ENGINE.md` for the engine proof model. Prefer package tests or headless engine scenarios before simulator scenarios for Conversation, Connection, Talk Turn, PTT, media, and low-level transport rules in `client/ios/Packages/TurboEngine`.
@@ -10,11 +20,11 @@ Use `ENGINE.md` for the engine proof model. Prefer package tests or headless eng
 just engine-test
 just engine-scenario foreground_transmit_receive
 just engine-scenario 'fuzz_case:12345:0'
-just engine-scenario-local foreground_transmit_receive http://localhost:8090/s/turbo
-just engine-scenario-diff-local foreground_transmit_receive http://localhost:8090/s/turbo
+just engine-scenario-local foreground_transmit_receive http://127.0.0.1:8091/s/turbo
+just engine-scenario-diff-local foreground_transmit_receive http://127.0.0.1:8091/s/turbo
 just engine-fuzz-corpus
-just engine-fuzz-local 12345 500 http://localhost:8090/s/turbo
-just reliability-fuzz-local-overnight 12345 500 http://localhost:8090/s/turbo
+just engine-fuzz-local 12345 500 http://127.0.0.1:8091/s/turbo
+just reliability-fuzz-local-overnight 12345 500 http://127.0.0.1:8091/s/turbo
 just engine-invariant-coverage
 just engine-trace-replay /tmp/turbo-engine-trace.json
 ```
@@ -25,13 +35,14 @@ Direct package command when debugging SwiftPM itself:
 swift test --package-path client/ios/Packages/TurboEngine
 ```
 
-`engine-scenario` uses in-memory simulation. `engine-scenario-local` and `engine-fuzz-local` use `turbo.serveLocal`; start it first:
+`engine-scenario` uses in-memory simulation. `engine-scenario-local` and `engine-fuzz-local` can run against the active self-hosted runtime when backend route semantics matter:
 
 ```bash
-just serve-local
+just self-hosted-up
+just self-hosted-serve 127.0.0.1:8091
 ```
 
-Use live-local engine proof when the reducer rule is covered but production-like backend route semantics matter without launching iOS. The local backend remains the Unison source of truth; the Swift in-memory backend is only a simulation/fuzz adapter.
+Run live-local engine proofs against `http://127.0.0.1:8091/s/turbo`, for example `just engine-fuzz-local 12345 500 http://127.0.0.1:8091/s/turbo`. Use this when the reducer rule is covered but production-like backend route semantics matter without launching iOS. The Rust runtime plus Unison kernel is the backend source of truth; the Swift in-memory backend is only a simulation/fuzz adapter.
 
 Engine fuzz artifacts live under `/tmp/turbo-engine-fuzz/`; replay generated cases with `just engine-scenario 'fuzz_case:<seed>:<index>'`. Persistent fuzz coverage lives in `client/ios/Packages/TurboEngine/Fixtures/fuzz-corpus.json` and runs through `just engine-fuzz-corpus`.
 
@@ -56,7 +67,7 @@ Do not prove engine core behavior through raw `xcodebuild` or physical devices w
 | --- | --- | --- |
 | Engine reducer transition, invariant, or effect list | `just engine-test` | Add or update a package test under `client/ios/Packages/TurboEngine/Tests`. |
 | Synthetic audio, mocked PTT, lifecycle, network faults, or transport fallback | `just engine-scenario <name>` | Use in-memory simulation when backend semantics are irrelevant. |
-| Same story against local backend routes | `just serve-local`, then `just engine-scenario-local <name>` | Fails clearly when `turbo.serveLocal` is unavailable. |
+| Same story against local backend routes | `just self-hosted-up`, `just self-hosted-serve`, then `just engine-scenario-local <name> http://127.0.0.1:8091/s/turbo` | Fails clearly when the runtime is unavailable. |
 | In-memory versus real local backend drift | `just engine-scenario-diff-local <name>` | Compares scenario outputs across both backend ports. |
 | Engine interleaving or timing family | `just engine-fuzz-local <seed> <count>` or `just engine-fuzz-corpus` | Save the artifact path and seed; promote stable failures to deterministic tests. |
 | Broad local overnight reliability sweep | `just reliability-fuzz-local-overnight <seed> <count>` | Runs live-local engine fuzz before simulator fuzz; simulator seed artifacts include strict diagnostics and engine trace replay. |

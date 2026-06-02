@@ -658,6 +658,34 @@ public struct JoinedConversationEvidence: Equatable, Codable, Sendable {
             return .unavailable(.membershipLost)
         }
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case friend
+        case channelID
+        case localDeviceID
+        case peerDevice
+        case receiverAddressability
+        case readiness
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case peer
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        self.friend = try container.decodeIfPresent(SelectedFriendEvidence.self, forKey: .friend)
+            ?? legacyContainer.decode(SelectedFriendEvidence.self, forKey: .peer)
+        self.channelID = try container.decode(EngineChannelID.self, forKey: .channelID)
+        self.localDeviceID = try container.decode(EngineDeviceID.self, forKey: .localDeviceID)
+        self.peerDevice = try container.decode(EngineReadiness<PeerDeviceEvidence>.self, forKey: .peerDevice)
+        self.receiverAddressability = try container.decodeIfPresent(
+            ReceiverAddressability.self,
+            forKey: .receiverAddressability
+        ) ?? JoinedConversationEvidence.defaultAddressability(peerDevice)
+        self.readiness = try container.decode(EngineReadiness<JoinedReadinessEvidence>.self, forKey: .readiness)
+    }
 }
 
 public struct PeerDeviceEvidence: Equatable, Codable, Sendable {
@@ -1816,6 +1844,27 @@ public struct EngineTraceStep: Equatable, Codable, Sendable {
         self.effects = effects
         self.diagnostics = diagnostics
         self.invariantIDs = invariantIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case index
+        case source
+        case input
+        case resultingState
+        case effects
+        case diagnostics
+        case invariantIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.index = try container.decode(Int.self, forKey: .index)
+        self.source = try container.decodeIfPresent(String.self, forKey: .source) ?? "legacy-trace"
+        self.input = try container.decode(EngineTraceInput.self, forKey: .input)
+        self.resultingState = try container.decode(TurboEngineState.self, forKey: .resultingState)
+        self.effects = try container.decode([TurboEngineEffect].self, forKey: .effects)
+        self.diagnostics = try container.decode([EngineDiagnostic].self, forKey: .diagnostics)
+        self.invariantIDs = try container.decode([String].self, forKey: .invariantIDs)
     }
 }
 

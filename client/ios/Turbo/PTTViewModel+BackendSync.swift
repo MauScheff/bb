@@ -476,6 +476,51 @@ extension PTTViewModel {
         return pttCoordinator.state.systemChannelUUID == channelUUID && !pttCoordinator.state.isTransmitting
     }
 
+    func shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+        for contactID: UUID,
+        applicationState: UIApplication.State
+    ) -> Bool {
+        guard applicationState == .active else { return false }
+        guard !isPTTAudioSessionActive else { return false }
+        guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
+        guard let channelUUID = channelUUID(for: contactID) else { return false }
+        return pttCoordinator.state.systemChannelUUID == channelUUID
+            && !pttCoordinator.state.isTransmitting
+    }
+
+    @discardableResult
+    func bufferForegroundSystemReceiveAudioChunkUntilPTTActivation(
+        _ payload: String,
+        channelID: String,
+        contactID: UUID,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        applicationState: UIApplication.State
+    ) -> Bool {
+        guard shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+            for: contactID,
+            applicationState: applicationState
+        ) else { return false }
+        let bufferResult = mediaRuntime.bufferForegroundSystemReceiveAudioChunk(
+            BufferedForegroundReceiveAudioChunk(
+                payload: payload,
+                transport: incomingAudioTransport
+            ),
+            for: contactID
+        )
+        diagnostics.record(
+            .media,
+            message: "Buffered foreground receive audio chunk until PTT activation",
+            metadata: [
+                "channelId": channelID,
+                "contactId": contactID.uuidString,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "bufferedChunkCount": String(bufferResult.bufferedChunkCount),
+                "droppedStaleBufferedChunkCount": String(bufferResult.droppedChunkCount),
+            ]
+        )
+        return true
+    }
+
     @discardableResult
     func bufferWakeAudioChunkUntilPTTActivation(
         _ payload: String,
@@ -568,6 +613,10 @@ extension PTTViewModel {
         mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+            reason: "remote-transmit-stopped"
+        )
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
@@ -582,10 +631,41 @@ extension PTTViewModel {
         mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+            reason: "remote-transmit-stopped"
+        )
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:draining")
         }
+    }
+
+    func fenceRemoteAudioReceiveForLocalTransmitStart(
+        contactID: UUID,
+        reason: String
+    ) {
+        receiveExecutionCoordinator.send(
+            .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
+        )
+        mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
+        mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
+        mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
+        mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+            reason: "local-transmit-start"
+        )
+        mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        diagnostics.record(
+            .media,
+            message: "Fenced remote audio receive before local transmit",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "reason": reason,
+            ]
+        )
     }
 
     func shouldDeferReceiveTeardownUntilRemoteAudioDrain(for contactID: UUID) -> Bool {

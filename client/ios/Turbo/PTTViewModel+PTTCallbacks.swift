@@ -891,6 +891,11 @@ extension PTTViewModel {
             (autoRejoinContactID != nil && autoRejoinContactID != contactID)
             || explicitLeaveWasPending
             || shouldTreatLocalSystemLeaveAsExplicitTeardown
+        let shouldTreatBackgroundSystemLeaveAsLocalInterruption =
+            applicationState != .active
+            && !systemLeaveWasUserInitiated
+            && !explicitLeaveWasPending
+            && !shouldPropagateBackendLeave
         if applicationState != .active,
            systemLeaveWasUserInitiated,
            !explicitLeaveWasPending,
@@ -901,6 +906,26 @@ extension PTTViewModel {
                 metadata: [
                     "channelUUID": channelUUID.uuidString,
                     "contactID": contactID?.uuidString ?? "none",
+                    "leaveReason": reasonDescription,
+                    "applicationState": String(describing: applicationState),
+                ]
+            )
+        }
+        if shouldTreatBackgroundSystemLeaveAsLocalInterruption,
+           let contactID {
+            markStaleSystemRejoinSuppression(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "background-system-leave"
+            )
+            conversationActionCoordinator.clearPendingJoin(for: contactID)
+            cancelSelectedConnectionAttemptTimeout()
+            diagnostics.record(
+                .pushToTalk,
+                message: "Treating background system PTT leave as local-only continuity interruption",
+                metadata: [
+                    "channelUUID": channelUUID.uuidString,
+                    "contactID": contactID.uuidString,
                     "leaveReason": reasonDescription,
                     "applicationState": String(describing: applicationState),
                 ]

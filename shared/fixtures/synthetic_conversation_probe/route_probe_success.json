@@ -82,6 +82,23 @@
     },
     {
       "detail": "ok",
+      "durationMs": 7,
+      "name": "wake-events:recent:after-begin-transmit",
+      "ok": true,
+      "payload": {
+        "events": [
+          {
+            "channelId": "synthetic-channel",
+            "senderDeviceId": "synthetic-caller",
+            "startedAt": "2026-05-10T10:00:00Z",
+            "targetDeviceId": "synthetic-callee"
+          }
+        ],
+        "status": "ok"
+      }
+    },
+    {
+      "detail": "ok",
       "durationMs": 9,
       "name": "channel-ptt-push-target",
       "ok": true,

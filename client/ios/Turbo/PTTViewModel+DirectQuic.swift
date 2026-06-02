@@ -1360,6 +1360,39 @@ extension PTTViewModel {
         guard let attempt = directQuicAttempt(for: contactID, matching: attemptID) else {
             return
         }
+        if receiveExecutionCoordinator.state.remoteTransmitStoppedContactIDs.contains(contactID),
+           !reopenRemoteReceiveForPostLocalStopDirectQuicAudioIfNeeded(
+            incomingPayload,
+            contactID: contactID,
+            attempt: attempt
+           ) {
+            let sequenceNumber = incomingPayload.sequenceNumber.map(String.init) ?? "none"
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped Direct QUIC audio payload after remote transmit stop",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": attempt.channelID,
+                    "attemptId": attemptID,
+                    "directQuicSequenceNumber": sequenceNumber,
+                    "reason": "remote-transmit-stopped",
+                ]
+            )
+            recordIncomingAudioIngressSummaryIfNeeded(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                incomingAudioTransport: .directQuic,
+                sequenceNumber: incomingPayload.sequenceNumber,
+                localQueueDelayNanoseconds: 0,
+                senderSentAtMilliseconds: incomingPayload.sentAtMilliseconds,
+                freshnessDecision: "dropped-after-remote-stop",
+                playbackAccepted: false,
+                source: "direct-quic"
+            )
+            return
+        }
         let handlerStartedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
         let localQueueDelayNanoseconds =
             handlerStartedAtNanoseconds >= incomingPayload.datagramReceivedAtNanoseconds
@@ -1384,6 +1417,12 @@ extension PTTViewModel {
             directQuicIncomingAudioLiveBacklogDropNanoseconds,
             incomingLiveAudioBacklogExpirationNanoseconds
         )
+        let localBacklogResetThresholdNanoseconds = min(
+            directQuicIncomingAudioQueueSevereDelayNanoseconds,
+            liveBacklogDropThresholdNanoseconds
+        )
+        let payloadContainsOpusFrame = VoiceAudioFramePayloadCodec
+            .mayContainOpusFrame(incomingPayload.payload)
         if localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(
                 contactID: contactID,
@@ -1404,6 +1443,41 @@ extension PTTViewModel {
                 freshnessDecision: "dropped-expired-live-backlog",
                 playbackAccepted: false,
                 source: "direct-quic"
+            )
+            resetDirectQuicReceiveEpochAfterExpiredLiveBacklogIfNeeded(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                attemptID: attemptID,
+                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                sequenceNumber: incomingPayload.sequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                thresholdNanoseconds: liveBacklogDropThresholdNanoseconds
+            )
+            return
+        } else if !payloadContainsOpusFrame,
+                  localQueueDelayNanoseconds >= localBacklogResetThresholdNanoseconds {
+            recordDirectQuicIncomingAudioQueueDelayIfNeeded(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                attemptID: attemptID,
+                timingMetadata: timingMetadata,
+                thresholdNanoseconds: localBacklogResetThresholdNanoseconds,
+                action: "dropped-severe-live-backlog"
+            )
+            recordIncomingAudioIngressSummaryIfNeeded(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                incomingAudioTransport: .directQuic,
+                sequenceNumber: incomingPayload.sequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: incomingPayload.sentAtMilliseconds,
+                freshnessDecision: "dropped-severe-live-backlog",
+                playbackAccepted: false,
+                source: "direct-quic"
+            )
+            mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+                reason: "severe-live-backlog"
             )
             return
         } else if localQueueDelayNanoseconds >= directQuicIncomingAudioQueueSevereDelayNanoseconds {
@@ -1438,6 +1512,7 @@ extension PTTViewModel {
             attemptID: attemptID,
             reason: "incoming-audio"
         )
+        let receiveEpoch = mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
         let remoteUserID = contacts.first(where: { $0.id == contactID })?.remoteUserId ?? ""
         let fromDeviceID = attempt.peerDeviceID ?? "direct-quic"
 
@@ -1466,6 +1541,7 @@ extension PTTViewModel {
             contactID: contactID,
             incomingAudioTransport: .directQuic,
             transportSequenceNumber: incomingPayload.sequenceNumber,
+            expectedReceiveEpoch: receiveEpoch,
             ingressContext: IncomingAudioIngressContext(
                 receivedAtNanoseconds: incomingPayload.datagramReceivedAtNanoseconds,
                 sequenceNumber: incomingPayload.sequenceNumber,
@@ -1473,6 +1549,115 @@ extension PTTViewModel {
                 source: "direct-quic"
             )
         )
+    }
+
+    private func resetDirectQuicReceiveEpochAfterExpiredLiveBacklogIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        attemptID: String,
+        fromDeviceID: String,
+        sequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64,
+        thresholdNanoseconds: UInt64
+    ) {
+        guard let remoteReceivePhase = receiveExecutionCoordinator
+            .state
+            .remoteActivityByContactID[contactID]?.phase,
+              remoteReceivePhase == .awaitingFirstAudioChunk
+                || remoteReceivePhase == .receivingAudio
+        else { return }
+
+        mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
+        mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
+        mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+            reason: "expired-live-backlog"
+        )
+        mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: fromDeviceID,
+            source: "expired-direct-quic-live-backlog"
+        )
+        clearFirstAudioPlaybackAckSentState(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: fromDeviceID
+        )
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Reset engine remote receive epoch after expired Direct QUIC live backlog",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "attemptId": attemptID,
+                "fromDeviceId": fromDeviceID,
+                "directQuicSequenceNumber": sequenceNumber.map(String.init) ?? "none",
+            ]
+        )
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Reset remote audio receive epoch after expired Direct QUIC live backlog",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "attemptId": attemptID,
+                "fromDeviceId": fromDeviceID,
+                "directQuicSequenceNumber": sequenceNumber.map(String.init) ?? "none",
+                "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+            ]
+        )
+    }
+
+    @discardableResult
+    func reopenRemoteReceiveForPostLocalStopDirectQuicAudioIfNeeded(
+        _ incomingPayload: DirectQuicIncomingAudioPayload,
+        contactID: UUID,
+        attempt: DirectQuicUpgradeAttempt
+    ) -> Bool {
+        guard localTransmitStopProjectionGraceIsActive(for: contactID),
+              !hasActiveTransmitPressIntent(),
+              let localStopStartedAtNanoseconds =
+                localTransmitStopProjectionGraceStartedAtNanosecondsByContactID[contactID],
+              incomingPayload.datagramReceivedAtNanoseconds >= localStopStartedAtNanoseconds
+        else {
+            return false
+        }
+        if let sentAtMilliseconds = incomingPayload.sentAtMilliseconds,
+           let localStopStartedAtMilliseconds =
+                localTransmitStopProjectionGraceStartedAtMillisecondsByContactID[contactID],
+           sentAtMilliseconds + 250 < localStopStartedAtMilliseconds {
+            return false
+        }
+
+        let senderDeviceID = attempt.peerDeviceID ?? "direct-quic"
+        beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: attempt.channelID,
+            senderDeviceID: senderDeviceID,
+            source: .transmitStartSignal,
+            controlTransport: "direct-quic-audio"
+        )
+        markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        clearLocalTransmitStopProjectionGrace(for: contactID)
+        diagnostics.record(
+            .media,
+            message: "Reopened remote receive from fresh Direct QUIC audio after local stop",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": attempt.channelID,
+                "attemptId": attempt.attemptId,
+                "senderDeviceId": senderDeviceID,
+                "directQuicSequenceNumber": incomingPayload.sequenceNumber.map(String.init) ?? "none",
+                "controlTransport": "direct-quic-audio",
+            ]
+        )
+        return true
     }
 
     private func recordIncomingDirectQuicAudioPayloadDiagnosticIfNeeded(

@@ -40,6 +40,10 @@ Promote every production failure to the lowest replayable lane:
 | Hosted compatibility | `just beepbeep-backend-production-gate` |
 | Apple/PTT/audio/APNs hardware | physical boundary collection only after lower lanes are green |
 
+Use the general reliability discovery loop from [`WORKFLOW.md`](/Users/mau/Development/bb/WORKFLOW.md) and [`docs/reliability/fuzz.md`](/Users/mau/Development/bb/docs/reliability/fuzz.md): invariant -> generated interleavings -> replay/shrink -> owner -> narrow regression -> fix -> gate.
+
+For backend-owned failures, promote evidence downward before fixing production behavior: hosted failure -> hosted probe -> self-hosted probe/fuzz -> Rust runtime proof -> Unison kernel proof. Keep seed, count, artifact path, invariant ID, and exact replay command with the fix notes.
+
 ## Archived Backend
 
 The previous Unison Cloud backend path is preserved under `archive/unison-cloud/` for reference. It is not the active deploy or reliability path.

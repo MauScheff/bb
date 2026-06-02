@@ -8,6 +8,16 @@
 import CryptoKit
 import Foundation
 
+struct BufferedForegroundReceiveAudioChunk: Equatable {
+    let payload: String
+    let transport: IncomingAudioPayloadTransport
+}
+
+struct BufferedForegroundReceiveAudioChunkResult: Equatable {
+    let bufferedChunkCount: Int
+    let droppedChunkCount: Int
+}
+
 final class BackendRuntimeState {
     private static let backendJoinSettlingTTL: TimeInterval = 20
     private static let receiverAudioReadinessDeliveryRecoveryTTL: TimeInterval = 5
@@ -395,6 +405,7 @@ struct TransmitStartupTimingState {
 
 struct TransmitRuntimeState {
     private(set) var executionState: TransmitExecutionSessionState = .initial
+    private(set) var hasPendingControlPlaneBeginHandoff = false
 
     var activeTarget: TransmitTarget? {
         executionState.activeTarget
@@ -447,6 +458,14 @@ struct TransmitRuntimeState {
     mutating func markPressBegan() {
         reduce(.markPressBegan)
         executionState.audioCaptureStartState = .idle
+    }
+
+    mutating func markControlPlaneBeginHandoffRequested() {
+        hasPendingControlPlaneBeginHandoff = true
+    }
+
+    mutating func markControlPlaneBeginHandoffCompleted() {
+        hasPendingControlPlaneBeginHandoff = false
     }
 
     mutating func markPressEnded() {
@@ -509,6 +528,7 @@ struct TransmitRuntimeState {
 
     mutating func reconcileIdleState() {
         reduce(.reconcileIdleState)
+        hasPendingControlPlaneBeginHandoff = false
         executionState.audioCaptureStartState = .idle
     }
 
@@ -525,6 +545,7 @@ struct TransmitRuntimeState {
 
     mutating func reset() {
         reduce(.reset)
+        hasPendingControlPlaneBeginHandoff = false
         executionState.audioCaptureStartState = .idle
     }
 
@@ -1023,9 +1044,15 @@ actor IncomingAudioIngressExecutor {
         }
 
         let playbackSequenceNumber = encryptedSequenceNumber ?? effectiveTransportSequenceNumber
-        let frameDurationNanoseconds = PCMOutgoingPayloadSplitter.durationNanoseconds(
-            forEncodedPayload: audioPayload
-        )
+        let frameDurationNanoseconds: UInt64?
+        switch packet.incomingAudioTransport {
+        case .directQuic, .mediaRelayPacket:
+            frameDurationNanoseconds = nil
+        case .mediaRelayTcp, .relayWebSocket:
+            frameDurationNanoseconds = PCMOutgoingPayloadSplitter.durationNanoseconds(
+                forEncodedPayload: audioPayload
+            )
+        }
         let transportDigest = AudioChunkPayloadCodec.transportDigest(audioPayload)
         let playbackDecision = acceptForPlayback(
             contactID: packet.contactID,
@@ -1752,6 +1779,7 @@ nonisolated final class OutgoingAudioSendTargetGate: @unchecked Sendable {
 }
 
 final class MediaRuntimeState {
+    private static let maximumForegroundSystemReceiveBufferedAudioChunks = 12
     private static let mediaEncryptionReceiveSequenceWindow: UInt64 = 256
     private static let mediaEncryptionRecentReceiveSequenceLimit = 256
 
@@ -1825,6 +1853,8 @@ final class MediaRuntimeState {
     private var engineRemoteAudioSequenceByContactID: [UUID: Int] = [:]
     private var pendingEncryptedAudioPayloadsByContactID: [UUID: [PendingEncryptedAudioPayload]] = [:]
     private var encryptedAudioRecoveryTasksByContactID: [UUID: Task<Void, Never>] = [:]
+    private var foregroundSystemReceiveBufferedAudioChunksByContactID:
+        [UUID: [BufferedForegroundReceiveAudioChunk]] = [:]
 
     var hasSession: Bool {
         session != nil
@@ -1845,6 +1875,38 @@ final class MediaRuntimeState {
     func attach(session: MediaSession, contactID: UUID) {
         self.session = session
         self.contactID = contactID
+    }
+
+    func bufferForegroundSystemReceiveAudioChunk(
+        _ chunk: BufferedForegroundReceiveAudioChunk,
+        for contactID: UUID
+    ) -> BufferedForegroundReceiveAudioChunkResult {
+        var chunks = foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] ?? []
+        chunks.append(chunk)
+        let droppedChunkCount: Int
+        if chunks.count > Self.maximumForegroundSystemReceiveBufferedAudioChunks {
+            droppedChunkCount = chunks.count - Self.maximumForegroundSystemReceiveBufferedAudioChunks
+            chunks.removeFirst(droppedChunkCount)
+        } else {
+            droppedChunkCount = 0
+        }
+        foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] = chunks
+        return BufferedForegroundReceiveAudioChunkResult(
+            bufferedChunkCount: chunks.count,
+            droppedChunkCount: droppedChunkCount
+        )
+    }
+
+    func takeForegroundSystemReceiveAudioChunks(
+        for contactID: UUID
+    ) -> [BufferedForegroundReceiveAudioChunk] {
+        let chunks = foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] ?? []
+        foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] = nil
+        return chunks
+    }
+
+    func clearForegroundSystemReceiveAudioChunks(for contactID: UUID) {
+        foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] = nil
     }
 
     func updateConnectionState(_ state: MediaConnectionState) {
@@ -2677,6 +2739,7 @@ final class MediaRuntimeState {
         recentIncomingPlaintextAudioPayloads = [:]
         incomingAudioPlaybackGateByContactID = [:]
         incomingAudioReceiveEpochByContactID = [:]
+        foregroundSystemReceiveBufferedAudioChunksByContactID = [:]
         pendingEncryptedAudioPayloadsByContactID = [:]
         encryptedAudioRecoveryTasksByContactID.values.forEach { $0.cancel() }
         encryptedAudioRecoveryTasksByContactID = [:]
@@ -2940,10 +3003,15 @@ final class MediaRuntimeState {
         sequenceNumber: UInt64
     ) -> IncomingAudioSequenceObservation {
         let previous = incomingAudioSequenceByContactID[contactID]
-        incomingAudioSequenceByContactID[contactID] = IncomingAudioSequenceState(
-            sequenceNumber: sequenceNumber,
-            transport: transport
-        )
+        let shouldAdvanceSequenceState =
+            !transport.isUnreliablePacketMedia
+            || previous.map { sequenceNumber > $0.sequenceNumber } ?? true
+        if shouldAdvanceSequenceState {
+            incomingAudioSequenceByContactID[contactID] = IncomingAudioSequenceState(
+                sequenceNumber: sequenceNumber,
+                transport: transport
+            )
+        }
         let missingSequenceCount = previous.flatMap { previous -> UInt64? in
             guard sequenceNumber > previous.sequenceNumber else { return nil }
             let sequenceAdvance = sequenceNumber - previous.sequenceNumber

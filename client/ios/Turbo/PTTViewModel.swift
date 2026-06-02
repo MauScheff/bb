@@ -237,7 +237,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var remoteAudioChunkContinuityGapNanoseconds: UInt64 = 350_000_000
     var directQuicIncomingAudioQueueSlowNanoseconds: UInt64 = 120_000_000
     var directQuicIncomingAudioQueueDelayViolationNanoseconds: UInt64 = 240_000_000
-    var directQuicIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 240_000_000
+    var directQuicIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 800_000_000
     var directQuicIncomingAudioQueueSevereDelayNanoseconds: UInt64 = 1_000_000_000
     var incomingLiveAudioBacklogExpirationNanoseconds: UInt64 = 2_000_000_000
     var remoteTransmitStopProjectionGraceNanoseconds: UInt64 = 8_000_000_000
@@ -272,6 +272,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var selectedContactPrewarmedSelectionContactID: UUID?
     var selectedContactPrewarmPipelineEnabled: Bool = true
     var localTransmitStopProjectionGraceStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
+    var localTransmitStopProjectionGraceStartedAtMillisecondsByContactID: [UUID: Int64] = [:]
     var firstAudioPlaybackAckExpectationsByContactID: [UUID: FirstAudioPlaybackAckExpectation] = [:]
     var firstAudioPlaybackAckTimeoutTasksByContactID: [UUID: Task<Void, Never>] = [:]
     var firstAudioPlaybackAckSentKeys: Set<FirstAudioPlaybackAckSentKey> = []
@@ -708,6 +709,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         if !isTransmitting,
            !transmitCoordinator.state.isPressingTalk,
            transmitCoordinator.state.phase == .idle,
+           !transmitRuntime.hasPendingControlPlaneBeginHandoff,
            !hasPendingBeginOrActiveTransmit {
             transmitRuntime.reconcileIdleState()
             localAudioLevel = 0
@@ -854,6 +856,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         transmitRuntime.reset()
         pendingSystemTransmitRetryAfterRejoinByContactID.removeAll()
         localTransmitStopProjectionGraceStartedAtNanosecondsByContactID.removeAll()
+        localTransmitStopProjectionGraceStartedAtMillisecondsByContactID.removeAll()
         clearFirstAudioPlaybackAckExpectations()
         pendingBeginTransmitAfterSettlingTask?.cancel()
         pendingBeginTransmitAfterSettlingTask = nil
@@ -2207,8 +2210,17 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         let rawReason = (info[AVAudioSessionRouteChangeReasonKey] as? UInt).map(String.init) ?? "unknown"
         applyPreferredAudioOutputRouteIfPossible()
         Task { @MainActor [weak self] in
-            await self?.mediaServices.session()?.audioRouteDidChange()
-            await self?.syncConversationParticipantTelemetryIfNeeded(reason: .audioRouteChange)
+            guard let self else { return }
+            if shouldDeferAudioRouteRefreshDuringLiveReceive() {
+                recordDeferredLiveReceiveAudioRouteRefresh(
+                    source: "audio-route-notification",
+                    contactID: nil,
+                    reason: rawReason
+                )
+            } else {
+                await mediaServices.session()?.audioRouteDidChange()
+            }
+            await syncConversationParticipantTelemetryIfNeeded(reason: .audioRouteChange)
         }
         diagnostics.record(
             .media,
