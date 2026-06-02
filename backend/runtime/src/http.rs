@@ -736,6 +736,7 @@ where
             let (low_user_id, high_user_id) = sorted_pair(self_user_id, other_user_id);
             let channel_id = format!("direct-{low_user_id}-{high_user_id}");
             self.ensure_channel_participants(&channel_id, handle, &other_handle);
+            self.remember_contact_pair(handle, &other_handle);
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -3469,6 +3470,40 @@ mod tests {
         assert_eq!(avery_summaries.body.as_array().expect("summaries").len(), 0);
         assert_eq!(blake_summaries.body.as_array().expect("summaries").len(), 1);
         assert_eq!(blake_summaries.body[0]["handle"], "@avery");
+    }
+
+    #[test]
+    fn self_hosted_http_direct_channel_projects_contact_summary() {
+        let mut service = service();
+
+        let direct = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/channels/direct".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(direct.status, 200);
+
+        let summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let summary = summaries
+            .body
+            .as_array()
+            .expect("summaries")
+            .iter()
+            .find(|summary| summary["handle"] == "@blake")
+            .expect("direct channel peer should be projected");
+
+        assert_eq!(summary["channelId"], direct.body["channelId"]);
+        assert_eq!(summary["hasIncomingBeep"], false);
+        assert_eq!(summary["hasOutgoingBeep"], false);
+        assert!(summary["membership"].is_object());
+        assert!(summary["summaryStatus"].is_object());
     }
 
     #[test]
