@@ -21,6 +21,10 @@ KERNEL_ARTIFACTS = [
         "release-talk-turn",
         ".beepbeep.worker.releaseTalkTurn.printDecisionJson",
     ),
+    (
+        "resident-kernel-worker",
+        ".beepbeep.worker.resident.printDecisionJson",
+    ),
 ]
 
 

@@ -1,8 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::{Command, Stdio},
-    sync::Mutex,
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -1270,7 +1275,7 @@ impl CorpusKernelDecisionWorker {
 pub struct ProcessRequestTalkTurnKernelWorker {
     repo_root: PathBuf,
     deadline: Duration,
-    audits: std::sync::Arc<Mutex<Vec<KernelInvocationAudit>>>,
+    audits: Arc<Mutex<Vec<KernelInvocationAudit>>>,
     command_config: KernelProcessCommandConfig,
 }
 
@@ -1279,7 +1284,7 @@ impl ProcessRequestTalkTurnKernelWorker {
         Self {
             repo_root: repo_root.into(),
             deadline,
-            audits: std::sync::Arc::new(Mutex::new(Vec::new())),
+            audits: Arc::new(Mutex::new(Vec::new())),
             command_config: KernelProcessCommandConfig::from_env(),
         }
     }
@@ -1297,6 +1302,384 @@ impl ProcessRequestTalkTurnKernelWorker {
             .expect("kernel invocation audit lock should not be poisoned")
             .push(audit);
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum LiveRequestTalkTurnKernelWorker {
+    PerCommand(ProcessRequestTalkTurnKernelWorker),
+    Resident(ResidentRequestTalkTurnKernelWorker),
+}
+
+impl LiveRequestTalkTurnKernelWorker {
+    pub fn from_env(repo_root: impl Into<PathBuf>, deadline: Duration) -> Self {
+        let repo_root = repo_root.into();
+        match std::env::var("TURBO_KERNEL_WORKER_MODE")
+            .unwrap_or_else(|_| "per-command".to_owned())
+            .as_str()
+        {
+            "resident" | "live" | "long-lived" => Self::Resident(
+                ResidentRequestTalkTurnKernelWorker::new(repo_root, deadline),
+            ),
+            _ => Self::PerCommand(ProcessRequestTalkTurnKernelWorker::new(repo_root, deadline)),
+        }
+    }
+
+    pub fn invocation_audits(&self) -> Vec<KernelInvocationAudit> {
+        match self {
+            Self::PerCommand(worker) => worker.invocation_audits(),
+            Self::Resident(worker) => worker.invocation_audits(),
+        }
+    }
+}
+
+impl RequestTalkTurnKernelWorker for LiveRequestTalkTurnKernelWorker {
+    fn decide_request_talk_turn(
+        &self,
+        input: &RequestTalkTurnKernelInput,
+    ) -> Result<KernelDecisionEnvelope, DurablePostgresError> {
+        match self {
+            Self::PerCommand(worker) => worker.decide_request_talk_turn(input),
+            Self::Resident(worker) => worker.decide_request_talk_turn(input),
+        }
+    }
+
+    fn decide_release_talk_turn(
+        &self,
+        input: &RequestTalkTurnKernelInput,
+    ) -> Result<KernelDecisionEnvelope, DurablePostgresError> {
+        match self {
+            Self::PerCommand(worker) => worker.decide_release_talk_turn(input),
+            Self::Resident(worker) => worker.decide_release_talk_turn(input),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ResidentRequestTalkTurnKernelWorker {
+    repo_root: PathBuf,
+    deadline: Duration,
+    audits: Arc<Mutex<Vec<KernelInvocationAudit>>>,
+    command_config: KernelProcessCommandConfig,
+    state: Arc<Mutex<Option<ResidentKernelWorkerState>>>,
+    next_request_id: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for ResidentRequestTalkTurnKernelWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResidentRequestTalkTurnKernelWorker")
+            .field("repo_root", &self.repo_root)
+            .field("deadline", &self.deadline)
+            .field("command_config", &self.command_config)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResidentRequestTalkTurnKernelWorker {
+    pub fn new(repo_root: impl Into<PathBuf>, deadline: Duration) -> Self {
+        Self::with_command_config(repo_root, deadline, KernelProcessCommandConfig::from_env())
+    }
+
+    fn with_command_config(
+        repo_root: impl Into<PathBuf>,
+        deadline: Duration,
+        command_config: KernelProcessCommandConfig,
+    ) -> Self {
+        Self {
+            repo_root: repo_root.into(),
+            deadline,
+            audits: Arc::new(Mutex::new(Vec::new())),
+            command_config,
+            state: Arc::new(Mutex::new(None)),
+            next_request_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    pub fn invocation_audits(&self) -> Vec<KernelInvocationAudit> {
+        self.audits
+            .lock()
+            .expect("kernel invocation audit lock should not be poisoned")
+            .clone()
+    }
+
+    fn record_audit(&self, audit: KernelInvocationAudit) {
+        self.audits
+            .lock()
+            .expect("kernel invocation audit lock should not be poisoned")
+            .push(audit);
+    }
+}
+
+impl RequestTalkTurnKernelWorker for ResidentRequestTalkTurnKernelWorker {
+    fn decide_request_talk_turn(
+        &self,
+        input: &RequestTalkTurnKernelInput,
+    ) -> Result<KernelDecisionEnvelope, DurablePostgresError> {
+        self.decide_with_resident_worker(
+            input,
+            "request-talk-turn",
+            "unison-resident-request-talk-turn-worker",
+        )
+    }
+
+    fn decide_release_talk_turn(
+        &self,
+        input: &RequestTalkTurnKernelInput,
+    ) -> Result<KernelDecisionEnvelope, DurablePostgresError> {
+        self.decide_with_resident_worker(
+            input,
+            "release-talk-turn",
+            "unison-resident-release-talk-turn-worker",
+        )
+    }
+}
+
+impl ResidentRequestTalkTurnKernelWorker {
+    fn decide_with_resident_worker(
+        &self,
+        input: &RequestTalkTurnKernelInput,
+        command_kind: &str,
+        case_id: &str,
+    ) -> Result<KernelDecisionEnvelope, DurablePostgresError> {
+        let input_value = serde_json::json!({
+            "command": input.command,
+            "snapshot": input.snapshot,
+            "policy": input.policy,
+        });
+        let input_text = serde_json::to_string(&input_value)
+            .map_err(DurablePostgresError::MalformedKernelDecision)?;
+        let command_hash = json_hash(&input.command)?;
+        let snapshot_hash = json_hash(&input.snapshot)?;
+        let policy_hash = json_hash(&input.policy)?;
+        let request_hash = sha256_hex(input_text.as_bytes());
+        let request_id = format!(
+            "kernel-request-{}",
+            self.next_request_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let worker_request = serde_json::json!({
+            "requestId": request_id,
+            "commandKind": command_kind,
+            "input": input_value,
+        });
+        let worker_request_text = serde_json::to_string(&worker_request)
+            .map_err(DurablePostgresError::MalformedKernelDecision)?;
+        let started_at = Instant::now();
+        let response_text = match self.request_resident_response(&worker_request_text) {
+            Ok(response_text) => response_text,
+            Err(error) => {
+                self.record_audit(kernel_invocation_audit(
+                    command_hash,
+                    snapshot_hash,
+                    policy_hash,
+                    request_hash,
+                    None,
+                    None,
+                    started_at.elapsed(),
+                    KernelInvocationOutcome::HarnessError {
+                        kind: kernel_harness_error_kind(&error).to_owned(),
+                    },
+                ));
+                return Err(DurablePostgresError::KernelWorker(error));
+            }
+        };
+        let response_hash = sha256_hex(response_text.as_bytes());
+        let response: Value = match serde_json::from_str(response_text.trim()) {
+            Ok(response) => response,
+            Err(error) => {
+                self.record_audit(kernel_invocation_audit(
+                    command_hash,
+                    snapshot_hash,
+                    policy_hash,
+                    request_hash,
+                    Some(response_hash),
+                    None,
+                    started_at.elapsed(),
+                    KernelInvocationOutcome::MalformedResponse,
+                ));
+                return Err(DurablePostgresError::MalformedKernelDecision(error));
+            }
+        };
+        if response
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|observed| *observed == request_id)
+            .is_none()
+        {
+            let observed = response
+                .get("requestId")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>");
+            let error = KernelHarnessError::ProtocolError(format!(
+                "resident response requestId mismatch: expected `{request_id}`, observed `{observed}`"
+            ));
+            self.record_audit(kernel_invocation_audit(
+                command_hash,
+                snapshot_hash,
+                policy_hash,
+                request_hash,
+                Some(response_hash),
+                None,
+                started_at.elapsed(),
+                KernelInvocationOutcome::HarnessError {
+                    kind: kernel_harness_error_kind(&error).to_owned(),
+                },
+            ));
+            return Err(DurablePostgresError::KernelWorker(error));
+        }
+        let decision = match response.get("decision") {
+            Some(decision) => decision.clone(),
+            None => {
+                let error =
+                    KernelHarnessError::ProtocolError("resident response missing decision".into());
+                self.record_audit(kernel_invocation_audit(
+                    command_hash,
+                    snapshot_hash,
+                    policy_hash,
+                    request_hash,
+                    Some(response_hash),
+                    None,
+                    started_at.elapsed(),
+                    KernelInvocationOutcome::HarnessError {
+                        kind: kernel_harness_error_kind(&error).to_owned(),
+                    },
+                ));
+                return Err(DurablePostgresError::KernelWorker(error));
+            }
+        };
+        let decision_kind = decision
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if decision["kind"] == "worker-error" {
+            self.record_audit(kernel_invocation_audit(
+                command_hash,
+                snapshot_hash,
+                policy_hash,
+                request_hash,
+                Some(response_hash),
+                decision_kind,
+                started_at.elapsed(),
+                KernelInvocationOutcome::WorkerDeniedDecision,
+            ));
+            return Err(DurablePostgresError::KernelDecisionNotFound);
+        }
+        self.record_audit(kernel_invocation_audit(
+            command_hash,
+            snapshot_hash,
+            policy_hash,
+            request_hash,
+            Some(response_hash),
+            decision_kind,
+            started_at.elapsed(),
+            KernelInvocationOutcome::Success,
+        ));
+        Ok(KernelDecisionEnvelope {
+            case_id: case_id.to_owned(),
+            command: input.command.clone(),
+            snapshot: input.snapshot.clone(),
+            decision,
+        })
+    }
+
+    fn request_resident_response(&self, request_text: &str) -> Result<String, KernelHarnessError> {
+        let mut state_guard = self
+            .state
+            .lock()
+            .expect("resident kernel worker lock should not be poisoned");
+        if state_guard.is_none() {
+            *state_guard = Some(self.start_resident_worker()?);
+        }
+        let state = state_guard
+            .as_mut()
+            .expect("resident worker state should have started");
+        if let Err(error) =
+            writeln!(state.stdin, "{request_text}").and_then(|_| state.stdin.flush())
+        {
+            *state_guard = None;
+            return Err(KernelHarnessError::OutputFailed(error));
+        }
+        match state.stdout_rx.recv_timeout(self.deadline) {
+            Ok(Ok(line)) => Ok(line),
+            Ok(Err(error)) => {
+                *state_guard = None;
+                Err(KernelHarnessError::OutputFailed(error))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                *state_guard = None;
+                Err(KernelHarnessError::DeadlineExceeded(self.deadline))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                *state_guard = None;
+                Err(KernelHarnessError::WorkerFailed {
+                    status: "resident-worker-exited".to_owned(),
+                    stderr: String::new(),
+                })
+            }
+        }
+    }
+
+    fn start_resident_worker(&self) -> Result<ResidentKernelWorkerState, KernelHarnessError> {
+        let mut command = self.command_config.command();
+        self.command_config.append_resident_args(
+            &mut command,
+            "bb/main:.beepbeep.worker.resident.printDecisionJson",
+            "resident-kernel-worker",
+        );
+        command
+            .current_dir(&self.repo_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().map_err(KernelHarnessError::StartFailed)?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            KernelHarnessError::ProtocolError("resident worker stdin was unavailable".to_owned())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            KernelHarnessError::ProtocolError("resident worker stdout was unavailable".to_owned())
+        })?;
+        Ok(ResidentKernelWorkerState {
+            child,
+            stdin,
+            stdout_rx: spawn_resident_stdout_reader(stdout),
+        })
+    }
+}
+
+struct ResidentKernelWorkerState {
+    child: Child,
+    stdin: ChildStdin,
+    stdout_rx: mpsc::Receiver<Result<String, std::io::Error>>,
+}
+
+impl Drop for ResidentKernelWorkerState {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_resident_stdout_reader(
+    stdout: ChildStdout,
+) -> mpsc::Receiver<Result<String, std::io::Error>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 impl RequestTalkTurnKernelWorker for ProcessRequestTalkTurnKernelWorker {
@@ -1519,6 +1902,27 @@ impl KernelProcessCommandConfig {
             }
         }
     }
+
+    fn append_resident_args(
+        &self,
+        command: &mut Command,
+        entrypoint: &str,
+        compiled_artifact_name: &str,
+    ) {
+        if self.use_direnv {
+            command.arg("exec").arg(".").arg(&self.ucm_command);
+        }
+        match &self.run_mode {
+            KernelProcessRunMode::Source => {
+                command.arg("run").arg(entrypoint);
+            }
+            KernelProcessRunMode::Compiled { artifact_dir } => {
+                command
+                    .arg("run.compiled")
+                    .arg(artifact_dir.join(format!("{compiled_artifact_name}.uc")));
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1557,6 +1961,7 @@ fn kernel_harness_error_kind(error: &KernelHarnessError) -> &'static str {
         KernelHarnessError::PollFailed(_) => "poll-failed",
         KernelHarnessError::OutputFailed(_) => "output-failed",
         KernelHarnessError::MalformedResponse(_) => "malformed-response",
+        KernelHarnessError::ProtocolError(_) => "protocol-error",
         KernelHarnessError::HashMismatch { .. } => "hash-mismatch",
     }
 }
@@ -3082,6 +3487,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn kernel_process_command_config_can_run_resident_compiled_artifact() {
+        let config = KernelProcessCommandConfig {
+            use_direnv: false,
+            ucm_command: "/usr/local/bin/ucm".to_owned(),
+            run_mode: KernelProcessRunMode::Compiled {
+                artifact_dir: PathBuf::from("/app/kernel"),
+            },
+        };
+        let mut command = config.command();
+        config.append_resident_args(
+            &mut command,
+            "bb/main:.beepbeep.worker.resident.printDecisionJson",
+            "resident-kernel-worker",
+        );
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            command.get_program().to_string_lossy(),
+            "/usr/local/bin/ucm"
+        );
+        assert_eq!(
+            args,
+            vec!["run.compiled", "/app/kernel/resident-kernel-worker.uc"]
+        );
+    }
+
     fn request_command() -> Value {
         serde_json::json!({
             "kind": "request-talk-turn",
@@ -3384,6 +3819,74 @@ mod tests {
         assert_eq!(decision.snapshot, case.snapshot);
         assert_eq!(decision.decision, case.expected_decision);
         assert_eq!(decision.case_id, "unison-release-talk-turn-worker");
+    }
+
+    #[test]
+    #[ignore = "UCM printLine currently buffers stdout until stdin closes; resident mode needs an explicit flush-capable Unison or wrapper output path"]
+    fn request_talk_turn_postgres_resident_worker_handles_request_and_release() {
+        let response = kernel_corpus();
+        let request_case = response
+            .corpus
+            .cases
+            .iter()
+            .find(|case| {
+                case.kind == KernelCommandKind::RequestTalkTurn
+                    && case.expected_decision["kind"] == "granted"
+            })
+            .expect("corpus should include granted request case");
+        let release_case = response
+            .corpus
+            .cases
+            .iter()
+            .find(|case| {
+                case.kind == KernelCommandKind::ReleaseTalkTurn
+                    && case.id == "stale-release-talk-turn-denies"
+            })
+            .expect("corpus should include stale release case");
+        let _guard = UCM_CORPUS_LOCK
+            .lock()
+            .expect("UCM resident worker test lock should not be poisoned");
+        let worker = ResidentRequestTalkTurnKernelWorker::with_command_config(
+            repo_root(),
+            Duration::from_secs(20),
+            KernelProcessCommandConfig {
+                use_direnv: true,
+                ucm_command: "ucm".to_owned(),
+                run_mode: KernelProcessRunMode::Source,
+            },
+        );
+
+        let request_decision = worker
+            .decide_request_talk_turn(&RequestTalkTurnKernelInput {
+                command: request_case.command.clone(),
+                snapshot: request_case.snapshot.clone(),
+                policy: request_case.policy.clone(),
+            })
+            .expect("resident worker should invoke Unison request-talk-turn worker");
+        let release_decision = worker
+            .decide_release_talk_turn(&RequestTalkTurnKernelInput {
+                command: release_case.command.clone(),
+                snapshot: release_case.snapshot.clone(),
+                policy: release_case.policy.clone(),
+            })
+            .expect("resident worker should invoke Unison release-talk-turn worker");
+
+        assert_eq!(request_decision.decision, request_case.expected_decision);
+        assert_eq!(
+            request_decision.case_id,
+            "unison-resident-request-talk-turn-worker"
+        );
+        assert_eq!(release_decision.decision, release_case.expected_decision);
+        assert_eq!(
+            release_decision.case_id,
+            "unison-resident-release-talk-turn-worker"
+        );
+        let audits = worker.invocation_audits();
+        assert_eq!(audits.len(), 2);
+        assert_eq!(audits[0].outcome, KernelInvocationOutcome::Success);
+        assert_eq!(audits[1].outcome, KernelInvocationOutcome::Success);
+        assert_eq!(audits[0].decision_kind.as_deref(), Some("granted"));
+        assert_eq!(audits[1].decision_kind.as_deref(), Some("denied"));
     }
 
     #[test]

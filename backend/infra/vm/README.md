@@ -46,6 +46,12 @@ just kernel-invocation-audit
 
 Artifact: `/tmp/bb-kernel-invocation-audit.json`.
 
+The VM image currently defaults `TURBO_KERNEL_WORKER_MODE=per-command`.
+`resident` mode is implemented behind the env var and the resident kernel
+artifact is compiled, but it is not production-default yet: UCM `printLine`
+buffers stdout until stdin closes, so the resident proof is ignored until the
+worker gets an explicit flush-capable output path or wrapper.
+
 Dry-run the VM deployment plan:
 
 ```bash

@@ -86,6 +86,8 @@ pub enum KernelHarnessError {
     OutputFailed(#[source] std::io::Error),
     #[error("kernel worker returned malformed JSON: {0}")]
     MalformedResponse(#[source] serde_json::Error),
+    #[error("kernel worker protocol error: {0}")]
+    ProtocolError(String),
     #[error("kernel corpus response hash mismatch: expected {expected}, observed {observed}")]
     HashMismatch { expected: String, observed: String },
 }

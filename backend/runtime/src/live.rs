@@ -10,8 +10,8 @@ use postgres::{Client, NoTls};
 use crate::{
     http::{RuntimeHttpConfig, RuntimeHttpService},
     postgres::{
-        PostgresDecisionCommitter, PostgresRequestTalkTurnSnapshotLoader,
-        ProcessRequestTalkTurnKernelWorker, SnapshotPolicyConfig,
+        LiveRequestTalkTurnKernelWorker, PostgresDecisionCommitter,
+        PostgresRequestTalkTurnSnapshotLoader, SnapshotPolicyConfig,
     },
     routes::SelfHostedRouteService,
     websocket_audit::PostgresWebSocketAuthorizationFactSink,
@@ -21,7 +21,7 @@ use crate::{
 
 pub type LiveRuntimeHttpService = RuntimeHttpService<
     PostgresRequestTalkTurnSnapshotLoader,
-    ProcessRequestTalkTurnKernelWorker,
+    LiveRequestTalkTurnKernelWorker,
     PostgresDecisionCommitter,
 >;
 
@@ -141,7 +141,7 @@ pub fn build_live_http_service(
         config.snapshot_built_at_ms,
     );
     let kernel_worker =
-        ProcessRequestTalkTurnKernelWorker::new(&config.repo_root, config.kernel_deadline);
+        LiveRequestTalkTurnKernelWorker::from_env(&config.repo_root, config.kernel_deadline);
     let committer = PostgresDecisionCommitter::new(committer_client);
     Ok(RuntimeHttpService::new_with_config(
         SelfHostedRouteService::with_committer(snapshot_loader, kernel_worker, committer),
