@@ -1,6 +1,6 @@
 pub mod auth;
 pub mod metrics;
-pub mod protocol;
+pub use relay_protocol::protocol;
 pub mod relay_state;
 pub mod state;
 pub mod transport_quic;

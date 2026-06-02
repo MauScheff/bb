@@ -6,6 +6,7 @@ build/
 target/
 backend/relay/target/
 backend/infra/vm/build/*.tar.gz
+backend/infra/vm/build/**/*.tar.gz
 node_modules/
 tools/scripts/__pycache__/
 backend/scripts/__pycache__/

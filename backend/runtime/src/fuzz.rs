@@ -701,7 +701,7 @@ fn fuzz_quic_payload_boundary(rng: &mut Lcg, index: u64) -> Result<(), String> {
     let routed = route_authorized_media_frame(
         &mut ledger,
         &authority,
-        &relay::protocol::RelayFrame::PacketAudio {
+        &relay_protocol::protocol::RelayFrame::PacketAudio {
             session_id: session_id.clone(),
             sender_device_id: "device-a".to_owned(),
             sequence_number,
@@ -717,7 +717,7 @@ fn fuzz_quic_payload_boundary(rng: &mut Lcg, index: u64) -> Result<(), String> {
     let duplicate = route_authorized_media_frame(
         &mut ledger,
         &authority,
-        &relay::protocol::RelayFrame::PacketAudio {
+        &relay_protocol::protocol::RelayFrame::PacketAudio {
             session_id: session_id.clone(),
             sender_device_id: "device-a".to_owned(),
             sequence_number,
@@ -735,7 +735,7 @@ fn fuzz_quic_payload_boundary(rng: &mut Lcg, index: u64) -> Result<(), String> {
     let cross_session = route_authorized_media_frame(
         &mut ledger,
         &authority,
-        &relay::protocol::RelayFrame::PacketAudio {
+        &relay_protocol::protocol::RelayFrame::PacketAudio {
             session_id: format!("{session_id}-other"),
             sender_device_id: "device-a".to_owned(),
             sequence_number: sequence_number + 1,
@@ -747,11 +747,12 @@ fn fuzz_quic_payload_boundary(rng: &mut Lcg, index: u64) -> Result<(), String> {
         return Err("cross-session QUIC packet was not rejected".to_owned());
     }
 
-    let oversized_payload = "x".repeat(relay::transport_quic::QUIC_MAX_UDP_PAYLOAD_SIZE + 1);
+    let oversized_payload =
+        "x".repeat(relay_protocol::transport_quic::QUIC_MAX_UDP_PAYLOAD_SIZE + 1);
     let oversized = route_authorized_media_frame(
         &mut ledger,
         &authority,
-        &relay::protocol::RelayFrame::PacketAudio {
+        &relay_protocol::protocol::RelayFrame::PacketAudio {
             session_id,
             sender_device_id: "device-a".to_owned(),
             sequence_number: sequence_number + 2,

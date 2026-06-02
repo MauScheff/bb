@@ -5,9 +5,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+pub use relay_protocol::transport_tcp::TCP_TLS_TRANSPORT_NAME;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-
-pub const TCP_TLS_TRANSPORT_NAME: &str = "tcp-tls";
 
 pub fn server_config(cert_pem: &Path, key_pem: &Path) -> Result<rustls::ServerConfig> {
     let certs = load_certs(cert_pem)?;

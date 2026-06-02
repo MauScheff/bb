@@ -31,28 +31,20 @@ pub mod websocket_network;
 static KERNEL_WORKER_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn relay_protocol_is_linked() -> bool {
-    let frame = relay::protocol::RelayFrame::DatagramJoinAck {
+    let frame = relay_protocol::protocol::RelayFrame::DatagramJoinAck {
         session_id: "health-session".to_string(),
         device_id: "health-device".to_string(),
-        transport: relay::protocol::RelayTransport::QuicDatagram,
+        transport: relay_protocol::protocol::RelayTransport::QuicDatagram,
     };
     serde_json::to_string(&frame)
         .map(|encoded| encoded.contains(r#""transport":"quic-datagram""#))
         .unwrap_or(false)
 }
 
-pub fn relay_metrics_are_linked() -> bool {
-    let counters = relay::metrics::RelayCounters::default();
-    counters.record_accepted_join();
-    counters.record_forwarded_frame();
-    let snapshot = counters.snapshot();
-    snapshot.accepted_joins == 1 && snapshot.forwarded_frames == 1
-}
-
 pub fn relay_transport_modules_are_linked() -> bool {
-    relay::transport_quic::QUIC_ALPN == b"turbo-relay-v2"
-        && relay::transport_quic::QUIC_DGRAM_QUEUE_LENGTH > 0
-        && relay::transport_tcp::TCP_TLS_TRANSPORT_NAME == "tcp-tls"
+    relay_protocol::transport_quic::QUIC_ALPN == b"turbo-relay-v2"
+        && relay_protocol::transport_quic::QUIC_DGRAM_QUEUE_LENGTH > 0
+        && relay_protocol::transport_tcp::TCP_TLS_TRANSPORT_NAME == "tcp-tls"
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,7 +139,9 @@ impl ProcessKernelWorker {
     pub fn unison_corpus_worker(repo_root: impl Into<PathBuf>) -> Self {
         Self {
             repo_root: repo_root.into(),
-            shell_command: "DIRENV_LOG_FORMAT= direnv exec . ucm run bb/main:.beepbeep.tests.corpus.printJson".to_string(),
+            shell_command:
+                "DIRENV_LOG_FORMAT= direnv exec . ucm run bb/main:.beepbeep.tests.corpus.printJson"
+                    .to_string(),
         }
     }
 
@@ -288,11 +282,6 @@ mod tests {
     #[test]
     fn runtime_links_extracted_relay_protocol_module() {
         assert!(relay_protocol_is_linked());
-    }
-
-    #[test]
-    fn runtime_links_extracted_relay_metrics_module() {
-        assert!(relay_metrics_are_linked());
     }
 
     #[test]

@@ -8,7 +8,7 @@ Operational command reference for `/Users/mau/Development/bb`. Use [`WORKFLOW.md
 | --- | --- | --- |
 | Backend runtime | [`backend`](/Users/mau/Development/bb/backend) | `just beepbeep-backend-gate`, `just beepbeep-backend-production-gate`, `just self-hosted-serve` |
 | Unison kernel | local Unison project `bb/main`, namespace `beepbeep.*` | `just kernel-test`, `just kernel-fuzz`, `just kernel-corpus-json` |
-| Backend relay module | [`backend/relay`](/Users/mau/Development/bb/backend/relay) | `just relay-test`, `just gce-self-hosted-deploy-relay` |
+| Backend relay module | [`backend/relay`](/Users/mau/Development/bb/backend/relay) | `just relay-test`, `just gce-relay-deploy-dry-run`, `just gce-relay-deploy` |
 | iOS client | [`client/ios`](/Users/mau/Development/bb/client/ios) | `just swift-test-target`, `just swift-test-suite`, device recipes |
 | Engine core | [`client/ios/Packages/TurboEngine`](/Users/mau/Development/bb/client/ios/Packages/TurboEngine) | `just engine-test`, `just engine-scenario`, `just engine-fuzz-local` |
 | Scenarios | [`shared/scenarios`](/Users/mau/Development/bb/shared/scenarios) | `just simulator-scenario*`, `just simulator-scenario-suite-self-hosted` |
@@ -37,6 +37,7 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 | Need | Command | Done condition |
 | --- | --- | --- |
 | Pure Unison kernel proof | `just kernel-fuzz` | `beepbeep.tests` passes in `bb/main` |
+| Compiled kernel invocation timing | `just kernel-invocation-audit` | `/tmp/bb-kernel-invocation-audit.json` records per-case `run.compiled` elapsed milliseconds |
 | Export replay corpus | `just kernel-corpus-json /tmp/turbo-kernel-corpus.json` | JSON corpus is written and parseable |
 | Rust runtime tests | `just rust-runtime-test` | `beepbeep-runtime` tests pass |
 | Runtime/Postgres integration | `just runtime-postgres-integration` | `/tmp/turbo-rust-runtime-integration.json` reports success |
@@ -85,11 +86,26 @@ The active deployed target is `https://api.beepbeep.to`.
 | --- | --- |
 | VM deploy package/proof, dry run | `just gce-self-hosted-deploy-dry-run <gcp-project>` |
 | VM deploy | `just gce-self-hosted-deploy <gcp-project>` |
-| Backend VM deploy including relay profile | `just gce-self-hosted-deploy-relay <gcp-project>` |
+| Relay VM deploy package/proof, dry run | `just gce-relay-deploy-dry-run <gcp-project>` |
+| Relay VM deploy | `just gce-relay-deploy <gcp-project>` |
 | Hosted synthetic canary | `just postdeploy-check https://api.beepbeep.to` |
 | Hosted backend stability | `just backend-stability-probe https://api.beepbeep.to` |
 | Hosted websocket stability | `just websocket-stability-probe https://api.beepbeep.to` |
 | Hosted simulator smoke | `just simulator-scenario-suite-hosted-smoke` |
+
+API VM deploys are registry-backed. The runtime image is
+`europe-west6-docker.pkg.dev/<project>/turbo/turbo-self-hosted:<git-sha>` and
+uses registry BuildKit cache at
+`europe-west6-docker.pkg.dev/<project>/turbo/turbo-self-hosted:buildcache`.
+Live deploys require a clean git worktree unless `--allow-dirty` or
+`TURBO_GCE_ALLOW_DIRTY=1` is explicitly set; allowed dirty deploys get a
+`-dirty-<timestamp>` image tag when the tag is not specified.
+
+The API runtime image depends on `backend/relay-protocol`, not the full relay
+server crate. Relay deploys use a separate image,
+`europe-west6-docker.pkg.dev/<project>/turbo/beepbeep-relay:<git-sha>`, and
+target `turbo-relay-1`. The relay deploy script refuses to replace an active
+`turbo-relay` systemd service unless `--replace-systemd-service` is passed.
 
 Do not use removed legacy Cloud deploy recipes as the normal release path. If old Cloud behavior must be inspected, use the archive checkout and document that the work is archival.
 

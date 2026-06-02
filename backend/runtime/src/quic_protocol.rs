@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use relay::{
+use relay_protocol::{
     protocol::{MAX_RELAY_LINE_LENGTH, RelayFrame, RelayTransport},
     transport_quic::{QUIC_ALPN, QUIC_MAX_UDP_PAYLOAD_SIZE},
     transport_tcp::TCP_TLS_TRANSPORT_NAME,

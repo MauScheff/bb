@@ -82,6 +82,7 @@ name = "beepbeep-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "beepbeep-relay-protocol",
  "bytes",
  "futures-util",
  "quiche",
@@ -98,10 +99,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "beepbeep-relay-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio-util",
+]
+
+[[package]]
 name = "beepbeep-runtime"
 version = "0.1.0"
 dependencies = [
- "beepbeep-relay",
+ "beepbeep-relay-protocol",
  "postgres",
  "redis",
  "reqwest",

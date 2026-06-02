@@ -35,6 +35,29 @@ cargo build --release -p beepbeep-relay --bin beepbeep-relay
 cargo build --features quinn-probe --bin probe
 ```
 
+The API runtime consumes shared wire types from `backend/relay-protocol`. The
+relay crate owns QUIC/TLS server setup, metrics, and relay state.
+
+## Deploy
+
+Dry-run the dedicated relay VM deploy:
+
+```bash
+just gce-relay-deploy-dry-run
+```
+
+Deploy the relay image to `turbo-relay-1`:
+
+```bash
+just gce-relay-deploy
+```
+
+The deploy script builds/pushes
+`europe-west6-docker.pkg.dev/<project>/turbo/beepbeep-relay:<git-sha>` from
+`backend/infra/relay/Dockerfile`. It refuses to replace an active
+`turbo-relay` systemd service unless run directly with
+`--replace-systemd-service`.
+
 ## Run
 
 ```bash

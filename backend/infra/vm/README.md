@@ -10,7 +10,6 @@ Use process/service boundaries for each backend role:
 | Service | Role | Durable truth |
 | --- | --- | --- |
 | `runtime` | Rust HTTP/WebSocket control plane and effect executor. | Postgres |
-| `relay` | BeepBeep relay module: QUIC datagram packet media plus TCP fallback. | None; session state is rebuildable |
 | `postgres` | Durable runtime state. | Persistent Docker volume |
 | `redis` | TTL presence, owner records, pub/sub, and short-lived coordination. | Rebuildable cache only |
 | compiled Unison kernel | Pure Talk Turn decisions. | Versioned `.uc` artifacts in the image |
@@ -38,6 +37,15 @@ Compile kernel artifacts:
 just kernel-compile
 ```
 
+Measure current compiled-kernel process invocation cost before building a
+resident worker:
+
+```bash
+just kernel-invocation-audit
+```
+
+Artifact: `/tmp/bb-kernel-invocation-audit.json`.
+
 Dry-run the VM deployment plan:
 
 ```bash
@@ -50,15 +58,37 @@ Deploy runtime, Postgres, and Redis to the self-hosted VM:
 just gce-self-hosted-deploy
 ```
 
-Optional future path: deploy and let Docker Compose own the backend relay
-profile on TCP/UDP `443`:
+The API VM deploy is registry-backed. It builds and pushes
+`europe-west6-docker.pkg.dev/<project>/turbo/turbo-self-hosted:<git-sha>`,
+exports/imports BuildKit cache through
+`europe-west6-docker.pkg.dev/<project>/turbo/turbo-self-hosted:buildcache`,
+copies only the Compose/SQL deploy bundle to the VM, then runs
+`docker compose pull` and `docker compose up -d --no-build`.
+
+Live deploys require a clean git worktree. Use `--allow-dirty` only for an
+intentional dirty deploy; the script appends `-dirty-<timestamp>` to the image
+tag unless `--image-tag` is explicit.
+
+The runtime image depends on `backend/relay-protocol`, not the full
+`backend/relay` crate, and does not include `/usr/local/bin/beepbeep-relay`.
+
+Dry-run the dedicated relay VM deployment plan:
 
 ```bash
-just gce-self-hosted-deploy-relay
+just gce-relay-deploy-dry-run
 ```
 
-Do not use the relay recipe on the API VM while nginx owns TCP `443`, or while
-the dedicated `turbo-relay` systemd service owns `relay.beepbeep.to`.
+Deploy the dedicated relay image to `turbo-relay-1`:
+
+```bash
+just gce-relay-deploy
+```
+
+The relay deploy builds/pushes
+`europe-west6-docker.pkg.dev/<project>/turbo/beepbeep-relay:<git-sha>` from
+`backend/infra/relay/Dockerfile`. It refuses to replace an active
+`turbo-relay` systemd service unless the script is run directly with
+`--replace-systemd-service`.
 
 ## Defaults
 
@@ -69,8 +99,12 @@ the dedicated `turbo-relay` systemd service owns `relay.beepbeep.to`.
 | Instance | `TURBO_GCE_INSTANCE` or `turbo-self-hosted-1` |
 | Remote dir | `/opt/turbo-self-hosted` |
 | Runtime port | `8091` |
+| Registry location | `TURBO_GCE_REGISTRY_LOCATION` or `europe-west6` |
+| Registry repository | `TURBO_GCE_REGISTRY_REPOSITORY` or `turbo` |
+| Runtime image | `TURBO_GCE_IMAGE` or `europe-west6-docker.pkg.dev/<project>/turbo/turbo-self-hosted:<git-sha>` |
+| Runtime image platform | `TURBO_GCE_IMAGE_PLATFORM` or `linux/amd64` |
 
-The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials.
+The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials. The VM service account needs Artifact Registry read access for the selected repository.
 
 ## Current Production VMs
 

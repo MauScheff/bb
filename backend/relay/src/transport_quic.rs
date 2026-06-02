@@ -1,14 +1,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-
-pub const MAX_RELAY_DATAGRAM_BUFFER_LENGTH: usize = 256 * 1024;
-pub const QUIC_CONN_ID_LEN: usize = 16;
-pub const QUIC_MAX_UDP_PAYLOAD_SIZE: usize = 1472;
-pub const QUIC_OUT_BUF_LENGTH: usize = 64 * 1024;
-pub const QUIC_STREAM_RECV_BUF_LENGTH: usize = 16 * 1024;
-pub const QUIC_DGRAM_QUEUE_LENGTH: usize = MAX_RELAY_DATAGRAM_BUFFER_LENGTH / 1024;
-pub const QUIC_ALPN: &[u8] = b"turbo-relay-v2";
+pub use relay_protocol::transport_quic::{
+    MAX_RELAY_DATAGRAM_BUFFER_LENGTH, QUIC_ALPN, QUIC_CONN_ID_LEN, QUIC_DGRAM_QUEUE_LENGTH,
+    QUIC_MAX_UDP_PAYLOAD_SIZE, QUIC_OUT_BUF_LENGTH, QUIC_STREAM_RECV_BUF_LENGTH,
+};
 
 pub fn server_config(cert_pem: &Path, key_pem: &Path) -> Result<quiche::Config> {
     let mut quic_config =

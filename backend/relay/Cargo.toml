@@ -25,6 +25,7 @@ bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 quiche = "0.29.1"
 quinn = { version = "0.11", optional = true }
+relay-protocol = { package = "beepbeep-relay-protocol", path = "../relay-protocol" }
 rustls = "0.23"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }

@@ -137,6 +137,11 @@ kernel-compile output_dir="backend/infra/vm/build/kernel" summary="/tmp/turbo-ke
     --output-dir "{{output_dir}}" \
     --summary "{{summary}}"
 
+kernel-invocation-audit output="/tmp/bb-kernel-invocation-audit.json" limit="20":
+  python3 backend/scripts/kernel_invocation_audit.py \
+    --output "{{output}}" \
+    --limit "{{limit}}"
+
 gce-self-hosted-deploy-dry-run project="" zone="europe-west6-a" instance="turbo-self-hosted-1" output="/tmp/turbo-gce-self-hosted-deploy.json":
   python3 backend/scripts/gce_vm_self_hosted_deploy.py \
     --project "{{project}}" \
@@ -152,13 +157,23 @@ gce-self-hosted-deploy project="" zone="europe-west6-a" instance="turbo-self-hos
     --instance "{{instance}}" \
     --output "{{output}}"
 
-gce-self-hosted-deploy-relay project="" zone="europe-west6-a" instance="turbo-self-hosted-1" output="/tmp/turbo-gce-self-hosted-deploy.json":
-  python3 backend/scripts/gce_vm_self_hosted_deploy.py \
+gce-relay-deploy-dry-run project="" zone="europe-west6-a" instance="turbo-relay-1" output="/tmp/bb-gce-relay-deploy.json":
+  python3 backend/scripts/gce_vm_relay_deploy.py \
     --project "{{project}}" \
     --zone "{{zone}}" \
     --instance "{{instance}}" \
     --output "{{output}}" \
-    --include-relay
+    --dry-run
+
+gce-relay-deploy project="" zone="europe-west6-a" instance="turbo-relay-1" output="/tmp/bb-gce-relay-deploy.json":
+  python3 backend/scripts/gce_vm_relay_deploy.py \
+    --project "{{project}}" \
+    --zone "{{zone}}" \
+    --instance "{{instance}}" \
+    --output "{{output}}"
+
+gce-self-hosted-deploy-relay project="" zone="europe-west6-a" instance="turbo-relay-1" output="/tmp/bb-gce-relay-deploy.json":
+  just gce-relay-deploy "{{project}}" "{{zone}}" "{{instance}}" "{{output}}"
 
 physical-device-boundary-proof manifest="/tmp/turbo-physical-device-boundaries-manifest.json" output="/tmp/turbo-physical-device-boundaries.json":
   python3 tools/scripts/physical_device_boundary_proof.py \

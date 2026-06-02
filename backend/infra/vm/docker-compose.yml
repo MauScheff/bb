@@ -56,23 +56,6 @@ services:
     ports:
       - "${TURBO_RUNTIME_PORT:-8091}:8091"
 
-  relay:
-    <<: *turbo-service
-    profiles: ["relay"]
-    command: ["/usr/local/bin/beepbeep-relay"]
-    environment:
-      TURBO_RELAY_CERT_PEM: ${TURBO_RELAY_CERT_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/fullchain.pem}
-      TURBO_RELAY_KEY_PEM: ${TURBO_RELAY_KEY_PEM:-/etc/letsencrypt/live/relay.beepbeep.to/privkey.pem}
-      TURBO_RELAY_SHARED_TOKEN: ${TURBO_RELAY_SHARED_TOKEN:-}
-      TURBO_RELAY_QUIC_ADDR: ${TURBO_RELAY_QUIC_ADDR:-0.0.0.0:443}
-      TURBO_RELAY_TCP_ADDR: ${TURBO_RELAY_TCP_ADDR:-0.0.0.0:443}
-      TURBO_RELAY_SESSION_TTL_SECONDS: ${TURBO_RELAY_SESSION_TTL_SECONDS:-180}
-    ports:
-      - "443:443/udp"
-      - "443:443/tcp"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-
 volumes:
   postgres_data:
   redis_data:

@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM rust:1.88-bookworm AS builder
 
 WORKDIR /src
@@ -8,14 +10,19 @@ RUN apt-get update \
 
 COPY Cargo.toml Cargo.lock ./
 COPY backend/runtime/Cargo.toml backend/runtime/Cargo.toml
+COPY backend/relay-protocol/Cargo.toml backend/relay-protocol/Cargo.toml
 COPY backend/relay/Cargo.toml backend/relay/Cargo.toml
 
 COPY backend/runtime backend/runtime
-COPY backend/relay backend/relay
+COPY backend/relay-protocol backend/relay-protocol
 COPY backend/infra/self-hosted backend/infra/self-hosted
 
-RUN cargo build --release -p beepbeep-runtime --bin beepbeep-runtime
-RUN cargo build --release -p beepbeep-relay --bin beepbeep-relay
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+  --mount=type=cache,target=/usr/local/cargo/git \
+  --mount=type=cache,target=/src/target \
+  cargo build --release -p beepbeep-runtime --bin beepbeep-runtime \
+  && mkdir -p /out \
+  && cp target/release/beepbeep-runtime /out/beepbeep-runtime
 
 FROM debian:bookworm-slim
 
@@ -32,8 +39,7 @@ RUN curl -fsSL "$UCM_LINUX_TARBALL_URL" -o /tmp/ucm.tar.gz \
   && test -x /usr/local/bin/ucm \
   && rm -rf /tmp/ucm /tmp/ucm.tar.gz
 
-COPY --from=builder /src/target/release/beepbeep-runtime /usr/local/bin/beepbeep-runtime
-COPY --from=builder /src/target/release/beepbeep-relay /usr/local/bin/beepbeep-relay
+COPY --from=builder /out/beepbeep-runtime /usr/local/bin/beepbeep-runtime
 COPY backend/infra/vm/build/kernel /app/kernel
 
 ENV TURBO_REPO_ROOT=/app
