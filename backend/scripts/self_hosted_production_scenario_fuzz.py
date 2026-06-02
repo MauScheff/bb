@@ -223,6 +223,16 @@ def run_iteration(args: argparse.Namespace, index: int) -> dict[str, Any]:
     )
     if renew.get("status") != "renewed":
         return failed_iteration(index, "renew-talk-turn did not renew", renew)
+    duplicate_renew = post_json(
+        f"{base_url}/v1/conversations/{conversation_id}/talk-turns/renew",
+        renew_talk_turn_command(conversation_id, talk_turn_epoch, f"{operation_id}-renew"),
+    )
+    if duplicate_renew != renew:
+        return failed_iteration(
+            index,
+            "duplicate renew-talk-turn was not idempotent",
+            {"first": renew, "duplicate": duplicate_renew},
+        )
 
     release = post_json(
         f"{base_url}/v1/conversations/{conversation_id}/talk-turns/release",
@@ -230,6 +240,16 @@ def run_iteration(args: argparse.Namespace, index: int) -> dict[str, Any]:
     )
     if release.get("status") != "released":
         return failed_iteration(index, "release-talk-turn did not release", release)
+    duplicate_release = post_json(
+        f"{base_url}/v1/conversations/{conversation_id}/talk-turns/release",
+        release_talk_turn_command(conversation_id, talk_turn_epoch, f"{operation_id}-release"),
+    )
+    if duplicate_release != release:
+        return failed_iteration(
+            index,
+            "duplicate release-talk-turn was not idempotent",
+            {"first": release, "duplicate": duplicate_release},
+        )
 
     remaining = scalar_sql(
         args.compose_file,
@@ -241,13 +261,68 @@ def run_iteration(args: argparse.Namespace, index: int) -> dict[str, Any]:
     if remaining.get("stdout", "").strip() != "0":
         return failed_iteration(index, "current Talk Turn remained after release", remaining)
 
+    next_operation_id = f"{operation_id}-next"
+    next_request = post_json(
+        f"{base_url}/v1/conversations/{conversation_id}/talk-turns/request",
+        request_talk_turn_command(conversation_id, next_operation_id),
+    )
+    if next_request.get("status") != "granted":
+        return failed_iteration(index, "second request-talk-turn did not grant", next_request)
+    next_talk_turn_epoch = next_request.get("talkTurnEpoch")
+    if not isinstance(next_talk_turn_epoch, int):
+        return failed_iteration(index, "second request-talk-turn omitted epoch", next_request)
+    if next_talk_turn_epoch == talk_turn_epoch:
+        return failed_iteration(
+            index,
+            "second request-talk-turn reused stale epoch",
+            {"firstEpoch": talk_turn_epoch, "nextRequest": next_request},
+        )
+
+    stale_release = post_json(
+        f"{base_url}/v1/conversations/{conversation_id}/talk-turns/release",
+        release_talk_turn_command(
+            conversation_id,
+            talk_turn_epoch,
+            f"{operation_id}-stale-release",
+        ),
+    )
+    if stale_release.get("_httpStatus", 200) < 400:
+        return failed_iteration(
+            index,
+            "stale release after newer grant did not fail closed",
+            stale_release,
+        )
+
+    active_after_stale_release = scalar_sql(
+        args.compose_file,
+        (
+            "select talk_turn_epoch from runtime_current_talk_turns "
+            f"where conversation_id = {sql_literal(conversation_id)};"
+        ),
+    )
+    if active_after_stale_release.get("stdout", "").strip() != str(next_talk_turn_epoch):
+        return failed_iteration(
+            index,
+            "stale release changed the active Talk Turn",
+            {
+                "staleRelease": stale_release,
+                "activeAfterStaleRelease": active_after_stale_release,
+                "expectedEpoch": next_talk_turn_epoch,
+            },
+        )
+
     return {
         "name": f"production-runtime-scenario-{index}",
         "ok": True,
         "conversationId": conversation_id,
         "request": request,
         "renew": renew,
+        "duplicateRenew": duplicate_renew,
         "release": release,
+        "duplicateRelease": duplicate_release,
+        "nextRequest": next_request,
+        "staleRelease": stale_release,
+        "activeAfterStaleRelease": active_after_stale_release,
     }
 
 

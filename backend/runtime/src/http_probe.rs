@@ -63,7 +63,11 @@ pub fn build_probe_http_service_with_config(runtime_config: RuntimeHttpConfig) -
     let corpus = KernelCorpus {
         cases: vec![
             granted_case("http-native", "op-http-native"),
-            granted_case("http-prefixed-native", "op-http-prefixed-native"),
+            granted_case_for_conversation(
+                "http-prefixed-native",
+                "conversation-prefixed",
+                "op-http-prefixed-native",
+            ),
             granted_case("http-legacy", "op-http-legacy"),
             granted_case("http-bad-path", "op-http-bad-path"),
             released_case("http-native-release", "op-http-native-release"),
@@ -415,15 +419,18 @@ pub fn run_self_hosted_http_process_probe() -> Result<SelfHostedHttpProbeReport,
 
     let prefixed_native = post_json(
         address,
-        "/s/turbo/v1/conversations/conversation-1/talk-turns/request",
-        &request_talk_turn_command("op-http-prefixed-native"),
+        "/s/turbo/v1/conversations/conversation-prefixed/talk-turns/request",
+        &request_talk_turn_command_for_conversation(
+            "conversation-prefixed",
+            "op-http-prefixed-native",
+        ),
     )?;
     let prefixed_native_granted = prefixed_native.status_code == 200
         && prefixed_native.body.contains(r#""status":"granted""#);
     observations.push(http_observation(
         "prefixed-native-request-talk-turn",
         "POST",
-        "/s/turbo/v1/conversations/conversation-1/talk-turns/request",
+        "/s/turbo/v1/conversations/conversation-prefixed/talk-turns/request",
         &prefixed_native,
         200,
         prefixed_native_granted,
@@ -732,19 +739,27 @@ fn parse_response(response: &str) -> Result<RawHttpResponse, String> {
 }
 
 fn granted_case(id: &str, operation_id: &str) -> KernelCorpusCase {
+    granted_case_for_conversation(id, "conversation-1", operation_id)
+}
+
+fn granted_case_for_conversation(
+    id: &str,
+    conversation_id: &str,
+    operation_id: &str,
+) -> KernelCorpusCase {
     KernelCorpusCase {
         id: id.to_owned(),
         kind: KernelCommandKind::RequestTalkTurn,
-        command: request_talk_turn_command(operation_id),
+        command: request_talk_turn_command_for_conversation(conversation_id, operation_id),
         snapshot: serde_json::json!({
-            "conversationId": { "value": "conversation-1" },
+            "conversationId": { "value": conversation_id },
             "snapshotBuiltAtMs": 10000
         }),
         policy: serde_json::json!({ "policyVersion": { "value": "policy-v1" } }),
         expected_decision: serde_json::json!({
             "kind": "granted",
             "grant": {
-                "conversationId": { "value": "conversation-1" },
+                "conversationId": { "value": conversation_id },
                 "requestingParticipantId": { "value": "participant-a" },
                 "requestingDeviceId": { "value": "device-a" },
                 "targetParticipantId": { "value": "participant-b" },
@@ -756,7 +771,7 @@ fn granted_case(id: &str, operation_id: &str) -> KernelCorpusCase {
                 "transactionEffects": [
                     {
                         "kind": "record-talk-turn",
-                        "conversationId": { "value": "conversation-1" },
+                        "conversationId": { "value": conversation_id },
                         "requestingParticipantId": { "value": "participant-a" },
                         "requestingDeviceId": { "value": "device-a" },
                         "targetParticipantId": { "value": "participant-b" },
@@ -774,9 +789,16 @@ fn granted_case(id: &str, operation_id: &str) -> KernelCorpusCase {
 }
 
 fn request_talk_turn_command(operation_id: &str) -> serde_json::Value {
+    request_talk_turn_command_for_conversation("conversation-1", operation_id)
+}
+
+fn request_talk_turn_command_for_conversation(
+    conversation_id: &str,
+    operation_id: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "kind": "request-talk-turn",
-        "conversationId": { "value": "conversation-1" },
+        "conversationId": { "value": conversation_id },
         "requestingParticipantId": { "value": "participant-a" },
         "requestingDeviceId": { "value": "device-a" },
         "requestingSessionEpoch": { "value": 0 },

@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::{
     postgres::{
-        CommittedEffectPlan, DurableConversationStore, DurablePostgresError,
+        CommittedEffectPlan, CurrentTalkTurnRow, DurableConversationStore, DurablePostgresError,
         KernelDecisionCommitter, KernelDecisionEnvelope, LEGACY_BEGIN_TRANSMIT_ROUTE,
         RELEASE_TALK_TURN_ROUTE, RENEW_TALK_TURN_ROUTE, REQUEST_TALK_TURN_ROUTE,
         ReleaseTalkTurnCommit, RenewTalkTurnCommit, RequestTalkTurnKernelWorker,
@@ -122,11 +122,16 @@ where
         let committed = self
             .committer
             .commit_kernel_decision_envelope(&envelope, REQUEST_TALK_TURN_ROUTE)?;
+        let body = if let Some(current_talk_turn) = committed.current_talk_turn.as_ref() {
+            native_request_talk_turn_response_from_committed(current_talk_turn)
+        } else {
+            native_request_talk_turn_response(&envelope)?
+        };
 
         Ok(RuntimeRouteResponse {
             route: REQUEST_TALK_TURN_ROUTE,
             status_code: 200,
-            body: native_request_talk_turn_response(&envelope)?,
+            body,
             committed,
         })
     }
@@ -163,7 +168,7 @@ where
         Ok(RuntimeRouteResponse {
             route: LEGACY_BEGIN_TRANSMIT_ROUTE,
             status_code: 200,
-            body: legacy_begin_transmit_response(&envelope)?,
+            body: legacy_begin_transmit_response(&envelope, &committed)?,
             committed,
         })
     }
@@ -304,6 +309,19 @@ pub fn native_request_talk_turn_response(
     }
 }
 
+pub fn native_request_talk_turn_response_from_committed(row: &CurrentTalkTurnRow) -> Value {
+    serde_json::json!({
+        "status": "granted",
+        "conversationId": row.conversation_id,
+        "requestingParticipantId": row.requesting_participant_id,
+        "requestingDeviceId": row.requesting_device_id,
+        "targetParticipantId": row.target_participant_id,
+        "targetDeviceId": row.target_device_id,
+        "talkTurnEpoch": row.talk_turn_epoch,
+        "expiresAtMs": row.expires_at_ms,
+    })
+}
+
 pub fn native_renew_talk_turn_response(committed: &RenewTalkTurnCommit) -> Value {
     serde_json::json!({
         "status": "renewed",
@@ -338,21 +356,35 @@ pub fn native_release_talk_turn_response(
 
 pub fn legacy_begin_transmit_response(
     envelope: &KernelDecisionEnvelope,
+    committed: &CommittedEffectPlan,
 ) -> Result<Value, RuntimeRouteError> {
     match required_string(&envelope.decision, &["kind"], "decision.kind")? {
         "granted" => {
-            let talk_turn_epoch = required_wrapped_u64(
-                &envelope.decision,
-                &["grant", "talkTurnEpoch"],
-                "grant.talkTurnEpoch",
-            )?;
+            let talk_turn_epoch = committed
+                .current_talk_turn
+                .as_ref()
+                .map(|row| row.talk_turn_epoch)
+                .unwrap_or(required_wrapped_u64(
+                    &envelope.decision,
+                    &["grant", "talkTurnEpoch"],
+                    "grant.talkTurnEpoch",
+                )?);
+            let expires_at_ms = committed
+                .current_talk_turn
+                .as_ref()
+                .map(|row| row.expires_at_ms)
+                .unwrap_or(required_i64(
+                    &envelope.decision,
+                    &["grant", "expiresAtMs"],
+                    "grant.expiresAtMs",
+                )?);
             Ok(serde_json::json!({
                 "channelId": required_wrapped_string(&envelope.decision, &["grant", "conversationId"], "grant.conversationId")?,
                 "status": "transmitting",
                 "transmitId": talk_turn_epoch.to_string(),
                 "targetUserId": required_wrapped_string(&envelope.decision, &["grant", "targetParticipantId"], "grant.targetParticipantId")?,
                 "targetDeviceId": required_wrapped_string(&envelope.decision, &["grant", "targetDeviceId"], "grant.targetDeviceId")?,
-                "expiresAtMs": required_i64(&envelope.decision, &["grant", "expiresAtMs"], "grant.expiresAtMs")?,
+                "expiresAtMs": expires_at_ms,
             }))
         }
         "denied" => Ok(serde_json::json!({

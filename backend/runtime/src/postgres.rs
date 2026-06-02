@@ -138,6 +138,7 @@ pub struct KernelReplayFact {
 pub struct CommittedEffectPlan {
     pub replay_fact: KernelReplayFact,
     pub outbox_rows: Vec<PostCommitOutboxRow>,
+    pub current_talk_turn: Option<CurrentTalkTurnRow>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1124,6 +1125,32 @@ fn current_talk_turn_row_json(row: &CurrentTalkTurnRow) -> Value {
         "talkTurnEpoch": row.talk_turn_epoch,
         "expiresAtMs": row.expires_at_ms,
     })
+}
+
+fn align_talk_turn_epoch(effect: &mut Value, conversation_id: &str, talk_turn_epoch: u64) {
+    let Some(effect_conversation_id) = optional_wrapped_string(effect, &["conversationId"]) else {
+        return;
+    };
+    if effect_conversation_id == conversation_id && path_value(effect, &["talkTurnEpoch"]).is_some()
+    {
+        effect["talkTurnEpoch"] = wrapped_u64(talk_turn_epoch);
+    }
+}
+
+fn align_post_commit_effects(
+    effects: &mut [Value],
+    current_talk_turn: Option<&CurrentTalkTurnRow>,
+) {
+    let Some(current_talk_turn) = current_talk_turn else {
+        return;
+    };
+    for effect in effects {
+        align_talk_turn_epoch(
+            effect,
+            &current_talk_turn.conversation_id,
+            current_talk_turn.talk_turn_epoch,
+        );
+    }
 }
 
 fn current_talk_turn_row_from_json(
@@ -3075,7 +3102,7 @@ impl KernelDecisionCommitter for PostgresDecisionCommitter {
         let operation_id = optional_string(&envelope.command, &["operationId"]).map(str::to_owned);
         let transaction_effects =
             optional_array(&envelope.decision, &["effectPlan", "transactionEffects"]);
-        let post_commit_effects =
+        let mut post_commit_effects =
             optional_array(&envelope.decision, &["effectPlan", "postCommitEffects"])
                 .into_iter()
                 .cloned()
@@ -3102,9 +3129,15 @@ impl KernelDecisionCommitter for PostgresDecisionCommitter {
         }
 
         let mut written_current_turns = BTreeSet::new();
+        let mut current_talk_turn = None;
         for effect in transaction_effects {
-            apply_transaction_effect_postgres(&mut tx, effect, &mut written_current_turns)?;
+            if let Some(row) =
+                apply_transaction_effect_postgres(&mut tx, effect, &mut written_current_turns)?
+            {
+                current_talk_turn = Some(row);
+            }
         }
+        align_post_commit_effects(&mut post_commit_effects, current_talk_turn.as_ref());
 
         let replay_id: i64 = tx
             .query_one(
@@ -3168,6 +3201,7 @@ impl KernelDecisionCommitter for PostgresDecisionCommitter {
                 decision_kind: decision_kind.to_owned(),
             },
             outbox_rows,
+            current_talk_turn,
         })
     }
 }
@@ -3222,6 +3256,7 @@ fn load_existing_committed_effect_plan(
             decision_kind: row.get("decision_kind"),
         },
         outbox_rows,
+        current_talk_turn: None,
     }))
 }
 
@@ -3229,7 +3264,7 @@ fn apply_transaction_effect_postgres(
     tx: &mut postgres::Transaction<'_>,
     effect: &Value,
     written_current_turns: &mut BTreeSet<String>,
-) -> Result<(), DurablePostgresError> {
+) -> Result<Option<CurrentTalkTurnRow>, DurablePostgresError> {
     let kind = required_string(effect, &["kind"], "transactionEffect.kind")?;
     match kind {
         "record-talk-turn" => {
@@ -3251,11 +3286,41 @@ fn apply_transaction_effect_postgres(
                 required_wrapped_string(effect, &["targetParticipantId"], "targetParticipantId")?;
             let target_device_id =
                 required_wrapped_string(effect, &["targetDeviceId"], "targetDeviceId")?;
-            let talk_turn_epoch = u64_to_i64(
+            let requested_talk_turn_epoch = u64_to_i64(
                 "talkTurnEpoch",
                 required_wrapped_u64(effect, &["talkTurnEpoch"], "talkTurnEpoch")?,
             )?;
+            let max_recorded_talk_turn_epoch: i64 = tx
+                .query_one(
+                    "select greatest(
+                        coalesce((
+                            select max(talk_turn_epoch)
+                            from runtime_current_talk_turns
+                            where conversation_id = $1
+                        ), 0),
+                        coalesce((
+                            select max(talk_turn_epoch)
+                            from runtime_talk_turn_actor_events
+                            where conversation_id = $1
+                              and talk_turn_epoch is not null
+                        ), 0)
+                     )",
+                    &[&conversation_id],
+                )?
+                .get(0);
+            let talk_turn_epoch = requested_talk_turn_epoch.max(max_recorded_talk_turn_epoch + 1);
             let expires_at_ms = required_i64(effect, &["expiresAtMs"], "expiresAtMs")?;
+            let active_rows: i64 = tx
+                .query_one(
+                    "select count(*) from runtime_current_talk_turns where conversation_id = $1",
+                    &[&conversation_id],
+                )?
+                .get(0);
+            if active_rows > 0 {
+                return Err(DurablePostgresError::TalkTurnRenewalRejected(
+                    "current Talk Turn already active".to_owned(),
+                ));
+            }
             tx.execute(
                 "insert into runtime_current_talk_turns (
                     conversation_id,
@@ -3284,7 +3349,15 @@ fn apply_transaction_effect_postgres(
                     &expires_at_ms,
                 ],
             )?;
-            Ok(())
+            Ok(Some(CurrentTalkTurnRow {
+                conversation_id,
+                requesting_participant_id,
+                requesting_device_id,
+                target_participant_id,
+                target_device_id,
+                talk_turn_epoch: i64_to_u64("talk_turn_epoch", talk_turn_epoch)?,
+                expires_at_ms,
+            }))
         }
         "clear-talk-turn" => {
             let conversation_id =
@@ -3298,7 +3371,7 @@ fn apply_transaction_effect_postgres(
                  where conversation_id = $1 and talk_turn_epoch = $2",
                 &[&conversation_id, &talk_turn_epoch],
             )?;
-            Ok(())
+            Ok(None)
         }
         other => Err(DurablePostgresError::UnsupportedTransactionEffect(
             other.to_owned(),
@@ -3451,7 +3524,7 @@ impl DurableConversationStore {
         let decision_kind = required_string(&envelope.decision, &["kind"], "decision.kind")?;
         let transaction_effects =
             optional_array(&envelope.decision, &["effectPlan", "transactionEffects"]);
-        let post_commit_effects =
+        let mut post_commit_effects =
             optional_array(&envelope.decision, &["effectPlan", "postCommitEffects"])
                 .into_iter()
                 .cloned()
@@ -3459,9 +3532,15 @@ impl DurableConversationStore {
 
         let mut staged = self.clone();
         let mut written_current_turns = BTreeSet::new();
+        let mut current_talk_turn = None;
         for effect in transaction_effects {
-            apply_transaction_effect(&mut staged, effect, &mut written_current_turns)?;
+            if let Some(row) =
+                apply_transaction_effect(&mut staged, effect, &mut written_current_turns)?
+            {
+                current_talk_turn = Some(row);
+            }
         }
+        align_post_commit_effects(&mut post_commit_effects, current_talk_turn.as_ref());
 
         let replay_fact = replay_fact(
             envelope,
@@ -3487,6 +3566,7 @@ impl DurableConversationStore {
         let committed = CommittedEffectPlan {
             replay_fact,
             outbox_rows,
+            current_talk_turn,
         };
         if let Some(operation_id) = operation_id {
             staged
@@ -3875,16 +3955,30 @@ fn apply_transaction_effect(
     store: &mut DurableConversationStore,
     effect: &Value,
     written_current_turns: &mut BTreeSet<String>,
-) -> Result<(), DurablePostgresError> {
+) -> Result<Option<CurrentTalkTurnRow>, DurablePostgresError> {
     let kind = required_string(effect, &["kind"], "transactionEffect.kind")?;
     match kind {
         "record-talk-turn" => {
+            let conversation_id =
+                required_wrapped_string(effect, &["conversationId"], "conversationId")?;
+            let requested_talk_turn_epoch =
+                required_wrapped_u64(effect, &["talkTurnEpoch"], "talkTurnEpoch")?;
+            let max_recorded_talk_turn_epoch = store
+                .current_talk_turns
+                .get(&conversation_id)
+                .map(|row| row.talk_turn_epoch)
+                .into_iter()
+                .chain(
+                    store
+                        .talk_turn_actor_events
+                        .iter()
+                        .filter(|record| record.conversation_id == conversation_id)
+                        .filter_map(|record| record.talk_turn_epoch),
+                )
+                .max()
+                .unwrap_or(0);
             let row = CurrentTalkTurnRow {
-                conversation_id: required_wrapped_string(
-                    effect,
-                    &["conversationId"],
-                    "conversationId",
-                )?,
+                conversation_id,
                 requesting_participant_id: required_wrapped_string(
                     effect,
                     &["requestingParticipantId"],
@@ -3905,7 +3999,7 @@ fn apply_transaction_effect(
                     &["targetDeviceId"],
                     "targetDeviceId",
                 )?,
-                talk_turn_epoch: required_wrapped_u64(effect, &["talkTurnEpoch"], "talkTurnEpoch")?,
+                talk_turn_epoch: requested_talk_turn_epoch.max(max_recorded_talk_turn_epoch + 1),
                 expires_at_ms: required_i64(effect, &["expiresAtMs"], "expiresAtMs")?,
             };
             if !written_current_turns.insert(row.conversation_id.clone()) {
@@ -3913,10 +4007,15 @@ fn apply_transaction_effect(
                     row.conversation_id,
                 ));
             }
+            if store.current_talk_turns.contains_key(&row.conversation_id) {
+                return Err(DurablePostgresError::TalkTurnRenewalRejected(
+                    "current Talk Turn already active".to_owned(),
+                ));
+            }
             store
                 .current_talk_turns
-                .insert(row.conversation_id.clone(), row);
-            Ok(())
+                .insert(row.conversation_id.clone(), row.clone());
+            Ok(Some(row))
         }
         "clear-talk-turn" => {
             let conversation_id =
@@ -3930,7 +4029,7 @@ fn apply_transaction_effect(
             {
                 store.current_talk_turns.remove(&conversation_id);
             }
-            Ok(())
+            Ok(None)
         }
         other => Err(DurablePostgresError::UnsupportedTransactionEffect(
             other.to_owned(),
