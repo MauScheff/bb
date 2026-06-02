@@ -40,6 +40,14 @@ REQUIRED_PROOFS = [
         "description": "durable WebSocket authorization facts are persisted and queryable",
     },
     {
+        "name": "durable-remembered-contacts",
+        "description": "remembered contacts are stored reciprocally in Postgres and survive separate runtime store instances",
+    },
+    {
+        "name": "durable-profiles",
+        "description": "profile names are stored in Postgres and survive separate runtime store instances",
+    },
+    {
         "name": "redis-owner-record-cas",
         "description": "Redis owner-record CAS accepts fresh leases, rejects stale leases, accepts drain, decodes records, and cleans up keys",
     },

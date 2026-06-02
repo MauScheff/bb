@@ -37,8 +37,7 @@ Compile kernel artifacts:
 just kernel-compile
 ```
 
-Measure current compiled-kernel process invocation cost before building a
-resident worker:
+Measure current compiled-kernel process invocation cost:
 
 ```bash
 just kernel-invocation-audit
@@ -46,11 +45,17 @@ just kernel-invocation-audit
 
 Artifact: `/tmp/bb-kernel-invocation-audit.json`.
 
-The VM image currently defaults `TURBO_KERNEL_WORKER_MODE=per-command`.
-`resident` mode is implemented behind the env var and the resident kernel
-artifact is compiled, but it is not production-default yet: UCM `printLine`
-buffers stdout until stdin closes, so the resident proof is ignored until the
-worker gets an explicit flush-capable output path or wrapper.
+Measure the resident compiled worker cost:
+
+```bash
+just resident-kernel-invocation-audit
+```
+
+Artifact: `/tmp/bb-resident-kernel-invocation-audit.json`.
+
+The VM image defaults `TURBO_KERNEL_WORKER_MODE=resident`. Rust keeps one
+compiled UCM worker alive, writes newline-delimited JSON requests to stdin, and
+reads stdout through a PTY so UCM flushes each `printLine` response.
 
 Dry-run the VM deployment plan:
 

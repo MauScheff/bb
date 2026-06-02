@@ -679,7 +679,7 @@ func installSuccessfulBeginTransmitOverride(
     let leaseFormatter = ISO8601DateFormatter()
     let leaseStartedAt = leaseFormatter.string(from: Date())
     let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
-    TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId in
+    TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, _ in
         TurboBeginTransmitResponse(
             channelId: channelId,
             status: "transmitting",

@@ -3622,13 +3622,49 @@ struct TurboReceiverAudioReadinessResponse: Decodable {
 }
 
 struct TurboBeginTransmitResponse: Decodable {
-    let channelId: String
+    let channelId: String?
     let status: String
     let transmitId: String?
-    let startedAt: String
-    let expiresAt: String
-    let targetUserId: String
-    let targetDeviceId: String
+    let startedAt: String?
+    let expiresAt: String?
+    let expiresAtMs: Int64?
+    let targetUserId: String?
+    let targetDeviceId: String?
+    let reason: String?
+
+    init(
+        channelId: String? = nil,
+        status: String,
+        transmitId: String? = nil,
+        startedAt: String? = nil,
+        expiresAt: String? = nil,
+        expiresAtMs: Int64? = nil,
+        targetUserId: String? = nil,
+        targetDeviceId: String? = nil,
+        reason: String? = nil
+    ) {
+        self.channelId = channelId
+        self.status = status
+        self.transmitId = transmitId
+        self.startedAt = startedAt
+        self.expiresAt = expiresAt
+        self.expiresAtMs = expiresAtMs
+        self.targetUserId = targetUserId
+        self.targetDeviceId = targetDeviceId
+        self.reason = reason
+    }
+
+    var isDenied: Bool {
+        status == "denied"
+    }
+
+    var leaseStartedAtDescription: String {
+        startedAt ?? "actor-grant"
+    }
+
+    var leaseExpirationDescription: String {
+        expiresAt ?? expiresAtMs.map(String.init) ?? "unknown"
+    }
 }
 
 struct TurboRenewTransmitResponse: Decodable {

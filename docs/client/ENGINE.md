@@ -154,7 +154,7 @@ Transmit startup is a three-evidence gate, independent of transport lane:
 2. Apple PushToTalk reports system transmit began for the current channel.
 3. Apple PushToTalk/AVAudio reports the PTT audio session active for the same channel.
 
-The effect executor may request the backend lease and Apple system transmit in parallel. It may also prewarm websocket control, Fast Relay, Direct QUIC control/readiness, route computation, receiver prewarm, and remote-participant clearing before all evidence is present.
+The effect executor requests Apple system transmit only after the backend Talk Turn lease is granted. It may prewarm websocket control, Fast Relay, Direct QUIC control/readiness, route computation, receiver prewarm, and remote-participant clearing before all evidence is present.
 
 No lane may start microphone capture, send `transmit-start`, project local UI as `transmitting`, or use a provisional route as live capture authority until all three evidence items are current and the local press/epoch still matches. This applies equally to websocket relay, Fast Relay, and Direct QUIC. Direct QUIC may preserve or warm the path, but it must not bypass the backend lease or Apple audio activation.
 

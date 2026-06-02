@@ -90,6 +90,10 @@ where
     pub fn committer(&self) -> &C {
         &self.committer
     }
+
+    pub fn committer_mut(&mut self) -> &mut C {
+        &mut self.committer
+    }
 }
 
 impl<S, W> SelfHostedRouteService<S, W, DurableConversationStore>

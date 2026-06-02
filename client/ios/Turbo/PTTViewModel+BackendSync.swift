@@ -1304,6 +1304,9 @@ extension PTTViewModel {
         if conversationActionCoordinator.pendingConnectAcceptedIncomingBeepContactID == contactID {
             return false
         }
+        if devicePTTEvidenceExists(for: contactID) {
+            return false
+        }
         if hasChannelMatchedUnattributedSystemSession(contactID: contactID) {
             return false
         }

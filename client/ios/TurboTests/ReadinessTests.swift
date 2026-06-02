@@ -1588,6 +1588,58 @@ struct ReadinessTests {
     }
 
     @MainActor
+    @Test func authoritativeReadinessMembershipLossPreservesActiveDevicePTTSession() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+
+        let existing = makeChannelState(status: .ready, canTransmit: true)
+        let incoming = makeChannelState(
+            status: .idle,
+            canTransmit: false,
+            selfJoined: false,
+            peerJoined: false,
+            peerDeviceConnected: false
+        )
+        let authoritativeLoss =
+            viewModel.shouldTreatChannelReadinessMembershipLossAsAuthoritative(
+                TurboBackendError.server("not a channel member")
+            )
+            && viewModel.shouldHonorAuthoritativeChannelReadinessMembershipLoss(
+                contactID: contactID,
+                existing: existing,
+                incoming: incoming
+            )
+        let effective = viewModel.effectiveChannelStatePreservingConversationMembership(
+            contactID: contactID,
+            existing: existing,
+            incoming: incoming,
+            authoritativeMembershipLoss: authoritativeLoss
+        )
+
+        #expect(!authoritativeLoss)
+        #expect(effective.membership == .both(peerDeviceConnected: true))
+        #expect(effective.statusKind == ConversationState.ready.rawValue)
+    }
+
+    @MainActor
     @Test func signalingRecoveryPreservesReadyConversationDuringTransientWaitingProjection() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

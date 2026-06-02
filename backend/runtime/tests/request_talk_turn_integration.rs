@@ -6,7 +6,7 @@ use turbo_runtime::owner_record_transport::{
     OwnerRecordTransport, RedisOwnerRecordTransport, redis_owner_record_key,
 };
 use turbo_runtime::postgres::{
-    KernelDecisionCommitter, KernelDecisionEnvelope, POSTGRES_SCHEMA_SQL,
+    DurableContactStore, KernelDecisionCommitter, KernelDecisionEnvelope, POSTGRES_SCHEMA_SQL,
     PostgresDecisionCommitter, PostgresRequestTalkTurnSnapshotLoader,
     RecordingPostCommitEffectSink, RequestTalkTurnSnapshotLoader, SnapshotPolicyConfig,
 };
@@ -28,6 +28,8 @@ fn request_talk_turn_integration_applies_schema_and_enforces_one_current_turn() 
     client
         .batch_execute(
             "truncate table
+                runtime_profiles,
+                runtime_remembered_contacts,
                 runtime_post_commit_outbox,
                 runtime_websocket_authorization_facts,
                 runtime_kernel_replay_facts,
@@ -155,6 +157,34 @@ fn request_talk_turn_integration_applies_schema_and_enforces_one_current_turn() 
     let commit_client =
         Client::connect(&database_url, NoTls).expect("decision committer should connect");
     let mut committer = PostgresDecisionCommitter::new(commit_client);
+    committer
+        .upsert_profile("@integration-b", "Integration B")
+        .expect("Postgres committer should persist profile names");
+    committer
+        .remember_contact_pair("@integration-a", "@integration-b")
+        .expect("Postgres committer should persist reciprocal remembered contacts");
+    let mut restarted_contact_committer = PostgresDecisionCommitter::new(
+        Client::connect(&database_url, NoTls).expect("restarted contact committer should connect"),
+    );
+    assert_eq!(
+        restarted_contact_committer
+            .remembered_contact_handles("@integration-a")
+            .expect("remembered contacts should reload from Postgres"),
+        vec!["@integration-b".to_owned()]
+    );
+    assert_eq!(
+        restarted_contact_committer
+            .remembered_contact_handles("@integration-b")
+            .expect("reciprocal remembered contacts should reload from Postgres"),
+        vec!["@integration-a".to_owned()]
+    );
+    assert_eq!(
+        restarted_contact_committer
+            .profile_name("@integration-b")
+            .expect("profile name should reload from Postgres"),
+        Some("Integration B".to_owned())
+    );
+
     let committed = committer
         .commit_kernel_decision_envelope(
             &KernelDecisionEnvelope {

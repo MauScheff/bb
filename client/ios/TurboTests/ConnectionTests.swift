@@ -9317,7 +9317,20 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func fastRelayForegroundTransmitRequestsAppleHandoffInParallelWithBackendLease() async throws {
+    @Test func fastRelayForegroundTransmitRequestsAppleHandoffAfterBackendLeaseGrant() async throws {
+        actor LeaseRecorder {
+            private var requests: [TurboBeginTransmitLeaseRequest] = []
+
+            func append(_ request: TurboBeginTransmitLeaseRequest) {
+                requests.append(request)
+            }
+
+            func snapshot() -> [TurboBeginTransmitLeaseRequest] {
+                requests
+            }
+        }
+
+        let leaseRecorder = LeaseRecorder()
         let pttClient = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
@@ -9328,7 +9341,21 @@ struct ConnectionTests {
             TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
         )
         client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        installSuccessfulBeginTransmitOverride()
+        let leaseFormatter = ISO8601DateFormatter()
+        let leaseStartedAt = leaseFormatter.string(from: Date())
+        let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, request in
+            await leaseRecorder.append(request)
+            return TurboBeginTransmitResponse(
+                channelId: channelId,
+                status: "transmitting",
+                transmitId: "transmit-1",
+                startedAt: leaseStartedAt,
+                expiresAt: leaseExpiresAt,
+                targetUserId: "peer-user",
+                targetDeviceId: "peer-device"
+            )
+        }
         defer { TurboBackendCriticalHTTPClient.beginTransmitOverride = nil }
 
         viewModel.applicationStateOverride = .active
@@ -9382,17 +9409,97 @@ struct ConnectionTests {
         }
 
         #expect(pttClient.beginTransmitRequests == [channelUUID])
+        let leaseRequests = await leaseRecorder.snapshot()
+        #expect(leaseRequests.count == 1)
+        #expect(leaseRequests.first?.deviceId == "test-device")
+        #expect(leaseRequests.first?.requestingParticipantId == "self-user")
+        #expect(leaseRequests.first?.targetParticipantId == "peer-user")
+        #expect(leaseRequests.first?.requestingSessionEpoch == 0)
+        #expect(leaseRequests.first?.policyVersion == "policy-v1")
+        #expect(leaseRequests.first?.kernelVersion == "kernel-contract-v1")
+        #expect(leaseRequests.first?.operationId.hasPrefix("begin-transmit-") == true)
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Requesting Apple system transmit in parallel with backend lease"
+                "Requesting system transmit handoff"
             )
         )
+        #expect(viewModel.diagnosticsTranscript.contains("source=post-backend-grant"))
         #expect(mediaSession.startSendingAudioCallCount == 0)
         #expect(
             !viewModel.diagnosticsTranscript.contains(
                 "Ignored begin transmit request reason=selected-conversation-disallows-hold-to-talk"
             )
         )
+    }
+
+    @MainActor
+    @Test func deniedTalkTurnSetsActiveRemoteParticipantWithoutAppleBegin() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { _, _ in
+            TurboBeginTransmitResponse(status: "denied", reason: "active-talk-turn")
+        }
+        defer { TurboBackendCriticalHTTPClient.beginTransmitOverride = nil }
+
+        viewModel.applicationStateOverride = .active
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: RecordingMediaSession(), contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        viewModel.beginTransmit()
+        try await waitForCondition(
+            "backend talk turn denied",
+            timeoutNanoseconds: 2_000_000_000,
+            pollNanoseconds: 20_000_000
+        ) {
+            viewModel.diagnosticsTranscript.contains("Backend talk turn denied local transmit")
+        }
+
+        #expect(pttClient.beginTransmitRequests.isEmpty)
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == ["Blake"])
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.channelUUID) == [channelUUID])
+        #expect(viewModel.diagnosticsTranscript.contains("reason=active-talk-turn"))
     }
 
     @MainActor
@@ -10127,7 +10234,7 @@ struct ConnectionTests {
         let leaseFormatter = ISO8601DateFormatter()
         let leaseStartedAt = leaseFormatter.string(from: Date())
         let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
-        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId in
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, _ in
             TurboBeginTransmitResponse(
                 channelId: channelId,
                 status: "transmitting",

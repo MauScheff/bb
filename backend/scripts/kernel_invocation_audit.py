@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import pty
+import select
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -21,6 +24,7 @@ ARTIFACT_BY_KIND = {
     "RequestTalkTurn": "request-talk-turn.uc",
     "ReleaseTalkTurn": "release-talk-turn.uc",
 }
+RESIDENT_ARTIFACT_NAME = "resident-kernel-worker.uc"
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compiled-dir", default=DEFAULT_COMPILED_DIR)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--mode", choices=["per-command", "resident"], default="per-command")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -43,7 +48,10 @@ def main() -> int:
             {
                 "id": "dry-run",
                 "kind": "request-talk-turn",
-                "artifact": str(compiled_dir / "request-talk-turn.uc"),
+                "artifact": str(
+                    compiled_dir
+                    / (RESIDENT_ARTIFACT_NAME if args.mode == "resident" else "request-talk-turn.uc")
+                ),
                 "command": corpus_command(args.project),
             }
         ]
@@ -72,10 +80,13 @@ def main() -> int:
         )
 
     selected = cases[: max(args.limit, 0)]
-    measurements = [
-        measure_case(case, repo_root=repo_root, compiled_dir=compiled_dir)
-        for case in selected
-    ]
+    if args.mode == "resident":
+        measurements = measure_resident_cases(selected, repo_root=repo_root, compiled_dir=compiled_dir)
+    else:
+        measurements = [
+            measure_case(case, repo_root=repo_root, compiled_dir=compiled_dir)
+            for case in selected
+        ]
     ok = all(item.get("ok") for item in measurements)
     return write_summary(args, repo_root, compiled_dir, selected, measurements, ok=ok)
 
@@ -86,6 +97,10 @@ def corpus_command(project: str) -> list[str]:
 
 def compiled_command(*, artifact: Path, input_text: str) -> list[str]:
     return ["direnv", "exec", ".", "ucm", "run.compiled", str(artifact), input_text]
+
+
+def resident_command(*, artifact: Path) -> list[str]:
+    return ["direnv", "exec", ".", "ucm", "run.compiled", str(artifact)]
 
 
 def extract_cases(corpus_json: Any) -> list[dict[str, Any]]:
@@ -134,6 +149,121 @@ def measure_case(case: dict[str, Any], *, repo_root: Path, compiled_dir: Path) -
     }
 
 
+def measure_resident_cases(
+    cases: list[dict[str, Any]], *, repo_root: Path, compiled_dir: Path
+) -> list[dict[str, Any]]:
+    artifact = compiled_dir / RESIDENT_ARTIFACT_NAME
+    command = resident_command(artifact=artifact)
+    master_fd, slave_fd = pty.openpty()
+    process = subprocess.Popen(
+        command,
+        cwd=repo_root,
+        stdin=subprocess.PIPE,
+        stdout=slave_fd,
+        stderr=subprocess.PIPE,
+        text=True,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    reader = PtyLineReader(master_fd)
+    try:
+        measurements = [
+            measure_resident_case(
+                case,
+                process=process,
+                reader=reader,
+                artifact=artifact,
+                index=index,
+            )
+            for index, case in enumerate(cases)
+        ]
+    finally:
+        process.kill()
+        process.wait()
+        os.close(master_fd)
+    return measurements
+
+
+def measure_resident_case(
+    case: dict[str, Any],
+    *,
+    process: subprocess.Popen[str],
+    reader: "PtyLineReader",
+    artifact: Path,
+    index: int,
+) -> dict[str, Any]:
+    kind = str(case.get("kind", ""))
+    if kind not in ARTIFACT_BY_KIND:
+        return {"id": case.get("id"), "kind": kind, "ok": False, "reason": "unsupported corpus case kind"}
+    input_value = {
+        "command": case.get("command"),
+        "snapshot": case.get("snapshot"),
+        "policy": case.get("policy"),
+    }
+    input_text = json.dumps(input_value, separators=(",", ":"), sort_keys=True)
+    request_id = f"resident-audit-{index}"
+    request_text = json.dumps(
+        {
+            "requestId": request_id,
+            "commandKind": kind,
+            "input": input_value,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    started = time.monotonic()
+    assert process.stdin is not None
+    process.stdin.write(request_text + "\n")
+    process.stdin.flush()
+    response_text = reader.read_line(timeout=5.0)
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    result: dict[str, Any] = {
+        "id": case.get("id"),
+        "kind": kind,
+        "artifact": str(artifact),
+        "ok": response_text is not None,
+        "elapsedMs": elapsed_ms,
+        "decisionKind": None,
+        "requestHash": sha256_hex(input_text.encode()),
+        "responseHash": sha256_hex(response_text.encode()) if response_text else None,
+        "exitCode": process.poll(),
+        "stderr": "",
+    }
+    if response_text is None:
+        result["reason"] = "resident worker did not return a line before deadline"
+        return result
+    try:
+        response = json.loads(response_text)
+        decision = response.get("decision")
+        result["decisionKind"] = decision.get("kind") if isinstance(decision, dict) else None
+        result["ok"] = response.get("requestId") == request_id and decision == case.get("expectedDecision")
+        if not result["ok"]:
+            result["reason"] = "resident worker response did not match corpus decision"
+    except Exception as error:
+        result["ok"] = False
+        result["reason"] = f"resident worker response was not JSON: {error}"
+    return result
+
+
+class PtyLineReader:
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+        self.buffer = b""
+
+    def read_line(self, *, timeout: float) -> str | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                return line.decode(errors="replace").strip("\r")
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([self.fd], [], [], remaining)
+            if ready:
+                chunk = os.read(self.fd, 4096)
+                if not chunk:
+                    return None
+                self.buffer += chunk
+        return None
 def run_command(command: list[str], *, cwd: Path) -> dict[str, Any]:
     started = time.monotonic()
     completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
@@ -166,6 +296,7 @@ def write_summary(
         "dryRun": args.dry_run,
         "repoRoot": str(repo_root),
         "compiledDir": str(compiled_dir),
+        "mode": args.mode,
         "limit": args.limit,
         "caseCount": len(cases),
         "measurementCount": len(measurements),

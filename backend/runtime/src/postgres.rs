@@ -1,8 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::File,
     io::{BufRead, BufReader, Write},
+    os::fd::FromRawFd,
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -73,6 +75,8 @@ order by p.participant_id, d.device_id
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DurableConversationStore {
     current_talk_turns: BTreeMap<String, CurrentTalkTurnRow>,
+    remembered_contacts_by_handle: BTreeMap<String, BTreeSet<String>>,
+    profiles_by_handle: BTreeMap<String, String>,
     replay_facts: Vec<KernelReplayFact>,
     post_commit_outbox: Vec<PostCommitOutboxRow>,
     operation_results: BTreeMap<(String, String), CommittedEffectPlan>,
@@ -302,6 +306,37 @@ pub trait TalkTurnReleaseCommitter {
         &mut self,
         command: &Value,
     ) -> Result<ReleaseTalkTurnCommit, DurablePostgresError>;
+}
+
+pub trait DurableContactStore {
+    fn remember_contact_pair(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError>;
+
+    fn forget_contact(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError>;
+
+    fn remembered_contact_handles(
+        &mut self,
+        owner_handle: &str,
+    ) -> Result<Vec<String>, DurablePostgresError>;
+
+    fn clear_remembered_contacts(&mut self) -> Result<usize, DurablePostgresError>;
+
+    fn upsert_profile(
+        &mut self,
+        handle: &str,
+        profile_name: &str,
+    ) -> Result<(), DurablePostgresError>;
+
+    fn profile_name(&mut self, handle: &str) -> Result<Option<String>, DurablePostgresError>;
+
+    fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError>;
 }
 
 pub trait PostCommitEffectSink {
@@ -1597,22 +1632,37 @@ impl ResidentRequestTalkTurnKernelWorker {
             *state_guard = None;
             return Err(KernelHarnessError::OutputFailed(error));
         }
-        match state.stdout_rx.recv_timeout(self.deadline) {
-            Ok(Ok(line)) => Ok(line),
-            Ok(Err(error)) => {
+        let response_deadline = Instant::now() + self.deadline;
+        loop {
+            let remaining = response_deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO);
+            if remaining.is_zero() {
                 *state_guard = None;
-                Err(KernelHarnessError::OutputFailed(error))
+                return Err(KernelHarnessError::DeadlineExceeded(self.deadline));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                *state_guard = None;
-                Err(KernelHarnessError::DeadlineExceeded(self.deadline))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                *state_guard = None;
-                Err(KernelHarnessError::WorkerFailed {
-                    status: "resident-worker-exited".to_owned(),
-                    stderr: String::new(),
-                })
+            match state.stdout_rx.recv_timeout(remaining) {
+                Ok(Ok(line)) => {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with('{') {
+                        return Ok(trimmed.to_owned());
+                    }
+                }
+                Ok(Err(error)) => {
+                    *state_guard = None;
+                    return Err(KernelHarnessError::OutputFailed(error));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    *state_guard = None;
+                    return Err(KernelHarnessError::DeadlineExceeded(self.deadline));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    *state_guard = None;
+                    return Err(KernelHarnessError::WorkerFailed {
+                        status: "resident-worker-exited".to_owned(),
+                        stderr: String::new(),
+                    });
+                }
             }
         }
     }
@@ -1624,22 +1674,21 @@ impl ResidentRequestTalkTurnKernelWorker {
             "bb/main:.beepbeep.worker.resident.printDecisionJson",
             "resident-kernel-worker",
         );
+        let (stdout_master, stdout_slave) =
+            open_pty_pair().map_err(KernelHarnessError::StartFailed)?;
         command
             .current_dir(&self.repo_root)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(stdout_slave))
             .stderr(Stdio::null());
         let mut child = command.spawn().map_err(KernelHarnessError::StartFailed)?;
         let stdin = child.stdin.take().ok_or_else(|| {
             KernelHarnessError::ProtocolError("resident worker stdin was unavailable".to_owned())
         })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            KernelHarnessError::ProtocolError("resident worker stdout was unavailable".to_owned())
-        })?;
         Ok(ResidentKernelWorkerState {
             child,
             stdin,
-            stdout_rx: spawn_resident_stdout_reader(stdout),
+            stdout_rx: spawn_resident_stdout_reader(stdout_master),
         })
     }
 }
@@ -1657,9 +1706,7 @@ impl Drop for ResidentKernelWorkerState {
     }
 }
 
-fn spawn_resident_stdout_reader(
-    stdout: ChildStdout,
-) -> mpsc::Receiver<Result<String, std::io::Error>> {
+fn spawn_resident_stdout_reader(stdout: File) -> mpsc::Receiver<Result<String, std::io::Error>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -1680,6 +1727,26 @@ fn spawn_resident_stdout_reader(
         }
     });
     rx
+}
+
+fn open_pty_pair() -> std::io::Result<(File, File)> {
+    let mut master_fd = -1;
+    let mut slave_fd = -1;
+    let result = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let master = unsafe { File::from_raw_fd(master_fd) };
+    let slave = unsafe { File::from_raw_fd(slave_fd) };
+    Ok((master, slave))
 }
 
 impl RequestTalkTurnKernelWorker for ProcessRequestTalkTurnKernelWorker {
@@ -2143,6 +2210,127 @@ impl PostgresDecisionCommitter {
         }
         tx.commit()?;
         Ok(records)
+    }
+}
+
+impl DurableContactStore for PostgresDecisionCommitter {
+    fn remember_contact_pair(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError> {
+        if owner_handle == peer_handle {
+            return Ok(());
+        }
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let mut tx = client.transaction()?;
+        tx.execute(
+            "insert into runtime_remembered_contacts (owner_handle, peer_handle)
+             values ($1, $2)
+             on conflict (owner_handle, peer_handle)
+             do update set remembered_at = now()",
+            &[&owner_handle, &peer_handle],
+        )?;
+        tx.execute(
+            "insert into runtime_remembered_contacts (owner_handle, peer_handle)
+             values ($1, $2)
+             on conflict (owner_handle, peer_handle)
+             do update set remembered_at = now()",
+            &[&peer_handle, &owner_handle],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn forget_contact(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client.execute(
+            "delete from runtime_remembered_contacts
+             where owner_handle = $1 and peer_handle = $2",
+            &[&owner_handle, &peer_handle],
+        )?;
+        Ok(())
+    }
+
+    fn remembered_contact_handles(
+        &mut self,
+        owner_handle: &str,
+    ) -> Result<Vec<String>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let rows = client.query(
+            "select peer_handle
+             from runtime_remembered_contacts
+             where owner_handle = $1
+             order by peer_handle",
+            &[&owner_handle],
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<_, String>("peer_handle"))
+            .collect())
+    }
+
+    fn clear_remembered_contacts(&mut self) -> Result<usize, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let removed = client.execute("delete from runtime_remembered_contacts", &[])?;
+        Ok(removed as usize)
+    }
+
+    fn upsert_profile(
+        &mut self,
+        handle: &str,
+        profile_name: &str,
+    ) -> Result<(), DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client.execute(
+            "insert into runtime_profiles (handle, profile_name)
+             values ($1, $2)
+             on conflict (handle)
+             do update set profile_name = excluded.profile_name, updated_at = now()",
+            &[&handle, &profile_name],
+        )?;
+        Ok(())
+    }
+
+    fn profile_name(&mut self, handle: &str) -> Result<Option<String>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        Ok(client
+            .query_opt(
+                "select profile_name from runtime_profiles where handle = $1",
+                &[&handle],
+            )?
+            .map(|row| row.get::<_, String>("profile_name")))
+    }
+
+    fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let removed = client.execute("delete from runtime_profiles", &[])?;
+        Ok(removed as usize)
     }
 }
 
@@ -3041,6 +3229,83 @@ impl KernelDecisionCommitter for DurableConversationStore {
     }
 }
 
+impl DurableContactStore for DurableConversationStore {
+    fn remember_contact_pair(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError> {
+        if owner_handle == peer_handle {
+            return Ok(());
+        }
+        self.remembered_contacts_by_handle
+            .entry(owner_handle.to_owned())
+            .or_default()
+            .insert(peer_handle.to_owned());
+        self.remembered_contacts_by_handle
+            .entry(peer_handle.to_owned())
+            .or_default()
+            .insert(owner_handle.to_owned());
+        Ok(())
+    }
+
+    fn forget_contact(
+        &mut self,
+        owner_handle: &str,
+        peer_handle: &str,
+    ) -> Result<(), DurablePostgresError> {
+        if let Some(remembered_contacts) = self.remembered_contacts_by_handle.get_mut(owner_handle)
+        {
+            remembered_contacts.remove(peer_handle);
+            if remembered_contacts.is_empty() {
+                self.remembered_contacts_by_handle.remove(owner_handle);
+            }
+        }
+        Ok(())
+    }
+
+    fn remembered_contact_handles(
+        &mut self,
+        owner_handle: &str,
+    ) -> Result<Vec<String>, DurablePostgresError> {
+        Ok(self
+            .remembered_contacts_by_handle
+            .get(owner_handle)
+            .map(|contacts| contacts.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    fn clear_remembered_contacts(&mut self) -> Result<usize, DurablePostgresError> {
+        let removed = self
+            .remembered_contacts_by_handle
+            .values()
+            .map(BTreeSet::len)
+            .sum();
+        self.remembered_contacts_by_handle.clear();
+        Ok(removed)
+    }
+
+    fn upsert_profile(
+        &mut self,
+        handle: &str,
+        profile_name: &str,
+    ) -> Result<(), DurablePostgresError> {
+        self.profiles_by_handle
+            .insert(handle.to_owned(), profile_name.to_owned());
+        Ok(())
+    }
+
+    fn profile_name(&mut self, handle: &str) -> Result<Option<String>, DurablePostgresError> {
+        Ok(self.profiles_by_handle.get(handle).cloned())
+    }
+
+    fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError> {
+        let removed = self.profiles_by_handle.len();
+        self.profiles_by_handle.clear();
+        Ok(removed)
+    }
+}
+
 impl TalkTurnRenewalCommitter for DurableConversationStore {
     fn renew_talk_turn(
         &mut self,
@@ -3733,13 +3998,18 @@ mod tests {
             })
             .expect("corpus should include granted request case");
         let worker = ProcessRequestTalkTurnKernelWorker::new(repo_root(), Duration::from_secs(20));
-        let decision = worker
-            .decide_request_talk_turn(&RequestTalkTurnKernelInput {
-                command: case.command.clone(),
-                snapshot: case.snapshot.clone(),
-                policy: case.policy.clone(),
-            })
-            .expect("process worker should invoke Unison request-talk-turn worker");
+        let decision = {
+            let _guard = UCM_CORPUS_LOCK
+                .lock()
+                .expect("UCM worker test lock should not be poisoned");
+            worker
+                .decide_request_talk_turn(&RequestTalkTurnKernelInput {
+                    command: case.command.clone(),
+                    snapshot: case.snapshot.clone(),
+                    policy: case.policy.clone(),
+                })
+                .expect("process worker should invoke Unison request-talk-turn worker")
+        };
 
         assert_eq!(decision.command, case.command);
         assert_eq!(decision.snapshot, case.snapshot);
@@ -3778,13 +4048,18 @@ mod tests {
         let mut command = case.command.clone();
         command["operationId"] = serde_json::json!("op-decoded-outside-corpus");
         let worker = ProcessRequestTalkTurnKernelWorker::new(repo_root(), Duration::from_secs(20));
-        let decision = worker
-            .decide_request_talk_turn(&RequestTalkTurnKernelInput {
-                command: command.clone(),
-                snapshot: case.snapshot.clone(),
-                policy: case.policy.clone(),
-            })
-            .expect("process worker should decode arbitrary valid command JSON");
+        let decision = {
+            let _guard = UCM_CORPUS_LOCK
+                .lock()
+                .expect("UCM worker test lock should not be poisoned");
+            worker
+                .decide_request_talk_turn(&RequestTalkTurnKernelInput {
+                    command: command.clone(),
+                    snapshot: case.snapshot.clone(),
+                    policy: case.policy.clone(),
+                })
+                .expect("process worker should decode arbitrary valid command JSON")
+        };
 
         assert_eq!(decision.command, command);
         assert_eq!(decision.decision["kind"], "granted");
@@ -3807,13 +4082,18 @@ mod tests {
             })
             .expect("corpus should include stale release case");
         let worker = ProcessRequestTalkTurnKernelWorker::new(repo_root(), Duration::from_secs(20));
-        let decision = worker
-            .decide_release_talk_turn(&RequestTalkTurnKernelInput {
-                command: case.command.clone(),
-                snapshot: case.snapshot.clone(),
-                policy: case.policy.clone(),
-            })
-            .expect("process worker should invoke Unison release-talk-turn worker");
+        let decision = {
+            let _guard = UCM_CORPUS_LOCK
+                .lock()
+                .expect("UCM worker test lock should not be poisoned");
+            worker
+                .decide_release_talk_turn(&RequestTalkTurnKernelInput {
+                    command: case.command.clone(),
+                    snapshot: case.snapshot.clone(),
+                    policy: case.policy.clone(),
+                })
+                .expect("process worker should invoke Unison release-talk-turn worker")
+        };
 
         assert_eq!(decision.command, case.command);
         assert_eq!(decision.snapshot, case.snapshot);
@@ -3822,7 +4102,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "UCM printLine currently buffers stdout until stdin closes; resident mode needs an explicit flush-capable Unison or wrapper output path"]
     fn request_talk_turn_postgres_resident_worker_handles_request_and_release() {
         let response = kernel_corpus();
         let request_case = response

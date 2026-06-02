@@ -4345,7 +4345,7 @@ struct DeviceTests {
         let leaseStartedAt = leaseFormatter.string(from: Date())
         let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
 
-        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId in
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, _ in
             events.append("begin-lease")
             return TurboBeginTransmitResponse(
                 channelId: channelId,
@@ -4446,7 +4446,7 @@ struct DeviceTests {
         let leaseStartedAt = leaseFormatter.string(from: Date())
         let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
 
-        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId in
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { channelId, _ in
             events.append("begin-lease")
             return TurboBeginTransmitResponse(
                 channelId: channelId,

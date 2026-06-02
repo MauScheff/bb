@@ -1568,12 +1568,6 @@ extension PTTViewModel {
         switch effect {
         case .beginTransmit(let request):
             transmitTaskCoordinator.send(.beginRequested(request))
-            Task { @MainActor [weak self] in
-                await self?.requestParallelSystemTransmitHandoffIfPossible(
-                    for: request,
-                    source: "transmit-begin"
-                )
-            }
         case .activateTransmit(let request, let target):
             await performActivateTransmit(request, target: target)
         case .stopTransmit(let target):
@@ -1706,6 +1700,97 @@ extension PTTViewModel {
         backend.forceReconnectWebSocket()
     }
 
+    private func backendTalkTurnLeaseRequest(
+        for request: TransmitRequestContext,
+        backend: BackendServices,
+        source: String
+    ) throws -> TurboBeginTransmitLeaseRequest {
+        guard let currentUserID = backend.currentUserID, !currentUserID.isEmpty else {
+            throw TurboBackendError.server("missing current user for talk turn lease")
+        }
+        return TurboBeginTransmitLeaseRequest(
+            deviceId: backend.deviceID,
+            requestingParticipantId: currentUserID,
+            targetParticipantId: request.remoteUserID,
+            operationId: "\(source)-\(UUID().uuidString.lowercased())"
+        )
+    }
+
+    private func requestBackendTalkTurnLease(
+        for request: TransmitRequestContext,
+        backend: BackendServices,
+        source: String
+    ) async throws -> TurboBeginTransmitResponse {
+        try await backend.beginTransmit(
+            channelId: request.backendChannelID,
+            request: backendTalkTurnLeaseRequest(
+                for: request,
+                backend: backend,
+                source: source
+            )
+        )
+    }
+
+    private func grantedTransmitTarget(
+        from response: TurboBeginTransmitResponse,
+        request: TransmitRequestContext,
+        source: String
+    ) throws -> TransmitTarget {
+        guard !response.isDenied else {
+            throw TurboBackendError.server("talk turn denied: \(response.reason ?? "unknown")")
+        }
+        guard let targetDeviceID = response.targetDeviceId, !targetDeviceID.isEmpty else {
+            throw TurboBackendError.invalidResponseDetails(
+                "begin-transmit grant missing targetDeviceId source=\(source)"
+            )
+        }
+        let transmitID = response.transmitId ?? response.startedAt
+        return TransmitTarget(
+            contactID: request.contactID,
+            userID: request.remoteUserID,
+            deviceID: targetDeviceID,
+            channelID: request.backendChannelID,
+            transmitID: transmitID
+        )
+    }
+
+    private func handleBackendTalkTurnDenied(
+        _ response: TurboBeginTransmitResponse,
+        request: TransmitRequestContext,
+        source: String
+    ) async {
+        cancelRequestedSystemTransmitHandoffIfNeeded(
+            channelUUID: request.channelUUID,
+            reason: "backend-talk-turn-denied"
+        )
+        transmitRuntime.markPressEnded()
+        let reason = response.reason ?? "unknown"
+        if let channelUUID = request.channelUUID,
+           let contact = contacts.first(where: { $0.id == request.contactID }) {
+            _ = try? await setSystemActiveRemoteParticipant(
+                name: contact.name,
+                channelUUID: channelUUID,
+                contactID: contact.id,
+                reason: "backend-talk-turn-denied"
+            )
+        }
+        await transmitCoordinator.handle(.beginFailed("Peer is talking"))
+        syncTransmitState()
+        updateStatusForSelectedContact()
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Backend talk turn denied local transmit",
+            metadata: [
+                "contactId": request.contactID.uuidString,
+                "contact": request.contactHandle,
+                "channelId": request.backendChannelID,
+                "reason": reason,
+                "source": source,
+            ]
+        )
+    }
+
     private func performBeginTransmit(_ request: TransmitRequestContext, workID: Int) async {
         defer {
             transmitTaskCoordinator.send(.beginFinished(id: workID))
@@ -1796,14 +1881,24 @@ extension PTTViewModel {
                 channelID: request.backendChannelID
             )
             let backendLeaseRequestStartedAt = Date()
-            let response = try await backend.beginTransmit(channelId: request.backendChannelID)
+            let response = try await requestBackendTalkTurnLease(
+                for: request,
+                backend: backend,
+                source: "begin-transmit"
+            )
             let backendLeaseRequestElapsedMs = Int(Date().timeIntervalSince(backendLeaseRequestStartedAt) * 1_000)
-            let target = TransmitTarget(
-                contactID: request.contactID,
-                userID: request.remoteUserID,
-                deviceID: response.targetDeviceId,
-                channelID: request.backendChannelID,
-                transmitID: response.transmitId ?? response.startedAt
+            if response.isDenied {
+                await handleBackendTalkTurnDenied(
+                    response,
+                    request: request,
+                    source: "begin-transmit"
+                )
+                return
+            }
+            let target = try grantedTransmitTarget(
+                from: response,
+                request: request,
+                source: "begin-transmit"
             )
             diagnostics.record(
                 .media,
@@ -1811,10 +1906,10 @@ extension PTTViewModel {
                 metadata: [
                     "contactId": target.contactID.uuidString,
                     "channelId": target.channelID,
-                    "startedAt": response.startedAt,
+                    "startedAt": response.leaseStartedAtDescription,
                     "transmitId": target.transmitID ?? "missing",
-                    "expiresAt": response.expiresAt,
-                    "targetDeviceId": response.targetDeviceId,
+                    "expiresAt": response.leaseExpirationDescription,
+                    "targetDeviceId": target.deviceID,
                     "clientHttpElapsedMs": String(backendLeaseRequestElapsedMs),
                 ]
             )
@@ -1824,10 +1919,10 @@ extension PTTViewModel {
                 channelUUID: request.channelUUID,
                 channelID: request.backendChannelID,
                 metadata: [
-                    "targetDeviceId": response.targetDeviceId,
-                    "startedAt": response.startedAt,
+                    "targetDeviceId": target.deviceID,
+                    "startedAt": response.leaseStartedAtDescription,
                     "transmitId": target.transmitID ?? "missing",
-                    "expiresAt": response.expiresAt,
+                    "expiresAt": response.leaseExpirationDescription,
                     "clientHttpElapsedMs": String(backendLeaseRequestElapsedMs),
                 ]
             )
@@ -1839,10 +1934,10 @@ extension PTTViewModel {
                 metadata: [
                     "contactId": target.contactID.uuidString,
                     "channelId": target.channelID,
-                    "startedAt": response.startedAt,
+                    "startedAt": response.leaseStartedAtDescription,
                     "transmitId": target.transmitID ?? "missing",
-                    "expiresAt": response.expiresAt,
-                    "targetDeviceId": response.targetDeviceId,
+                    "expiresAt": response.leaseExpirationDescription,
+                    "targetDeviceId": target.deviceID,
                     "clientHttpElapsedMs": String(backendLeaseRequestElapsedMs),
                 ],
                 peerHandle: request.contactHandle,
@@ -1944,13 +2039,23 @@ extension PTTViewModel {
     ) async -> Bool {
         do {
             _ = try await backend.joinChannel(channelId: request.backendChannelID)
-            let response = try await backend.beginTransmit(channelId: request.backendChannelID)
-            let target = TransmitTarget(
-                contactID: request.contactID,
-                userID: request.remoteUserID,
-                deviceID: response.targetDeviceId,
-                channelID: request.backendChannelID,
-                transmitID: response.transmitId ?? response.startedAt
+            let response = try await requestBackendTalkTurnLease(
+                for: request,
+                backend: backend,
+                source: "membership-recovery"
+            )
+            if response.isDenied {
+                await handleBackendTalkTurnDenied(
+                    response,
+                    request: request,
+                    source: "membership-recovery"
+                )
+                return true
+            }
+            let target = try grantedTransmitTarget(
+                from: response,
+                request: request,
+                source: "membership-recovery"
             )
             diagnostics.record(
                 .media,
@@ -1958,10 +2063,10 @@ extension PTTViewModel {
                 metadata: [
                     "contactId": target.contactID.uuidString,
                     "channelId": target.channelID,
-                    "startedAt": response.startedAt,
+                    "startedAt": response.leaseStartedAtDescription,
                     "transmitId": target.transmitID ?? "missing",
-                    "expiresAt": response.expiresAt,
-                    "targetDeviceId": response.targetDeviceId,
+                    "expiresAt": response.leaseExpirationDescription,
+                    "targetDeviceId": target.deviceID,
                 ]
             )
             guard shouldActivateBackendTransmitLease(request: request, workID: workID) else {
@@ -2093,7 +2198,21 @@ extension PTTViewModel {
         backend: BackendServices,
         source: String
     ) async throws -> TransmitTarget {
-        guard let remainingSeconds = backendTransmitLeaseRemainingSeconds(expiresAt: response.expiresAt) else {
+        guard let expiresAt = response.expiresAt else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Backend transmit lease expiration is not ISO8601",
+                metadata: [
+                    "contactId": target.contactID.uuidString,
+                    "channelId": target.channelID,
+                    "expiresAt": response.leaseExpirationDescription,
+                    "source": source,
+                ]
+            )
+            return target
+        }
+        guard let remainingSeconds = backendTransmitLeaseRemainingSeconds(expiresAt: expiresAt) else {
             diagnostics.record(
                 .media,
                 level: .notice,
@@ -2101,7 +2220,7 @@ extension PTTViewModel {
                 metadata: [
                     "contactId": target.contactID.uuidString,
                     "channelId": target.channelID,
-                    "expiresAt": response.expiresAt,
+                    "expiresAt": response.leaseExpirationDescription,
                     "source": source,
                 ]
             )
@@ -2118,8 +2237,8 @@ extension PTTViewModel {
                 "contactId": target.contactID.uuidString,
                 "channelId": target.channelID,
                 "targetDeviceId": target.deviceID,
-                "startedAt": response.startedAt,
-                "expiresAt": response.expiresAt,
+                "startedAt": response.leaseStartedAtDescription,
+                "expiresAt": response.leaseExpirationDescription,
                 "remainingMs": String(remainingMilliseconds),
                 "minimumUsableMs": String(Int(minimumUsableBackendTransmitLeaseSeconds * 1_000)),
                 "source": source,
@@ -2193,13 +2312,18 @@ extension PTTViewModel {
                     "source": source,
                 ]
             )
-            let reacquired = try await backend.beginTransmit(channelId: request.backendChannelID)
-            return TransmitTarget(
-                contactID: request.contactID,
-                userID: request.remoteUserID,
-                deviceID: reacquired.targetDeviceId,
-                channelID: request.backendChannelID,
-                transmitID: reacquired.transmitId ?? reacquired.startedAt
+            let reacquired = try await requestBackendTalkTurnLease(
+                for: request,
+                backend: backend,
+                source: "\(source)-reacquire"
+            )
+            if reacquired.isDenied {
+                throw TurboBackendError.server("talk turn denied: \(reacquired.reason ?? "unknown")")
+            }
+            return try grantedTransmitTarget(
+                from: reacquired,
+                request: request,
+                source: "\(source)-reacquire"
             )
         }
     }
@@ -2480,7 +2604,7 @@ extension PTTViewModel {
             metadata: [
                 "contactId": request.contactID.uuidString,
                 "channelUUID": channelUUID.uuidString,
-                "source": "parallel-begin",
+                "source": "post-backend-grant",
             ]
         )
         do {
@@ -2495,57 +2619,6 @@ extension PTTViewModel {
         } catch {
             transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
             throw error
-        }
-    }
-
-    private func requestParallelSystemTransmitHandoffIfPossible(
-        for request: TransmitRequestContext,
-        source: String
-    ) async {
-        guard !request.usesLocalHTTPBackend else { return }
-        guard request.channelUUID != nil else { return }
-        guard shouldContinueSystemTransmitHandoffRequest(for: request) else { return }
-
-        diagnostics.record(
-            .pushToTalk,
-            message: "Requesting Apple system transmit in parallel with backend lease",
-            metadata: [
-                "contactId": request.contactID.uuidString,
-                "channelId": request.backendChannelID,
-                "source": source,
-            ]
-        )
-
-        do {
-            try await requestSystemTransmitHandoffIfNeeded(for: request)
-        } catch {
-            guard !Task.isCancelled else { return }
-            let message = error.localizedDescription
-            diagnostics.record(
-                .pushToTalk,
-                level: .error,
-                message: "Parallel Apple system transmit handoff failed",
-                metadata: [
-                    "contactId": request.contactID.uuidString,
-                    "channelId": request.backendChannelID,
-                    "source": source,
-                    "error": message,
-                ]
-            )
-            cancelRequestedSystemTransmitHandoffIfNeeded(
-                channelUUID: request.channelUUID,
-                reason: "parallel-system-handoff-failed"
-            )
-            syncEngineSystemTransmitBeginFailed(
-                message: message,
-                source: "parallel-system-handoff"
-            )
-            transmitTaskCoordinator.send(.cancelBegin)
-            Task { @MainActor [weak self] in
-                await self?.transmitCoordinator.handle(.systemBeginFailed(message))
-                self?.syncTransmitState()
-                self?.updateStatusForSelectedContact()
-            }
         }
     }
 

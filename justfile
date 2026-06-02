@@ -142,6 +142,12 @@ kernel-invocation-audit output="/tmp/bb-kernel-invocation-audit.json" limit="20"
     --output "{{output}}" \
     --limit "{{limit}}"
 
+resident-kernel-invocation-audit output="/tmp/bb-resident-kernel-invocation-audit.json" limit="20":
+  python3 backend/scripts/kernel_invocation_audit.py \
+    --mode resident \
+    --output "{{output}}" \
+    --limit "{{limit}}"
+
 gce-self-hosted-deploy-dry-run project="" zone="europe-west6-a" instance="turbo-self-hosted-1" output="/tmp/turbo-gce-self-hosted-deploy.json":
   python3 backend/scripts/gce_vm_self_hosted_deploy.py \
     --project "{{project}}" \

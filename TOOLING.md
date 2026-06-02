@@ -38,7 +38,7 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 | --- | --- | --- |
 | Pure Unison kernel proof | `just kernel-fuzz` | `beepbeep.tests` passes in `bb/main` |
 | Compiled kernel invocation timing | `just kernel-invocation-audit` | `/tmp/bb-kernel-invocation-audit.json` records per-case `run.compiled` elapsed milliseconds |
-| Resident kernel worker groundwork | `TURBO_KERNEL_WORKER_MODE=resident` | opt-in only until UCM worker output is flush-capable; the VM default remains `per-command` |
+| Resident kernel worker timing | `just resident-kernel-invocation-audit` | `/tmp/bb-resident-kernel-invocation-audit.json` records warm resident compiled-worker elapsed milliseconds |
 | Export replay corpus | `just kernel-corpus-json /tmp/turbo-kernel-corpus.json` | JSON corpus is written and parseable |
 | Rust runtime tests | `just rust-runtime-test` | `beepbeep-runtime` tests pass |
 | Runtime/Postgres integration | `just runtime-postgres-integration` | `/tmp/turbo-rust-runtime-integration.json` reports success |
@@ -102,11 +102,11 @@ Live deploys require a clean git worktree unless `--allow-dirty` or
 `TURBO_GCE_ALLOW_DIRTY=1` is explicitly set; allowed dirty deploys get a
 `-dirty-<timestamp>` image tag when the tag is not specified.
 
-The packaged runtime keeps `TURBO_KERNEL_WORKER_MODE=per-command` as the safe
-default. A resident Rust worker adapter and `resident-kernel-worker.uc` compile
-target exist, but UCM currently buffers `printLine` output until stdin closes;
-do not default live deploys to `resident` until that protocol has a
-flush-capable output path.
+The packaged runtime defaults `TURBO_KERNEL_WORKER_MODE=resident`. Rust keeps
+one compiled UCM worker alive, writes newline-delimited JSON requests to stdin,
+and reads stdout through a PTY so UCM flushes each `printLine` response. Set
+`TURBO_KERNEL_WORKER_MODE=per-command` to fall back to one `ucm run.compiled`
+process per semantic kernel decision.
 
 The API runtime image depends on `backend/relay-protocol`, not the full relay
 server crate. Relay deploys use a separate image,

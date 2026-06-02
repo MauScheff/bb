@@ -12,8 +12,9 @@ use serde_json::Value;
 
 use crate::{
     postgres::{
-        DurablePostgresError, KernelDecisionCommitter, RequestTalkTurnKernelWorker,
-        RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter, TalkTurnRenewalCommitter,
+        DurableContactStore, DurablePostgresError, KernelDecisionCommitter,
+        RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter,
+        TalkTurnRenewalCommitter,
     },
     routes::{RuntimeRouteError, SelfHostedRouteService},
     shadow::LegacyBeginTransmitInput,
@@ -47,6 +48,8 @@ pub enum RuntimeHttpError {
     InvalidJson(#[source] serde_json::Error),
     #[error("missing field `{0}`")]
     MissingField(&'static str),
+    #[error("durable store failed: {0}")]
+    Durable(#[from] DurablePostgresError),
     #[error("route failed: {0}")]
     Route(#[from] RuntimeRouteError),
     #[error("io failed: {0}")]
@@ -116,8 +119,6 @@ struct RuntimeHttpState {
     beeps: BTreeMap<String, RuntimeBeep>,
     beep_aliases_by_id: BTreeMap<String, String>,
     channels: BTreeMap<String, RuntimeChannel>,
-    remembered_contacts_by_handle: BTreeMap<String, BTreeSet<String>>,
-    profiles_by_handle: BTreeMap<String, String>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
@@ -180,7 +181,10 @@ impl<S, W, C> RuntimeHttpService<S, W, C>
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    C: KernelDecisionCommitter + TalkTurnRenewalCommitter + TalkTurnReleaseCommitter,
+    C: KernelDecisionCommitter
+        + TalkTurnRenewalCommitter
+        + TalkTurnReleaseCommitter
+        + DurableContactStore,
 {
     pub fn new(route_service: SelfHostedRouteService<S, W, C>) -> Self {
         Self {
@@ -352,7 +356,7 @@ where
             let handle = request_handle(&request);
             return Ok(HttpResponse {
                 status: 200,
-                body: Value::Array(self.contact_summaries_for_handle(handle)),
+                body: Value::Array(self.contact_summaries_for_handle(handle)?),
             });
         }
         if request.method == "GET" {
@@ -409,26 +413,31 @@ where
             if let Some(public_id) = share_page_public_id(&request.path) {
                 let handle = normalize_identity_reference(&public_id);
                 let profile_name = self
-                    .state
-                    .profiles_by_handle
-                    .get(&handle)
-                    .map(String::as_str)
-                    .unwrap_or(&handle);
+                    .route_service
+                    .committer_mut()
+                    .profile_name(&handle)?
+                    .unwrap_or_else(|| handle.clone());
                 return Ok(HttpResponse {
                     status: 200,
                     body: raw_html_response(share_page_html(
                         &handle,
-                        profile_name,
+                        &profile_name,
                         &request_public_base_url(&request),
                     )),
                 });
             }
             if let Some(handle) = user_presence_handle(&request.path) {
                 let handle = normalize_identity_reference(handle);
+                let profile_name = self
+                    .route_service
+                    .committer_mut()
+                    .profile_name(&handle)?
+                    .unwrap_or_else(|| handle.clone());
                 return Ok(HttpResponse {
                     status: 200,
                     body: user_lookup_response(
                         &handle,
+                        &profile_name,
                         self.handle_is_online(&handle),
                         &request_public_base_url(&request),
                     ),
@@ -436,10 +445,16 @@ where
             }
             if let Some(handle) = user_lookup_handle(&request.path) {
                 let handle = normalize_identity_reference(handle);
+                let profile_name = self
+                    .route_service
+                    .committer_mut()
+                    .profile_name(&handle)?
+                    .unwrap_or_else(|| handle.clone());
                 return Ok(HttpResponse {
                     status: 200,
                     body: user_lookup_response(
                         &handle,
+                        &profile_name,
                         self.handle_is_online(&handle),
                         &request_public_base_url(&request),
                     ),
@@ -465,19 +480,28 @@ where
         }
         let body = parse_body(&request.body)?;
         if is_auth_session_path(&request.path) {
-            let handle = request_handle(&request);
+            let handle = normalize_identity_reference(request_handle(&request));
+            let profile_name = self
+                .route_service
+                .committer_mut()
+                .profile_name(&handle)?
+                .unwrap_or_else(|| handle.clone());
             return Ok(HttpResponse {
                 status: 200,
-                body: auth_session_response(handle, &request_public_base_url(&request)),
+                body: auth_session_response_with_profile_name(
+                    &handle,
+                    &profile_name,
+                    &request_public_base_url(&request),
+                ),
             });
         }
         if is_profile_path(&request.path) {
             let handle = request_handle(&request);
             let profile_name = required_string(&body, &["profileName"], "profileName")?;
             let normalized_handle = normalize_identity_reference(handle);
-            self.state
-                .profiles_by_handle
-                .insert(normalized_handle.clone(), profile_name.to_owned());
+            self.route_service
+                .committer_mut()
+                .upsert_profile(&normalized_handle, profile_name)?;
             return Ok(HttpResponse {
                 status: 200,
                 body: auth_session_response_with_profile_name(
@@ -597,14 +621,15 @@ where
         if is_dev_reset_path(&request.path) {
             let cleared_beeps = self.state.beeps.len();
             let cleared_channels = self.state.channels.len();
-            let cleared_remembered_contacts = self.state.remembered_contacts_by_handle.len();
-            let cleared_profiles = self.state.profiles_by_handle.len();
+            let cleared_remembered_contacts = self
+                .route_service
+                .committer_mut()
+                .clear_remembered_contacts()?;
+            let cleared_profiles = self.route_service.committer_mut().clear_profiles()?;
             let cleared_direct_quic_identities = self.state.direct_quic_identities_by_device.len();
             let cleared_presence_entries = self.state.presence_by_handle.len();
             self.state.beeps.clear();
             self.state.channels.clear();
-            self.state.remembered_contacts_by_handle.clear();
-            self.state.profiles_by_handle.clear();
             self.state.direct_quic_identities_by_device.clear();
             self.state.presence_by_handle.clear();
             self.state.diagnostics_by_device.clear();
@@ -632,20 +657,28 @@ where
                 .and_then(Value::as_str)
                 .unwrap_or("@self");
             let handle = normalize_identity_reference(reference);
+            let profile_name = self
+                .route_service
+                .committer_mut()
+                .profile_name(&handle)?
+                .unwrap_or_else(|| handle.clone());
             return Ok(HttpResponse {
                 status: 200,
                 body: user_lookup_response(
                     &handle,
+                    &profile_name,
                     self.handle_is_online(&handle),
                     &request_public_base_url(&request),
                 ),
             });
         }
         if is_contact_remember_path(&request.path) {
-            let handle = request_handle(&request).to_owned();
+            let handle = normalize_handle(request_handle(&request));
             let other_handle = contact_peer_handle_from_body(&body);
             let other_user_id = user_id_for_handle(&other_handle);
-            self.remember_contact_pair(&handle, &other_handle);
+            self.route_service
+                .committer_mut()
+                .remember_contact_pair(&handle, &other_handle)?;
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -655,10 +688,12 @@ where
             });
         }
         if is_contact_forget_path(&request.path) {
-            let handle = request_handle(&request).to_owned();
+            let handle = normalize_handle(request_handle(&request));
             let other_handle = contact_peer_handle_from_body(&body);
             let other_user_id = user_id_for_handle(&other_handle);
-            self.forget_contact(&handle, &other_handle);
+            self.route_service
+                .committer_mut()
+                .forget_contact(&handle, &other_handle)?;
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -704,7 +739,11 @@ where
                     });
                 }
                 "decline" | "cancel" => {
-                    let beep = self.state.beeps.remove(&effective_beep_id).expect("beep exists");
+                    let beep = self
+                        .state
+                        .beeps
+                        .remove(&effective_beep_id)
+                        .expect("beep exists");
                     self.state
                         .beep_aliases_by_id
                         .insert(beep.beep_id.clone(), beep.channel_id.clone());
@@ -736,7 +775,10 @@ where
             let (low_user_id, high_user_id) = sorted_pair(self_user_id, other_user_id);
             let channel_id = format!("direct-{low_user_id}-{high_user_id}");
             self.ensure_channel_participants(&channel_id, handle, &other_handle);
-            self.remember_contact_pair(handle, &other_handle);
+            let handle = normalize_handle(handle);
+            self.route_service
+                .committer_mut()
+                .remember_contact_pair(&handle, &other_handle)?;
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -942,45 +984,11 @@ where
         beep
     }
 
-    fn remember_contact_pair(&mut self, owner_handle: &str, peer_handle: &str) {
-        let owner_handle = normalize_handle(owner_handle);
-        let peer_handle = normalize_handle(peer_handle);
-        if owner_handle == peer_handle {
-            return;
-        }
-        self.state
-            .remembered_contacts_by_handle
-            .entry(owner_handle.clone())
-            .or_default()
-            .insert(peer_handle.clone());
-        self.state
-            .remembered_contacts_by_handle
-            .entry(peer_handle)
-            .or_default()
-            .insert(owner_handle);
-    }
-
-    fn forget_contact(&mut self, owner_handle: &str, peer_handle: &str) {
-        let owner_handle = normalize_handle(owner_handle);
-        let peer_handle = normalize_handle(peer_handle);
-        if let Some(remembered_contacts) = self
-            .state
-            .remembered_contacts_by_handle
-            .get_mut(&owner_handle)
-        {
-            remembered_contacts.remove(&peer_handle);
-            if remembered_contacts.is_empty() {
-                self.state
-                    .remembered_contacts_by_handle
-                    .remove(&owner_handle);
-            }
-        }
-    }
-
     fn resolve_beep_action_id(&self, requested_beep_id: &str, action: &str) -> Option<String> {
         if let Some(beep) = self.state.beeps.get(requested_beep_id) {
             if action == "accept" && beep.status != "pending" {
-                if let Some(current_id) = self.current_pending_beep_id_for_channel(&beep.channel_id) {
+                if let Some(current_id) = self.current_pending_beep_id_for_channel(&beep.channel_id)
+                {
                     return Some(current_id);
                 }
             }
@@ -1013,7 +1021,10 @@ where
             .collect()
     }
 
-    fn contact_summaries_for_handle(&self, handle: &str) -> Vec<Value> {
+    fn contact_summaries_for_handle(
+        &mut self,
+        handle: &str,
+    ) -> Result<Vec<Value>, RuntimeHttpError> {
         let normalized_handle = normalize_handle(handle);
         let mut peers_by_channel_id = BTreeMap::new();
         for (channel_id, channel) in &self.state.channels {
@@ -1026,8 +1037,7 @@ where
                     self.beep_projection_for_channel(channel_id, &normalized_handle);
                 let has_active_transmit =
                     active_transmitter_for_handle(Some(channel), &normalized_handle).is_some();
-                let should_project_channel =
-                    has_incoming_beep
+                let should_project_channel = has_incoming_beep
                     || has_outgoing_beep
                     || membership.self_joined
                     || membership.peer_joined
@@ -1047,23 +1057,30 @@ where
                 }
             }
         }
-        if let Some(remembered_contacts) = self
-            .state
-            .remembered_contacts_by_handle
-            .get(&normalized_handle)
-        {
-            for peer_handle in remembered_contacts {
-                peers_by_channel_id
-                    .entry(channel_id_for_pair(&normalized_handle, peer_handle))
-                    .or_insert_with(|| peer_handle.clone());
-            }
+        let remembered_contacts = self
+            .route_service
+            .committer_mut()
+            .remembered_contact_handles(&normalized_handle)?;
+        for peer_handle in remembered_contacts {
+            peers_by_channel_id
+                .entry(channel_id_for_pair(&normalized_handle, &peer_handle))
+                .or_insert(peer_handle);
         }
-        peers_by_channel_id
-            .into_iter()
-            .map(|(channel_id, peer_handle)| {
-                self.contact_summary_for_channel(&channel_id, handle, &peer_handle)
-            })
-            .collect()
+        let mut summaries = Vec::new();
+        for (channel_id, peer_handle) in peers_by_channel_id {
+            let profile_name = self
+                .route_service
+                .committer_mut()
+                .profile_name(&peer_handle)?
+                .unwrap_or_else(|| peer_handle.clone());
+            summaries.push(self.contact_summary_for_channel(
+                &channel_id,
+                handle,
+                &peer_handle,
+                &profile_name,
+            ));
+        }
+        Ok(summaries)
     }
 
     fn contact_summary_for_channel(
@@ -1071,6 +1088,7 @@ where
         channel_id: &str,
         handle: &str,
         peer_handle: &str,
+        profile_name: &str,
     ) -> Value {
         let membership = self.channel_membership(channel_id, handle);
         let (has_incoming_beep, has_outgoing_beep, request_count) =
@@ -1091,8 +1109,8 @@ where
             "userId": peer_user_id,
             "handle": peer_handle,
             "publicId": peer_handle,
-            "displayName": peer_handle,
-            "profileName": peer_handle,
+            "displayName": profile_name,
+            "profileName": profile_name,
             "channelId": channel_id,
             "isOnline": true,
             "hasIncomingBeep": has_incoming_beep,
@@ -1822,7 +1840,8 @@ pub fn serve_one_connection<S, W>(
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    crate::postgres::DurableConversationStore: TalkTurnRenewalCommitter + TalkTurnReleaseCommitter,
+    crate::postgres::DurableConversationStore:
+        TalkTurnRenewalCommitter + TalkTurnReleaseCommitter + DurableContactStore,
 {
     let (mut stream, _) = listener.accept()?;
     let request = read_http_request(&mut stream)?;
@@ -1841,7 +1860,10 @@ pub fn serve_one_connection_with_committer<S, W, C>(
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    C: KernelDecisionCommitter + TalkTurnRenewalCommitter + TalkTurnReleaseCommitter,
+    C: KernelDecisionCommitter
+        + TalkTurnRenewalCommitter
+        + TalkTurnReleaseCommitter
+        + DurableContactStore,
 {
     let (mut stream, _) = listener.accept()?;
     serve_stream_with_committer(&mut stream, service)
@@ -1854,7 +1876,10 @@ pub fn serve_stream_with_committer<S, W, C>(
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    C: KernelDecisionCommitter + TalkTurnRenewalCommitter + TalkTurnReleaseCommitter,
+    C: KernelDecisionCommitter
+        + TalkTurnRenewalCommitter
+        + TalkTurnReleaseCommitter
+        + DurableContactStore,
 {
     let request = read_http_request(stream)?;
     let response = service
@@ -1872,7 +1897,10 @@ pub fn serve_forever_with_committer<S, W, C>(
 where
     S: RequestTalkTurnSnapshotLoader,
     W: RequestTalkTurnKernelWorker,
-    C: KernelDecisionCommitter + TalkTurnRenewalCommitter + TalkTurnReleaseCommitter,
+    C: KernelDecisionCommitter
+        + TalkTurnRenewalCommitter
+        + TalkTurnReleaseCommitter
+        + DurableContactStore,
 {
     loop {
         serve_one_connection_with_committer(listener, service)?;
@@ -2415,10 +2443,6 @@ fn bearer_handle(value: &str) -> Option<&str> {
         .filter(|handle| handle.starts_with('@'))
 }
 
-fn auth_session_response(handle: &str, public_base_url: &str) -> Value {
-    auth_session_response_with_profile_name(handle, handle, public_base_url)
-}
-
 fn auth_session_response_with_profile_name(
     handle: &str,
     profile_name: &str,
@@ -2507,15 +2531,20 @@ fn normalize_handle_body(decoded: &str) -> String {
     }
 }
 
-fn user_lookup_response(handle: &str, is_online: bool, public_base_url: &str) -> Value {
+fn user_lookup_response(
+    handle: &str,
+    profile_name: &str,
+    is_online: bool,
+    public_base_url: &str,
+) -> Value {
     let normalized = normalize_handle(handle);
     let public_id = normalized.trim_start_matches('@');
     serde_json::json!({
         "userId": user_id_for_handle(&normalized),
         "handle": normalized,
         "publicId": public_id,
-        "displayName": normalized,
-        "profileName": normalized,
+        "displayName": profile_name,
+        "profileName": profile_name,
         "shareCode": public_id,
         "shareLink": format!("{}/{}", public_base_url.trim_end_matches('/'), public_id),
         "did": format!("did:web:{}:id:{}", did_host(public_base_url), public_id),
@@ -2903,6 +2932,11 @@ fn status_for_error(error: &RuntimeHttpError) -> u16 {
         | RuntimeHttpError::Route(RuntimeRouteError::ConversationMismatch { .. })
         | RuntimeHttpError::Route(RuntimeRouteError::UnsupportedCommandKind(_))
         | RuntimeHttpError::Route(RuntimeRouteError::MissingField(_)) => 400,
+        RuntimeHttpError::Durable(DurablePostgresError::IdempotencyConflict { .. }) => 409,
+        RuntimeHttpError::Durable(
+            DurablePostgresError::SnapshotNotFound | DurablePostgresError::KernelDecisionNotFound,
+        ) => 422,
+        RuntimeHttpError::Durable(DurablePostgresError::TalkTurnRenewalRejected(_)) => 422,
         RuntimeHttpError::Route(RuntimeRouteError::Durable(
             DurablePostgresError::IdempotencyConflict { .. },
         )) => 409,
@@ -2912,7 +2946,9 @@ fn status_for_error(error: &RuntimeHttpError) -> u16 {
         RuntimeHttpError::Route(RuntimeRouteError::Durable(
             DurablePostgresError::TalkTurnRenewalRejected(_),
         )) => 422,
-        RuntimeHttpError::Io(_) | RuntimeHttpError::Route(RuntimeRouteError::Durable(_)) => 500,
+        RuntimeHttpError::Io(_)
+        | RuntimeHttpError::Durable(_)
+        | RuntimeHttpError::Route(RuntimeRouteError::Durable(_)) => 500,
     }
 }
 
@@ -3066,11 +3102,21 @@ mod tests {
     fn service_with_config(
         runtime_config: RuntimeHttpConfig,
     ) -> RuntimeHttpService<InMemoryRequestTalkTurnSnapshotLoader, CorpusKernelDecisionWorker> {
+        service_with_config_and_committer(
+            runtime_config,
+            crate::postgres::DurableConversationStore::default(),
+        )
+    }
+
+    fn service_with_config_and_committer(
+        runtime_config: RuntimeHttpConfig,
+        committer: crate::postgres::DurableConversationStore,
+    ) -> RuntimeHttpService<InMemoryRequestTalkTurnSnapshotLoader, CorpusKernelDecisionWorker> {
         let corpus = corpus();
         let loader = InMemoryRequestTalkTurnSnapshotLoader::from_cases(corpus.cases.iter());
         let worker = CorpusKernelDecisionWorker::new(&corpus);
         RuntimeHttpService::new_with_config(
-            SelfHostedRouteService::new(loader, worker),
+            SelfHostedRouteService::with_committer(loader, worker, committer),
             runtime_config,
         )
     }
@@ -3133,11 +3179,25 @@ mod tests {
         assert_eq!(response.body["handle"], "@avery");
         assert_eq!(response.body["profileName"], "Avery");
         assert_eq!(response.body["shareCode"], "avery");
-        assert_eq!(
-            response.body["shareLink"],
-            "https://api.beepbeep.to/avery"
-        );
+        assert_eq!(response.body["shareLink"], "https://api.beepbeep.to/avery");
         assert_eq!(response.body["did"], "did:web:api.beepbeep.to:id:avery");
+
+        let durable_committer_after_restart = service.route_service().committer().clone();
+        let mut restarted_service = service_with_config_and_committer(
+            RuntimeHttpConfig::default(),
+            durable_committer_after_restart,
+        );
+        let lookup = restarted_service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/users/by-handle/avery".to_owned(),
+            headers: vec![
+                ("host".to_owned(), "api.beepbeep.to".to_owned()),
+                ("x-forwarded-proto".to_owned(), "https".to_owned()),
+            ],
+            body: Vec::new(),
+        });
+        assert_eq!(lookup.status, 200);
+        assert_eq!(lookup.body["profileName"], "Avery");
     }
 
     #[test]
@@ -3160,10 +3220,7 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body["handle"], "@mau");
         assert_eq!(response.body["publicId"], "mau");
-        assert_eq!(
-            response.body["shareLink"],
-            "https://api.beepbeep.to/mau"
-        );
+        assert_eq!(response.body["shareLink"], "https://api.beepbeep.to/mau");
     }
 
     #[test]
@@ -3365,7 +3422,9 @@ mod tests {
             body: serde_json::to_vec(&serde_json::json!({ "friendHandle": "@blake" }))
                 .expect("body should encode"),
         });
-        let replacement_beep_id = replacement.body["beepId"].as_str().expect("replacement beep id");
+        let replacement_beep_id = replacement.body["beepId"]
+            .as_str()
+            .expect("replacement beep id");
         assert_ne!(original_beep_id, replacement_beep_id);
 
         let accept = service.handle(HttpRequest {
@@ -3384,6 +3443,15 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_remember_contact_is_reciprocal_and_summary_durable() {
         let mut service = service();
+
+        let blake_profile = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/profile".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "profileName": "Blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(blake_profile.status, 200);
 
         let remember = service.handle(HttpRequest {
             method: "POST".to_owned(),
@@ -3413,6 +3481,7 @@ mod tests {
         assert_eq!(blake_summaries.body.as_array().expect("summaries").len(), 1);
         assert_eq!(avery_summaries.body[0]["handle"], "@blake");
         assert_eq!(avery_summaries.body[0]["publicId"], "@blake");
+        assert_eq!(avery_summaries.body[0]["profileName"], "Blake");
         assert_eq!(blake_summaries.body[0]["handle"], "@avery");
         assert_eq!(blake_summaries.body[0]["publicId"], "@avery");
         assert_eq!(
@@ -3429,6 +3498,37 @@ mod tests {
         );
         assert_eq!(avery_summaries.body[0]["membership"]["kind"], "absent");
         assert_eq!(avery_summaries.body[0]["summaryStatus"]["kind"], "online");
+
+        let durable_committer_after_restart = service.route_service().committer().clone();
+        let mut restarted_service = service_with_config_and_committer(
+            RuntimeHttpConfig::default(),
+            durable_committer_after_restart,
+        );
+        let restarted_avery_summaries = restarted_service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let restarted_blake_summaries = restarted_service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-b".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(
+            restarted_avery_summaries.body[0]["handle"], "@blake",
+            "remembered contacts must survive RuntimeHttpService rebuild"
+        );
+        assert_eq!(
+            restarted_avery_summaries.body[0]["profileName"], "Blake",
+            "remembered contact profile names must survive RuntimeHttpService rebuild"
+        );
+        assert_eq!(
+            restarted_blake_summaries.body[0]["handle"], "@avery",
+            "reciprocal remembered contact must survive RuntimeHttpService rebuild"
+        );
     }
 
     #[test]

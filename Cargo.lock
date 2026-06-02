@@ -112,6 +112,7 @@ name = "beepbeep-runtime"
 version = "0.1.0"
 dependencies = [
  "beepbeep-relay-protocol",
+ "libc",
  "postgres",
  "redis",
  "reqwest",

@@ -9,7 +9,7 @@ struct TurboBackendCriticalHTTPClient: Sendable {
 
 #if DEBUG
     nonisolated(unsafe) static var beginTransmitOverride:
-        (@Sendable (String) async throws -> TurboBeginTransmitResponse)?
+        (@MainActor @Sendable (String, TurboBeginTransmitLeaseRequest) async throws -> TurboBeginTransmitResponse)?
 #endif
 
     init(config: TurboBackendConfig) {
@@ -20,16 +20,19 @@ struct TurboBackendCriticalHTTPClient: Sendable {
         session = URLSession(configuration: configuredSessionConfiguration(using: config.httpTransport))
     }
 
-    func beginTransmit(channelId: String) async throws -> TurboBeginTransmitResponse {
+    func beginTransmit(
+        channelId: String,
+        request leaseRequest: TurboBeginTransmitLeaseRequest
+    ) async throws -> TurboBeginTransmitResponse {
 #if DEBUG
         if let beginTransmitOverride = Self.beginTransmitOverride {
-            return try await beginTransmitOverride(channelId)
+            return try await beginTransmitOverride(channelId, leaseRequest)
         }
 #endif
         let response: TurboBeginTransmitResponse = try await request(
             path: "/v1/channels/\(channelId)/begin-transmit",
             method: "POST",
-            body: TurboChannelDeviceRequest(deviceId: deviceID)
+            body: leaseRequest
         )
         return response
     }
@@ -507,11 +510,14 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         )
     }
 
-    func beginTransmit(channelId: String) async throws -> TurboBeginTransmitResponse {
+    func beginTransmit(
+        channelId: String,
+        request leaseRequest: TurboBeginTransmitLeaseRequest
+    ) async throws -> TurboBeginTransmitResponse {
         try await request(
             path: "/v1/channels/\(channelId)/begin-transmit",
             method: "POST",
-            body: TurboChannelDeviceRequest(deviceId: config.deviceID)
+            body: leaseRequest
         )
     }
 
@@ -1595,6 +1601,34 @@ private struct TurboChannelDeviceRequest: Encodable {
     init(deviceId: String, transmitId: String? = nil) {
         self.deviceId = deviceId
         self.transmitId = transmitId
+    }
+}
+
+struct TurboBeginTransmitLeaseRequest: Encodable, Equatable, Sendable {
+    let deviceId: String
+    let requestingParticipantId: String
+    let requestingSessionEpoch: UInt64
+    let targetParticipantId: String
+    let operationId: String
+    let policyVersion: String
+    let kernelVersion: String
+
+    init(
+        deviceId: String,
+        requestingParticipantId: String,
+        requestingSessionEpoch: UInt64 = 0,
+        targetParticipantId: String,
+        operationId: String,
+        policyVersion: String = "policy-v1",
+        kernelVersion: String = "kernel-contract-v1"
+    ) {
+        self.deviceId = deviceId
+        self.requestingParticipantId = requestingParticipantId
+        self.requestingSessionEpoch = requestingSessionEpoch
+        self.targetParticipantId = targetParticipantId
+        self.operationId = operationId
+        self.policyVersion = policyVersion
+        self.kernelVersion = kernelVersion
     }
 }
 

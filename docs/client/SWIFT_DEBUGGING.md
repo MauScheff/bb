@@ -202,7 +202,7 @@ Known-good foreground transmit contract:
 1. both sides converge to `ready`
 2. hold-to-talk remains disabled while local device is `Preparing audio...`
 3. local prewarm enables hold-to-talk
-4. first press requests backend lease and Apple system transmit in parallel
+4. first press requests the backend Talk Turn lease before requesting Apple system transmit
 5. app prewarms transport/control paths but does not capture or signal live audio until backend lease, Apple `didBeginTransmitting`, and PTT audio activation are all current
 6. receiver moves into `receiving` and hears audio on first transmit
 7. release plays Apple end beep and both sides converge to `ready`
@@ -218,8 +218,8 @@ App-owned invariants:
 
 Healthy sender log shape:
 
-- `Requesting Apple system transmit in parallel with backend lease`
 - `Backend transmit lease granted`
+- `Requesting system transmit handoff`
 - `System transmit began`
 - `PTT audio session activated`
 - `Configured outgoing audio transport`

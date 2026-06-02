@@ -62,14 +62,20 @@ async function birdFetch(path, config, options) {
 }
 
 async function upsertBirdContact(email, config) {
-  const path = `/workspaces/${encodeURIComponent(config.workspaceId)}/contacts/identifiers/emailaddress/${encodeURIComponent(email)}`;
+  const path = `/workspaces/${config.workspaceId}/contacts`;
   const payload = {
-    strategy: "strict_alias",
-    addToLists: [config.waitlistListId],
+    displayName: email,
+    identifiers: [
+      {
+        key: "emailaddress",
+        value: email,
+      },
+    ],
+    listIds: [config.waitlistListId],
   };
 
   return birdFetch(path, config, {
-    method: "PATCH",
+    method: "POST",
     body: JSON.stringify(payload),
   });
 }
@@ -171,7 +177,7 @@ exports.waitlist = onRequest(
 
     try {
       const contactResponse = await upsertBirdContact(email, config);
-      if (!contactResponse.ok) {
+      if (!contactResponse.ok && contactResponse.status !== 409) {
         const text = await contactResponse.text();
         logger.error("Bird contact upsert failed", {
           status: contactResponse.status,

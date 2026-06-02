@@ -37,6 +37,19 @@ and TCP/TLS fallback on TCP `443`.
 
 Rust may call the kernel once per semantic command. It must not call Unison per audio packet, heartbeat, websocket ping, or QUIC datagram.
 
+## State Ownership
+
+| State | Owner | Rule |
+| --- | --- | --- |
+| Account identity, profile names, remembered contacts | Postgres | Durable. Must survive runtime restart, deploy, and Redis flush. |
+| Conversation, Participant, Device, Session, Presence, Readiness snapshots used by kernel decisions | Postgres | Durable enough to rebuild kernel input and fence Talk Turn decisions. |
+| Current Talk Turn, replay facts, operation idempotency, post-commit outbox, websocket authorization facts | Postgres | Durable control-plane truth. |
+| Websocket owner routing, drain/lease records, fast coordination records | Redis | Ephemeral. A Redis flush may force reconnect or re-election but must not delete identity, contacts, Conversation, Participant, Device, or Talk Turn truth. |
+| Derived contact summaries or other route projections | Optional Redis cache | Cache only. Writes commit to Postgres first and invalidate or refresh cached projections. |
+| In-process HTTP state | Rust process memory | Reconstructable transient state only: live sockets, local route observations, recent dev diagnostics, and short-lived compatibility projections. |
+
+If a user-visible fact should still be true after a runtime restart, it belongs in Postgres. Redis is allowed only when loss is bounded, self-healing, or explicitly a cache of Postgres-owned truth.
+
 ## Reliability Gate
 
 Use:

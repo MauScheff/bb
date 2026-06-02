@@ -3671,8 +3671,11 @@ struct BackendServices {
         try await client.revokeEphemeralToken(channelId: channelId)
     }
 
-    func beginTransmit(channelId: String) async throws -> TurboBeginTransmitResponse {
-        try await criticalHTTPClient.beginTransmit(channelId: channelId)
+    func beginTransmit(
+        channelId: String,
+        request leaseRequest: TurboBeginTransmitLeaseRequest
+    ) async throws -> TurboBeginTransmitResponse {
+        try await criticalHTTPClient.beginTransmit(channelId: channelId, request: leaseRequest)
     }
 
     func endTransmit(channelId: String, transmitId: String? = nil) async throws -> TurboEndTransmitResponse {

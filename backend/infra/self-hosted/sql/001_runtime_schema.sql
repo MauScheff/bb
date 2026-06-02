@@ -149,3 +149,20 @@ create table if not exists runtime_post_commit_outbox (
   committed_at timestamptz not null default now(),
   delivered_at timestamptz
 );
+
+create table if not exists runtime_remembered_contacts (
+  owner_handle text not null,
+  peer_handle text not null,
+  remembered_at timestamptz not null default now(),
+  primary key (owner_handle, peer_handle),
+  check (owner_handle <> peer_handle)
+);
+
+create index if not exists runtime_remembered_contacts_peer_handle
+  on runtime_remembered_contacts (peer_handle);
+
+create table if not exists runtime_profiles (
+  handle text primary key,
+  profile_name text not null,
+  updated_at timestamptz not null default now()
+);
