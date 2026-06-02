@@ -916,10 +916,43 @@ extension PTTViewModel {
             return false
         }
 
+        var forgetOtherHandle: String? = existingContact.remoteUserId == nil ? existingContact.handle : nil
+        var forgetOtherUserId: String? = existingContact.remoteUserId
+        do {
+            let remoteUser = try await backend.resolveIdentity(reference: existingContact.handle)
+            if let remoteUserId = existingContact.remoteUserId,
+               remoteUserId != remoteUser.userId {
+                diagnostics.record(
+                    .backend,
+                    level: .error,
+                    message: "Repaired stale contact identity before delete",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "handle": existingContact.handle,
+                        "staleRemoteUserId": remoteUserId,
+                        "resolvedRemoteUserId": remoteUser.userId,
+                    ]
+                )
+            }
+            forgetOtherHandle = nil
+            forgetOtherUserId = remoteUser.userId
+        } catch {
+            diagnostics.record(
+                .backend,
+                level: .notice,
+                message: "Delete contact using cached identity after resolve failed",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "handle": existingContact.handle,
+                    "error": error.localizedDescription,
+                ]
+            )
+        }
+
         do {
             _ = try await backend.forgetContact(
-                otherHandle: existingContact.remoteUserId == nil ? existingContact.handle : nil,
-                otherUserId: existingContact.remoteUserId
+                otherHandle: forgetOtherHandle,
+                otherUserId: forgetOtherUserId
             )
         } catch {
             let message = error.localizedDescription

@@ -1093,9 +1093,26 @@ extension PTTViewModel {
         let shouldCreateOutgoingBeepWithoutMetadataPrefetch =
             shouldCreateOutgoingBeepWithoutMetadataPrefetch(for: request)
 
-        if contact.remoteUserId == nil,
-           !shouldCreateOutgoingBeepWithoutMetadataPrefetch {
+        if request.intent == .requestConnection
+            || contact.remoteUserId == nil
+            || !shouldCreateOutgoingBeepWithoutMetadataPrefetch {
             let remoteUser = try await backend.resolveIdentity(reference: request.handle)
+            if let remoteUserId = contact.remoteUserId,
+               remoteUserId != remoteUser.userId {
+                diagnostics.record(
+                    .backend,
+                    level: .error,
+                    message: "Repaired stale contact identity before backend join",
+                    metadata: [
+                        "contactId": request.contactID.uuidString,
+                        "handle": request.handle,
+                        "staleRemoteUserId": remoteUserId,
+                        "resolvedRemoteUserId": remoteUser.userId,
+                    ]
+                )
+                contact.backendChannelId = nil
+                contact.channelId = UUID()
+            }
             contact.remoteUserId = remoteUser.userId
             contact.handle = remoteUser.publicId
             contact.name = remoteUser.profileName
