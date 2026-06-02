@@ -5050,6 +5050,7 @@ struct DeviceTests {
                 channelState: makeChannelState(
                     status: .waitingForPeer,
                     canTransmit: false,
+                    channelId: "channel-1",
                     selfJoined: true,
                     peerJoined: false,
                     peerDeviceConnected: false
@@ -5068,6 +5069,64 @@ struct DeviceTests {
 
         #expect(pttClient.joinRequests == [channelUUID])
         #expect(viewModel.conversationActionCoordinator.pendingJoinContactID == contactID)
+        #expect(viewModel.selectedChannelSnapshot(for: contactID)?.membership.hasLocalMembership == true)
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "selected.backend_absent_pending_local_action_without_device_ptt_evidence"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func backgroundSelectedConversationConnectionEffectsDoNotStartBackendOrDevicePTTJoin() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        viewModel.applicationStateOverride = .background
+        viewModel.applyAuthenticatedBackendSession(
+            client: TurboBackendClient(config: makeUnreachableBackendConfig()),
+            userID: "self-user",
+            mode: "cloud"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+
+        await viewModel.runSelectedConversationEffect(.requestConnection(contactID: contactID))
+        await viewModel.runSelectedConversationEffect(.joinReadyFriend(contactID: contactID))
+        await viewModel.runSelectedConversationEffect(.restoreDevicePTTSession(contactID: contactID))
+        await Task.yield()
+
+        #expect(pttClient.joinRequests.isEmpty)
+        #expect(viewModel.backendCommandCoordinator.state.activeOperation == nil)
+        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Ignored selected conversation connection effect while application is not active"
+                    && $0.metadata["effect"] == "request-connection"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Ignored selected conversation connection effect while application is not active"
+                    && $0.metadata["effect"] == "join-ready-friend"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Ignored selected conversation connection effect while application is not active"
+                    && $0.metadata["effect"] == "restore-device-ptt"
+            }
+        )
     }
 
     @Test func pttSystemPolicyReducerEmitsUploadEffectWhenChannelIsKnown() {

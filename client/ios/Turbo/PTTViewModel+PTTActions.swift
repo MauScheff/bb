@@ -839,6 +839,25 @@ extension PTTViewModel {
         return activeContactID == contactID
     }
 
+    func shouldBlockSelectedConversationConnectionEffectInCurrentLifecycle(
+        contactID: UUID,
+        effectName: String
+    ) -> Bool {
+        let applicationState = currentApplicationState()
+        guard applicationState != .active else { return false }
+        diagnostics.record(
+            .state,
+            message: "Ignored selected conversation connection effect while application is not active",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "effect": effectName,
+                "applicationState": String(describing: applicationState),
+            ]
+        )
+        captureDiagnosticsState("selected-conversation-effect:\(effectName)-blocked-by-lifecycle")
+        return true
+    }
+
     func performConnect(to contact: Contact, intent: BackendJoinIntent) {
         let relationship = beepThreadProjection(for: contact.id)
         let connectOrigin: PendingConnectOrigin =
@@ -995,6 +1014,10 @@ extension PTTViewModel {
     func runSelectedConversationEffect(_ effect: SelectedConversationEffect) async {
         switch effect {
         case .requestConnection(let contactID):
+            guard !shouldBlockSelectedConversationConnectionEffectInCurrentLifecycle(
+                contactID: contactID,
+                effectName: "request-connection"
+            ) else { return }
             guard let contact = contacts.first(where: { $0.id == contactID }) else { return }
             captureDiagnosticsState("selected-conversation-effect:request-connection")
             let relationship = beepThreadProjection(for: contactID)
@@ -1004,6 +1027,10 @@ extension PTTViewModel {
             let refreshedContact = contacts.first(where: { $0.id == contactID }) ?? contact
             performConnect(to: refreshedContact, intent: .requestConnection)
         case .joinReadyFriend(let contactID):
+            guard !shouldBlockSelectedConversationConnectionEffectInCurrentLifecycle(
+                contactID: contactID,
+                effectName: "join-ready-friend"
+            ) else { return }
             guard let contact = contacts.first(where: { $0.id == contactID }) else { return }
             captureDiagnosticsState("selected-conversation-effect:join-ready-friend")
             performConnect(to: contact, intent: .joinReadyFriend)
@@ -1039,6 +1066,10 @@ extension PTTViewModel {
                 captureDiagnosticsState("selected-conversation-effect:restore-device-ptt-blocked-by-recent-leave")
                 return
             }
+            guard !shouldBlockSelectedConversationConnectionEffectInCurrentLifecycle(
+                contactID: contactID,
+                effectName: "restore-device-ptt"
+            ) else { return }
             diagnostics.record(
                 .state,
                 message: "Restoring Device PTT session to match backend-ready Conversation",

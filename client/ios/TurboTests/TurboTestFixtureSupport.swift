@@ -269,6 +269,7 @@ func assertIncomingBeepAcceptRouteEstablishesIntentAndPrewarm(
 func makeChannelState(
     status: ConversationState,
     canTransmit: Bool,
+    channelId: String = "channel",
     selfJoined: Bool = true,
     peerJoined: Bool = true,
     peerDeviceConnected: Bool = true,
@@ -278,7 +279,7 @@ func makeChannelState(
     stateEpoch: String? = nil
 ) -> TurboChannelStateResponse {
     TurboChannelStateResponse(
-        channelId: "channel",
+        channelId: channelId,
         selfUserId: "self",
         peerUserId: "peer",
         peerHandle: "@peer",
