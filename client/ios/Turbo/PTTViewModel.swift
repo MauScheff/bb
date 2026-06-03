@@ -392,6 +392,11 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         TurboMediaRelayClient,
         String
     ) async throws -> TurboMediaRelayMediaMode)?
+    @ObservationIgnored
+    var directQuicAudioSendOverride: (@MainActor (
+        DirectQuicProbeController,
+        String
+    ) async throws -> Void)?
 
     var localConversationNetworkInterface: ConversationNetworkInterface = .unknown
     var localConversationParticipantTelemetry: ConversationParticipantTelemetry?

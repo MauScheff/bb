@@ -11510,6 +11510,120 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func unverifiedDirectQuicFirstAudioFansOutOverStandbyMediaRelay() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let relayAttempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(relayAttempt, client: relayClient))
+
+        let controller = DirectQuicProbeController()
+        viewModel.mediaRuntime.directQuicProbeController = controller
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            attemptID: "attempt-1",
+            peerDeviceID: target.deviceID
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: target.contactID)
+        if let direct = viewModel.mediaRuntime.directQuicUpgrade.markDirectPathActivated(
+            for: target.contactID,
+            attemptID: "attempt-1",
+            nominatedPath: makeDirectQuicNominatedPath()
+        ) {
+            viewModel.applyDirectQuicUpgradeTransition(direct, for: target.contactID)
+        }
+        let requestID = viewModel.mediaRuntime.receiverPrewarmRequestID(for: target.contactID)
+        viewModel.mediaRuntime.markReceiverPrewarmAckReceived(
+            contactID: target.contactID,
+            requestID: requestID
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.direct)
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .directQuic
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        var sentDirectPayloads: [String] = []
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.directQuicAudioSendOverride = { _, payload in
+            sentDirectPayloads.append(payload)
+        }
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .quicDatagram
+        }
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        #expect(viewModel.shouldUseDirectQuicAudioTransport(for: target.contactID))
+        try await sendAudioChunk("payload-1")
+
+        #expect(sentDirectPayloads == ["payload-1"])
+        #expect(sentMediaRelayPayloads == ["payload-1"])
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["direct-quic", "media-relay-packet"]
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("Expanded first audio playback ACK transports"))
+        #expect(viewModel.diagnosticsTranscript.contains("Delivered outbound audio over multipath transports"))
+    }
+
+    @MainActor
     @Test func productionMediaRelayPacketStandbyDoesNotDuplicateSuccessfulRelayAudioOverWebSocket() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()

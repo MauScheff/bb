@@ -1586,6 +1586,54 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func prearmedDirectFirstAudioAckExpectationExpandsForStandbyRelayFanout() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let completedKey = FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: "sender-device",
+            receiverDeviceID: "receiver-device"
+        )
+        viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] =
+            FirstAudioPlaybackAckExpectation(
+                ackID: "expected-ack",
+                contactID: contactID,
+                channelID: "channel-1",
+                senderDeviceID: "sender-device",
+                receiverDeviceID: "receiver-device",
+                transportDigest: "direct-packet-digest",
+                encryptedSequenceNumber: nil,
+                queuedAt: Date(),
+                deliveredTransports: ["direct-quic"]
+            )
+
+        viewModel.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
+            contactID: contactID,
+            deliveredTransports: ["direct-quic", "media-relay-packet"]
+        )
+        viewModel.handleAudioPlaybackStartedAck(
+            TurboAudioPlaybackStartedPayload(
+                ackId: "ack-relay",
+                channelId: "channel-1",
+                senderDeviceId: "sender-device",
+                receiverDeviceId: "receiver-device",
+                transport: "media-relay-packet",
+                transportDigest: "relay-packet-digest",
+                encryptedSequenceNumber: nil
+            ),
+            contactID: contactID,
+            source: .backendWebSocket
+        )
+
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] == nil)
+        #expect(viewModel.firstAudioPlaybackAckCompletedKeys.contains(completedKey))
+        #expect(viewModel.diagnosticsTranscript.contains("Expanded first audio playback ACK transports"))
+        #expect(viewModel.diagnosticsTranscript.contains("First audio playback ACK received"))
+        #expect(!viewModel.diagnosticsTranscript.contains("Ignored mismatched audio playback ACK"))
+    }
+
+    @MainActor
     @Test func firstAudioPlaybackAckAcceptsLaterPlaintextDirectPacketDigest() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

@@ -144,6 +144,41 @@ extension PTTViewModel {
         }
     }
 
+    func mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
+        contactID: UUID,
+        deliveredTransports: [String]
+    ) {
+        guard let expectation = firstAudioPlaybackAckExpectationsByContactID[contactID] else { return }
+        var mergedTransports = expectation.deliveredTransports
+        for transport in deliveredTransports where !mergedTransports.contains(transport) {
+            mergedTransports.append(transport)
+        }
+        guard mergedTransports != expectation.deliveredTransports else { return }
+        firstAudioPlaybackAckExpectationsByContactID[contactID] = FirstAudioPlaybackAckExpectation(
+            ackID: expectation.ackID,
+            contactID: expectation.contactID,
+            channelID: expectation.channelID,
+            senderDeviceID: expectation.senderDeviceID,
+            receiverDeviceID: expectation.receiverDeviceID,
+            transportDigest: expectation.transportDigest,
+            encryptedSequenceNumber: expectation.encryptedSequenceNumber,
+            queuedAt: expectation.queuedAt,
+            deliveredTransports: mergedTransports
+        )
+        diagnostics.record(
+            .media,
+            message: "Expanded first audio playback ACK transports",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": expectation.channelID,
+                "receiverDeviceId": expectation.receiverDeviceID,
+                "transportDigest": expectation.transportDigest,
+                "ackId": expectation.ackID,
+                "deliveredTransports": mergedTransports.joined(separator: ","),
+            ]
+        )
+    }
+
     func audioPlaybackAckTransportLabel(_ transport: IncomingAudioPayloadTransport) -> String {
         switch transport {
         case .relayWebSocket:
@@ -824,6 +859,7 @@ extension PTTViewModel {
             ? mediaRuntime.directQuicProbeController
             : nil
         let mediaRelayAudioSendOverride = self.mediaRelayAudioSendOverride
+        let directQuicAudioSendOverride = self.directQuicAudioSendOverride
         let directAudioInitiallyVerified = directAudioPlaybackVerifiedKeys.contains(directAudioAckKey)
         let directAckPrearmGate = MediaHotPathOneShotGate(consumed: directAudioInitiallyVerified)
         let firstPlaybackAckExpectationGate = MediaHotPathOneShotGate(
@@ -1263,7 +1299,11 @@ extension PTTViewModel {
                         }
                         try Task.checkCancellation()
                         let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
-                        try await directTransport.sendAudioPayload(transportPayload)
+                        if let directQuicAudioSendOverride {
+                            try await directQuicAudioSendOverride(directTransport, transportPayload)
+                        } else {
+                            try await directTransport.sendAudioPayload(transportPayload)
+                        }
                         recordSlowOutboundAudioSendStage(
                             "direct-quic-send",
                             directSendStartedAt,
@@ -1285,7 +1325,9 @@ extension PTTViewModel {
                                 ]
                             )
                         }
-                        return
+                        if directAudioInitiallyVerified {
+                            return
+                        }
                     } catch is CancellationError {
                         directAckPrearmTask?.cancel()
                         throw CancellationError()
@@ -1323,6 +1365,8 @@ extension PTTViewModel {
                     localDeviceID: fromDeviceID
                 )
                 if let relayClient = standbyRelayClient {
+                    let shouldSendStandbyRelayAfterUnverifiedDirect =
+                        !directAudioInitiallyVerified && deliveredTransports.contains("direct-quic")
                     let bypassMediaRelayPacket = shouldBypassMediaRelayPacketForLegacyPCM(relayClient)
                     if bypassMediaRelayPacket {
                         recordLegacyPCMMediaRelayPacketBypass("media-relay-standby-legacy-pcm")
@@ -1369,7 +1413,8 @@ extension PTTViewModel {
                             )
                         }
                     }
-                    if deliveredTransports.isEmpty, !bypassMediaRelayPacket {
+                    if (deliveredTransports.isEmpty || shouldSendStandbyRelayAfterUnverifiedDirect),
+                       !bypassMediaRelayPacket {
                         do {
                             let mediaMode = try await mediaRelaySend(relayClient)
                             let deliveredTransport = IncomingAudioPayloadTransport(
@@ -1462,6 +1507,14 @@ extension PTTViewModel {
                         return transports
                     }()
                     scheduleLocalAudioCapturedSync(transportPayload)
+                    if prearmedDirectAckExpectation {
+                        await MainActor.run {
+                            self.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
+                                contactID: target.contactID,
+                                deliveredTransports: expectedAckTransportsSnapshot
+                            )
+                        }
+                    }
                     if firstPlaybackAckExpectationGate.take() {
                         await MainActor.run {
                             _ = self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
