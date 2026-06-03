@@ -9873,6 +9873,124 @@ struct TalkTurnTests {
         #expect(dropMetadata?["droppedPayloadCount"] == "2")
     }
 
+    @Test func audioChunkSenderIgnoresLateCompletionAfterTimedOutPacketSend() async {
+        actor FirstSendGate {
+            var didBlockFirstSend = false
+            var isOpen = false
+            var continuations: [CheckedContinuation<Void, Never>] = []
+
+            func waitIfFirstSend() async {
+                guard !didBlockFirstSend else { return }
+                didBlockFirstSend = true
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    continuations.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiting = continuations
+                continuations.removeAll(keepingCapacity: false)
+                for continuation in waiting {
+                    continuation.resume()
+                }
+            }
+        }
+
+        actor Recorder {
+            var startedPayloads: [String] = []
+            var completedPayloads: [String] = []
+            var cancelledPayloads: [String] = []
+            var failures: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func recordStarted(_ payload: String) {
+                startedPayloads.append(payload)
+            }
+
+            func recordCompleted(_ payload: String) {
+                completedPayloads.append(payload)
+            }
+
+            func recordCancelled(_ payload: String) {
+                cancelledPayloads.append(payload)
+            }
+
+            func appendFailure(_ message: String) {
+                failures.append(message)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let gate = FirstSendGate()
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                await recorder.recordStarted(payload)
+                await gate.waitIfFirstSend()
+                do {
+                    try Task.checkCancellation()
+                    await recorder.recordCompleted(payload)
+                } catch is CancellationError {
+                    await recorder.recordCancelled(payload)
+                    throw CancellationError()
+                }
+            },
+            reportFailure: { message in
+                await recorder.appendFailure(message)
+            },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            configuration: .directLowLatency,
+            maximumPendingPayloads: 8,
+            maximumPayloadsPerMessage: 1
+        )
+
+        let enqueueTask = Task {
+            await sender.enqueue(["chunk-0", "chunk-stale-1", "chunk-stale-2"])
+        }
+        for _ in 0..<100 {
+            if await recorder.startedPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-0"] {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(await recorder.startedPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-0"])
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        await sender.enqueue("chunk-fresh")
+        await enqueueTask.value
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        await gate.open()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-fresh"])
+        #expect(await recorder.cancelledPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-0"])
+        #expect(await recorder.failures.isEmpty)
+
+        let slowMetadata = await recorder.firstMetadata(
+            for: "Outbound audio transport send was slow"
+        )
+        #expect(slowMetadata?["invariantID"] == "media.outbound_audio_transport_send_slow")
+        #expect(slowMetadata?["reason"] == "packet-lane-slow-send")
+        let dropMetadata = await recorder.firstMetadata(
+            for: "Dropped stale outbound audio transport payload"
+        )
+        #expect(dropMetadata?["invariantID"] == "media.outbound_audio_transport_slow_send_drop")
+        #expect(dropMetadata?["droppedPayloadCount"] == "2")
+        #expect(dropMetadata?["retainedPayloadCount"] == "1")
+    }
+
     @Test func audioChunkSenderAllowsBoundedInFlightPacketSends() async {
         actor Gate {
             var isOpen = false

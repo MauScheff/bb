@@ -81,10 +81,10 @@ actor AudioChunkSender {
         let pendingPayloadCount: Int
         let createdAt: UInt64
         var startedAt: UInt64?
-        var task: Task<Void, Never>?
     }
     private var nextInFlightSendID: UInt64 = 0
     private var inFlightSends: [UInt64: InFlightTransportSend] = [:]
+    private var inFlightSendTasks: [UInt64: Task<Void, Never>] = [:]
     private var lastPayloadDispatchNanoseconds: UInt64?
     private var isDraining = false
     private var flushPendingImmediately = false
@@ -163,11 +163,10 @@ actor AudioChunkSender {
 
     func reset() {
         pendingPayloads.removeAll(keepingCapacity: false)
-        for inFlightSend in inFlightSends.values {
-            inFlightSend.task?.cancel()
-        }
+        cancelAllInFlightSendTasks()
         nextInFlightSendID = 0
         inFlightSends.removeAll(keepingCapacity: false)
+        inFlightSendTasks.removeAll(keepingCapacity: false)
         lastPayloadDispatchNanoseconds = nil
         isDraining = false
         flushPendingImmediately = false
@@ -241,8 +240,7 @@ actor AudioChunkSender {
                 payload: payload,
                 pendingPayloadCount: pendingPayloadCount,
                 createdAt: sendCreatedAt,
-                startedAt: nil,
-                task: nil
+                startedAt: nil
             )
             let sendTask = Task {
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
@@ -265,7 +263,7 @@ actor AudioChunkSender {
                     result: result
                 )
             }
-            inFlightSends[sendID]?.task = sendTask
+            inFlightSendTasks[sendID] = sendTask
         }
         isDraining = false
     }
@@ -293,6 +291,7 @@ actor AudioChunkSender {
         sendStartedAt: UInt64,
         result: Result<Void, Error>
     ) async {
+        inFlightSendTasks.removeValue(forKey: sendID)
         guard let inFlightSend = inFlightSends.removeValue(forKey: sendID) else { return }
         let effectiveSendStartedAt = inFlightSend.startedAt ?? sendStartedAt
         switch result {
@@ -368,14 +367,17 @@ actor AudioChunkSender {
     private func expireTimedOutInFlightSendsIfNeeded() {
         guard let sendTimeoutNanoseconds else { return }
         let now = DispatchTime.now().uptimeNanoseconds
-        let timedOutSends = inFlightSends.values.filter { inFlightSend in
-            guard let startedAt = inFlightSend.startedAt else { return false }
+        let timedOutSendIDs = inFlightSends.compactMap { entry -> UInt64? in
+            let (sendID, inFlightSend) = entry
+            guard let startedAt = inFlightSend.startedAt else { return nil }
             return now >= startedAt && now - startedAt >= sendTimeoutNanoseconds
+                ? sendID
+                : nil
         }
-        guard !timedOutSends.isEmpty else { return }
-        for timedOutSend in timedOutSends {
-            guard inFlightSends.removeValue(forKey: timedOutSend.id) != nil else { continue }
-            timedOutSend.task?.cancel()
+        guard !timedOutSendIDs.isEmpty else { return }
+        for sendID in timedOutSendIDs {
+            guard let timedOutSend = inFlightSends.removeValue(forKey: sendID) else { continue }
+            inFlightSendTasks.removeValue(forKey: sendID)?.cancel()
             let startedAt = timedOutSend.startedAt ?? now
             let elapsedNanoseconds = now >= startedAt ? now - startedAt : 0
             reportSlowTransportSendIfNeeded(
@@ -570,10 +572,9 @@ actor AudioChunkSender {
         let cancelledInFlightSendCount = inFlightSends.count
         guard droppedPayloadCount > 0 || cancelledInFlightSendCount > 0 else { return }
         pendingPayloads.removeAll(keepingCapacity: false)
-        for inFlightSend in inFlightSends.values {
-            inFlightSend.task?.cancel()
-        }
+        cancelAllInFlightSendTasks()
         inFlightSends.removeAll(keepingCapacity: false)
+        inFlightSendTasks.removeAll(keepingCapacity: false)
         isDraining = false
         flushPendingImmediately = false
         guard droppedPayloadCount > 0 else {
@@ -611,6 +612,13 @@ actor AudioChunkSender {
         ]
         Task {
             await reportEvent("Outbound audio transport stop drain timed out", metadata)
+        }
+    }
+
+    private func cancelAllInFlightSendTasks() {
+        let sendIDs = Array(inFlightSendTasks.keys)
+        for sendID in sendIDs {
+            inFlightSendTasks.removeValue(forKey: sendID)?.cancel()
         }
     }
 
