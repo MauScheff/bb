@@ -1262,6 +1262,39 @@ class DownstreamSplitConsumerTests(unittest.TestCase):
         self.assertIn("## Current Invariant Violations", summary)
         self.assertIn("## Historical Invariant Violations", summary)
 
+    def test_latest_report_subject_validation_rejects_mismatched_user_id(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "mismatched userId"):
+            merged_diagnostics.validate_latest_report_subject(
+                "@bau",
+                {
+                    "userId": "user-mau",
+                    "deviceId": "device-a",
+                },
+            )
+
+    def test_latest_report_subject_validation_rejects_mismatched_handle(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "mismatched handle"):
+            merged_diagnostics.validate_latest_report_subject(
+                "@bau",
+                {
+                    "userId": "user-bau",
+                    "handle": "@mau",
+                    "deviceId": "device-a",
+                },
+            )
+
+    def test_latest_report_subject_validation_rejects_mismatched_exact_device(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "mismatched deviceId"):
+            merged_diagnostics.validate_latest_report_subject(
+                "@bau",
+                {
+                    "userId": "user-bau",
+                    "handle": "@bau",
+                    "deviceId": "device-a",
+                },
+                device_id="device-b",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

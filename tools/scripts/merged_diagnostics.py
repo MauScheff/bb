@@ -291,6 +291,29 @@ def normalize_handle(handle: str) -> str:
     return handle if handle.startswith("@") else f"@{handle}"
 
 
+def expected_user_id_for_handle(handle: str) -> str:
+    return f"user-{normalize_handle(handle).lstrip('@')}"
+
+
+def validate_latest_report_subject(handle: str, report: dict, device_id: str | None = None) -> None:
+    expected_user_id = expected_user_id_for_handle(handle)
+    actual_user_id = report.get("userId")
+    if isinstance(actual_user_id, str) and actual_user_id != expected_user_id:
+        raise RuntimeError(
+            f"{handle}: latest diagnostics returned mismatched userId: expected {expected_user_id} got {actual_user_id}"
+        )
+    actual_handle = report.get("handle")
+    if isinstance(actual_handle, str) and actual_handle and normalize_handle(actual_handle) != normalize_handle(handle):
+        raise RuntimeError(
+            f"{handle}: latest diagnostics returned mismatched handle: expected {normalize_handle(handle)} got {actual_handle}"
+        )
+    actual_device_id = report.get("deviceId")
+    if device_id and isinstance(actual_device_id, str) and actual_device_id != device_id:
+        raise RuntimeError(
+            f"{handle}: latest diagnostics returned mismatched deviceId: expected {device_id} got {actual_device_id}"
+        )
+
+
 def fetch_latest_report(
     base_url: str,
     handle: str,
@@ -331,6 +354,7 @@ def fetch_latest_report(
     payload = json.loads(result.stdout)
 
     report = payload["report"]
+    validate_latest_report_subject(handle, report, device_id)
     transcript = report.get("transcript", "")
     sections = split_sections(transcript)
     structured_diagnostics = parse_structured_diagnostics(sections.get("STRUCTURED DIAGNOSTICS", ""))
