@@ -86,6 +86,48 @@ def require_clean_pushed_git() -> tuple[str, str]:
     return branch, head
 
 
+def local_origin_url() -> str:
+    return run(["git", "remote", "get-url", "origin"])
+
+
+def normalized_git_url(url: str) -> str:
+    normalized = url.strip()
+    if normalized.startswith("git@github.com:"):
+        normalized = "https://github.com/" + normalized.removeprefix("git@github.com:")
+    if normalized.startswith("ssh://git@github.com/"):
+        normalized = "https://github.com/" + normalized.removeprefix("ssh://git@github.com/")
+    if normalized.endswith("/"):
+        normalized = normalized[:-1]
+    if not normalized.endswith(".git"):
+        normalized += ".git"
+    return normalized
+
+
+def require_workflow_repository_matches_origin(
+    api: AppStoreConnect,
+    workflow_id: str,
+    origin_url: str,
+) -> None:
+    response = api.request("GET", f"/ciWorkflows/{workflow_id}/repository")
+    attrs = response["data"]["attributes"]
+    workflow_url = attrs.get("httpCloneUrl") or attrs.get("sshCloneUrl")
+    if not workflow_url:
+        raise ReleaseError(
+            f"Xcode Cloud workflow {workflow_id} did not report an SCM repository."
+        )
+
+    expected = normalized_git_url(origin_url)
+    actual = normalized_git_url(workflow_url)
+    if actual != expected:
+        raise ReleaseError(
+            "Xcode Cloud workflow repository does not match this checkout.\n"
+            f"  local origin: {expected}\n"
+            f"  workflow repo: {actual}\n"
+            "Update the Xcode Cloud workflow repository before releasing from this checkout, "
+            "or run the release from the repository Xcode Cloud is configured to build."
+        )
+
+
 def read_credentials() -> Credentials:
     missing = [
         name
@@ -440,8 +482,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
+        origin_url = None
         if not args.skip_git_checks:
             branch, commit = require_clean_pushed_git()
+            origin_url = local_origin_url()
             print(f"Releasing pushed commit {commit} from {branch}.", flush=True)
 
         credentials = read_credentials()
@@ -451,6 +495,8 @@ def main() -> int:
             build_id = args.assign_build_id
             print(f"Assigning existing App Store Connect build: {build_id}", flush=True)
         else:
+            if origin_url is not None:
+                require_workflow_repository_matches_origin(api, args.workflow_id, origin_url)
             build_run_id = start_build(api, args.workflow_id)
             print(f"Started Xcode Cloud build run: {build_run_id}", flush=True)
 
