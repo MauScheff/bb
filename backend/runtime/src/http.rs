@@ -152,6 +152,7 @@ struct RuntimeHttpState {
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
+    diagnostics_by_user_device: BTreeMap<String, Value>,
     wake_events: Vec<Value>,
     invariant_events: Vec<Value>,
     next_transmit_id: u64,
@@ -384,7 +385,18 @@ where
         if request.method == "GET" {
             if let Some(device_id) = latest_diagnostics_device_id(&request.path) {
                 let device_id = normalize_path_token(device_id);
-                let Some(report) = self.state.diagnostics_by_device.get(&device_id) else {
+                let handle = request_handle(&request);
+                let user_id = user_id_for_handle(&normalize_handle(handle));
+                let key = diagnostics_user_device_key(&user_id, &device_id);
+                let report = self.state.diagnostics_by_user_device.get(&key).or_else(|| {
+                    self.state
+                        .diagnostics_by_device
+                        .get(&device_id)
+                        .filter(|report| {
+                            report.get("userId").and_then(Value::as_str) == Some(user_id.as_str())
+                        })
+                });
+                let Some(report) = report else {
                     return Ok(error_response(404, "not found"));
                 };
                 return Ok(HttpResponse {
@@ -400,11 +412,18 @@ where
                 let user_id = user_id_for_handle(&normalize_handle(handle));
                 let Some(report) = self
                     .state
-                    .diagnostics_by_device
+                    .diagnostics_by_user_device
                     .values()
-                    .rev()
-                    .find(|report| {
+                    .chain(self.state.diagnostics_by_device.values())
+                    .filter(|report| {
                         report.get("userId").and_then(Value::as_str) == Some(user_id.as_str())
+                    })
+                    .max_by_key(|report| {
+                        report
+                            .get("uploadedAt")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned()
                     })
                 else {
                     return Ok(error_response(404, "not found"));
@@ -606,9 +625,18 @@ where
             let handle = request_handle(&request);
             let report = diagnostics_report(handle, &body)?;
             let device_id = required_string(&body, &["deviceId"], "deviceId")?.to_owned();
+            let user_id = report
+                .get("userId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let user_device_key = diagnostics_user_device_key(&user_id, &device_id);
             self.state
                 .diagnostics_by_device
                 .insert(device_id, report.clone());
+            self.state
+                .diagnostics_by_user_device
+                .insert(user_device_key, report.clone());
             return Ok(HttpResponse {
                 status: 200,
                 body: serde_json::json!({
@@ -2681,6 +2709,7 @@ fn did_host(public_base_url: &str) -> &str {
 
 fn diagnostics_report(handle: &str, body: &Value) -> Result<Value, RuntimeHttpError> {
     let normalized = normalize_handle(handle);
+    let uploaded_at = runtime_iso8601_utc_millis(runtime_now_millis());
     Ok(serde_json::json!({
         "userId": user_id_for_handle(&normalized),
         "handle": normalized,
@@ -2690,8 +2719,12 @@ fn diagnostics_report(handle: &str, body: &Value) -> Result<Value, RuntimeHttpEr
         "selectedHandle": body.get("selectedHandle").cloned().unwrap_or(Value::Null),
         "snapshot": required_string(body, &["snapshot"], "snapshot")?,
         "transcript": required_string(body, &["transcript"], "transcript")?,
-        "uploadedAt": "1970-01-01T00:00:00Z"
+        "uploadedAt": uploaded_at
     }))
+}
+
+fn diagnostics_user_device_key(user_id: &str, device_id: &str) -> String {
+    format!("{user_id}\u{1f}{device_id}")
 }
 
 fn dev_event(handle: &str, body: &Value) -> Value {
@@ -3551,6 +3584,62 @@ mod tests {
         assert_eq!(blake_latest.status, 200);
         assert_eq!(blake_latest.body["report"]["handle"], "@blake");
         assert_eq!(blake_latest.body["report"]["deviceId"], "device-b");
+    }
+
+    #[test]
+    fn self_hosted_diagnostics_latest_separates_same_device_account_switches() {
+        let mut service = service();
+        for (handle, marker) in [("@avery", "avery-report"), ("@blake", "blake-report")] {
+            let upload = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: "/v1/dev/diagnostics".to_owned(),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({
+                    "deviceId": "shared-device",
+                    "appVersion": marker,
+                    "backendBaseURL": "https://api.beepbeep.to",
+                    "selectedHandle": "@peer",
+                    "snapshot": marker,
+                    "transcript": marker
+                }))
+                .expect("body should encode"),
+            });
+            assert_eq!(upload.status, 200);
+            assert_eq!(upload.body["report"]["handle"], handle);
+            assert_ne!(
+                upload.body["report"]["uploadedAt"],
+                serde_json::json!("1970-01-01T00:00:00Z")
+            );
+        }
+
+        let avery_latest = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/diagnostics/latest".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_latest = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/diagnostics/latest".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+        let blake_exact = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/diagnostics/latest/shared-device".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+
+        assert_eq!(avery_latest.status, 200);
+        assert_eq!(avery_latest.body["report"]["handle"], "@avery");
+        assert_eq!(avery_latest.body["report"]["snapshot"], "avery-report");
+        assert_eq!(blake_latest.status, 200);
+        assert_eq!(blake_latest.body["report"]["handle"], "@blake");
+        assert_eq!(blake_latest.body["report"]["snapshot"], "blake-report");
+        assert_eq!(blake_exact.status, 200);
+        assert_eq!(blake_exact.body["report"]["handle"], "@blake");
+        assert_eq!(blake_exact.body["report"]["snapshot"], "blake-report");
     }
 
     #[test]
