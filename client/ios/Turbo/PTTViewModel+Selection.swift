@@ -1645,7 +1645,11 @@ extension PTTViewModel {
         let projection = LiveConversationActivityProjection(
             contact: contact,
             selectedConversationState: selectedState,
-            localDisplayName: currentProfileName
+            localDisplayName: currentProfileName,
+            hasDevicePTTSession: devicePTTEvidenceExists(
+                for: contact.id,
+                expectedChannelUUID: contact.channelId
+            )
         )
         liveConversationActivityController.reconcile(projection)
     }

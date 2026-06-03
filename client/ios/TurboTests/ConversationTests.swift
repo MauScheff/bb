@@ -3089,15 +3089,68 @@ struct ConversationTests {
             LiveConversationActivityProjection(
                 contact: contact,
                 selectedConversationState: transmitting,
-                localDisplayName: "Mau"
+                localDisplayName: "Mau",
+                hasDevicePTTSession: true
             )?.phase == .speaking
         )
         #expect(
             LiveConversationActivityProjection(
                 contact: contact,
                 selectedConversationState: receiving,
-                localDisplayName: "Mau"
+                localDisplayName: "Mau",
+                hasDevicePTTSession: true
             )?.speakerName == "Avery"
+        )
+    }
+
+    @Test func liveActivityProjectionRequiresDevicePTTSession() {
+        let contact = Contact(
+            id: UUID(),
+            name: "Avery",
+            handle: "@avery",
+            isOnline: true,
+            channelId: UUID()
+        )
+        let ready = SelectedConversationState(
+            contactID: contact.id,
+            contactName: contact.name,
+            relationship: .none,
+            detail: .ready,
+            statusMessage: "Connected",
+            canTransmitNow: true
+        )
+        let receiving = SelectedConversationState(
+            contactID: contact.id,
+            contactName: contact.name,
+            relationship: .none,
+            detail: .receiving,
+            statusMessage: "Listening",
+            canTransmitNow: false
+        )
+
+        #expect(
+            LiveConversationActivityProjection(
+                contact: contact,
+                selectedConversationState: ready,
+                localDisplayName: "Mau",
+                hasDevicePTTSession: false
+            ) == nil
+        )
+        #expect(
+            LiveConversationActivityProjection(
+                contact: contact,
+                selectedConversationState: receiving,
+                localDisplayName: "Mau",
+                hasDevicePTTSession: false
+            ) == nil
+        )
+        #expect(
+            LiveConversationActivityProjection(
+                contact: contact,
+                selectedConversationState: ready,
+                localDisplayName: "Mau",
+                hasDevicePTTSession: true
+            )?.phase == .connected
         )
     }
 

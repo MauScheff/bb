@@ -987,6 +987,7 @@ extension PTTViewModel {
                         self.replaceDisconnectRecoveryTask(with: nil)
                     }
                     self.syncPTTState()
+                    self.reconcileLiveConversationActivity()
                 }
             )
             lastReportedPTTServiceStatus = nil

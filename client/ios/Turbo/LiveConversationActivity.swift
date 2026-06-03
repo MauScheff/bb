@@ -11,8 +11,10 @@ struct LiveConversationActivityProjection: Equatable {
     init?(
         contact: Contact,
         selectedConversationState: SelectedConversationState,
-        localDisplayName: String
+        localDisplayName: String,
+        hasDevicePTTSession: Bool
     ) {
+        guard hasDevicePTTSession else { return nil }
         guard let phase = Self.activityPhase(for: selectedConversationState) else { return nil }
         conversationID = contact.id.uuidString
         contactHandle = contact.handle
@@ -69,9 +71,14 @@ final class LiveConversationActivityController {
     var isEnabled: Bool = !ProcessInfo.processInfo.environment.keys.contains("XCTestConfigurationFilePath")
 
     func reconcile(_ projection: LiveConversationActivityProjection?) {
-        guard isEnabled, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        guard isEnabled else { return }
 
         guard let projection else {
+            endActiveActivity()
+            return
+        }
+
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             endActiveActivity()
             return
         }
@@ -91,6 +98,7 @@ final class LiveConversationActivityController {
     }
 
     private func startActivity(for projection: LiveConversationActivityProjection) {
+        endPersistedActivities()
         currentConversationID = projection.conversationID
         lastProjection = projection
         let attributes = projection.attributes
@@ -111,13 +119,27 @@ final class LiveConversationActivityController {
     }
 
     func endActiveActivity() {
-        guard activity != nil || currentConversationID != nil else { return }
+        let persistedActivities = Activity<BeepBeepLiveActivityAttributes>.activities
+        guard activity != nil || currentConversationID != nil || !persistedActivities.isEmpty else { return }
         let activityToEnd = activity
         activity = nil
         currentConversationID = nil
         lastProjection = nil
         Task {
             await activityToEnd?.end(nil, dismissalPolicy: .immediate)
+            for persistedActivity in persistedActivities {
+                await persistedActivity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+    }
+
+    private func endPersistedActivities() {
+        let persistedActivities = Activity<BeepBeepLiveActivityAttributes>.activities
+        guard !persistedActivities.isEmpty else { return }
+        Task {
+            for persistedActivity in persistedActivities {
+                await persistedActivity.end(nil, dismissalPolicy: .immediate)
+            }
         }
     }
 }
