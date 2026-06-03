@@ -7,7 +7,6 @@ struct LiveConversationActivityProjection: Equatable {
     let contactName: String
     let phase: BeepBeepLiveActivityPhase
     let speakerName: String?
-    let canEnd: Bool
 
     init?(
         contact: Contact,
@@ -27,7 +26,6 @@ struct LiveConversationActivityProjection: Equatable {
         case .connecting, .connected, .reconnecting:
             speakerName = nil
         }
-        canEnd = true
     }
 
     var attributes: BeepBeepLiveActivityAttributes {
@@ -43,7 +41,6 @@ struct LiveConversationActivityProjection: Equatable {
         BeepBeepLiveActivityAttributes.ContentState(
             phase: phase,
             speakerName: speakerName,
-            canEnd: canEnd,
             lastUpdatedAt: Date()
         )
     }

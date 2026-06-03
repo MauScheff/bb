@@ -5,7 +5,6 @@ struct BeepBeepLiveActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var phase: BeepBeepLiveActivityPhase
         var speakerName: String?
-        var canEnd: Bool
         var lastUpdatedAt: Date
     }
 
@@ -21,19 +20,4 @@ enum BeepBeepLiveActivityPhase: String, Codable, Hashable {
     case speaking
     case listening
     case reconnecting
-
-    var statusText: String {
-        switch self {
-        case .connecting:
-            return "Connecting"
-        case .connected:
-            return "Connected"
-        case .speaking:
-            return "Speaking"
-        case .listening:
-            return "Listening"
-        case .reconnecting:
-            return "Reconnecting"
-        }
-    }
 }

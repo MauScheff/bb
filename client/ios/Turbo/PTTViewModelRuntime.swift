@@ -1254,6 +1254,19 @@ actor IncomingAudioIngressExecutor {
             if previous.recentPacketSequences.contains(sequenceNumber) {
                 return .drop(.duplicateOrStaleSequence)
             }
+            if isLiveAudioSequenceRestart(
+                sequenceNumber,
+                after: previous.sequenceNumber,
+                ordering: policy.ordering
+            ) {
+                playbackGateByKey[key] = IncomingAudioPlaybackGateState(
+                    sequenceNumber: sequenceNumber,
+                    receivedAtNanoseconds: nowNanoseconds,
+                    transport: transport,
+                    recentPacketSequences: [sequenceNumber]
+                )
+                return .play
+            }
             var next = previous
             next.sequenceNumber = max(previous.sequenceNumber, sequenceNumber)
             next.receivedAtNanoseconds = nowNanoseconds
@@ -1267,6 +1280,19 @@ actor IncomingAudioIngressExecutor {
             return .play
 
         case .orderedReliable(let graceFrames):
+            if isLiveAudioSequenceRestart(
+                sequenceNumber,
+                after: previous.sequenceNumber,
+                ordering: policy.ordering
+            ) {
+                playbackGateByKey[key] = IncomingAudioPlaybackGateState(
+                    sequenceNumber: sequenceNumber,
+                    receivedAtNanoseconds: nowNanoseconds,
+                    transport: transport,
+                    recentPacketSequences: [sequenceNumber]
+                )
+                return .play
+            }
             guard sequenceNumber > previous.sequenceNumber else {
                 return .drop(.duplicateOrStaleSequence)
             }
@@ -1298,6 +1324,20 @@ actor IncomingAudioIngressExecutor {
             }
             playbackGateByKey[key] = next
             return .play
+        }
+    }
+
+    private func isLiveAudioSequenceRestart(
+        _ sequenceNumber: UInt64,
+        after previousSequenceNumber: UInt64,
+        ordering: IncomingAudioPlaybackOrdering
+    ) -> Bool {
+        guard sequenceNumber < previousSequenceNumber else { return false }
+        switch ordering {
+        case .orderedReliable:
+            return sequenceNumber == 1 || previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
+        case .unorderedPacket:
+            return previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
         }
     }
 }
@@ -1865,6 +1905,7 @@ final class MediaRuntimeState {
     private var incomingAudioPlaybackGateByContactID: [UUID: IncomingAudioPlaybackGateState] = [:]
     private var incomingAudioIngressSummariesByKey: [IncomingAudioIngressSummaryKey: IncomingAudioIngressSummaryState] = [:]
     private var incomingAudioReceiveEpochByContactID: [UUID: UInt64] = [:]
+    private var directQuicStalePlaybackDropCountByContactID: [UUID: Int] = [:]
     private var voiceMediaCapabilitiesByContactID: [UUID: VoiceMediaPeerCapabilityEvidence] = [:]
     private var engineLocalAudioSequenceByContactID: [UUID: Int] = [:]
     private var engineRemoteAudioSequenceByContactID: [UUID: Int] = [:]
@@ -2981,6 +3022,7 @@ final class MediaRuntimeState {
             incomingAudioContractDiagnosticSuppressionReportedKeys.filter {
                 $0.contactID != contactID
             }
+        clearDirectQuicStalePlaybackDrops(for: contactID)
     }
 
     func incomingAudioReceiveEpoch(for contactID: UUID) -> UInt64 {
@@ -3098,6 +3140,16 @@ final class MediaRuntimeState {
         incomingAudioContinuityByContactID[contactID] = nil
     }
 
+    func recordDirectQuicStalePlaybackDrop(for contactID: UUID) -> Int {
+        let next = (directQuicStalePlaybackDropCountByContactID[contactID] ?? 0) + 1
+        directQuicStalePlaybackDropCountByContactID[contactID] = next
+        return next
+    }
+
+    func clearDirectQuicStalePlaybackDrops(for contactID: UUID) {
+        directQuicStalePlaybackDropCountByContactID[contactID] = nil
+    }
+
     func observeIncomingAudioSequence(
         contactID: UUID,
         transport: IncomingAudioPayloadTransport,
@@ -3170,6 +3222,19 @@ final class MediaRuntimeState {
             if previous.recentPacketSequences.contains(sequenceNumber) {
                 return .drop(.duplicateOrStaleSequence)
             }
+            if isLiveAudioSequenceRestart(
+                sequenceNumber,
+                after: previous.sequenceNumber,
+                ordering: policy.ordering
+            ) {
+                incomingAudioPlaybackGateByContactID[contactID] = IncomingAudioPlaybackGateState(
+                    sequenceNumber: sequenceNumber,
+                    receivedAtNanoseconds: nowNanoseconds,
+                    transport: transport,
+                    recentPacketSequences: [sequenceNumber]
+                )
+                return .play
+            }
             var next = previous
             next.sequenceNumber = max(previous.sequenceNumber, sequenceNumber)
             next.receivedAtNanoseconds = nowNanoseconds
@@ -3183,6 +3248,19 @@ final class MediaRuntimeState {
             return .play
 
         case .orderedReliable(let graceFrames):
+            if isLiveAudioSequenceRestart(
+                sequenceNumber,
+                after: previous.sequenceNumber,
+                ordering: policy.ordering
+            ) {
+                incomingAudioPlaybackGateByContactID[contactID] = IncomingAudioPlaybackGateState(
+                    sequenceNumber: sequenceNumber,
+                    receivedAtNanoseconds: nowNanoseconds,
+                    transport: transport,
+                    recentPacketSequences: [sequenceNumber]
+                )
+                return .play
+            }
             guard sequenceNumber > previous.sequenceNumber else {
                 return .drop(.duplicateOrStaleSequence)
             }
@@ -3214,6 +3292,20 @@ final class MediaRuntimeState {
             }
             incomingAudioPlaybackGateByContactID[contactID] = next
             return .play
+        }
+    }
+
+    private func isLiveAudioSequenceRestart(
+        _ sequenceNumber: UInt64,
+        after previousSequenceNumber: UInt64,
+        ordering: IncomingAudioPlaybackOrdering
+    ) -> Bool {
+        guard sequenceNumber < previousSequenceNumber else { return false }
+        switch ordering {
+        case .orderedReliable:
+            return sequenceNumber == 1 || previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
+        case .unorderedPacket:
+            return previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
         }
     }
 

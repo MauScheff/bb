@@ -240,10 +240,12 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var directQuicIncomingAudioQueueDelayViolationNanoseconds: UInt64 = 240_000_000
     var directQuicIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 800_000_000
     var directQuicIncomingAudioQueueSevereDelayNanoseconds: UInt64 = 1_000_000_000
+    var directQuicStalePlaybackDropFallbackThreshold: Int = 3
     var incomingLiveAudioBacklogExpirationNanoseconds: UInt64 = 2_000_000_000
     var remoteTransmitStopProjectionGraceNanoseconds: UInt64 = 8_000_000_000
     var localTransmitStopProjectionGraceNanoseconds: UInt64 = 3_000_000_000
     var firstAudioPlaybackAckTimeoutNanoseconds: UInt64 = 2_000_000_000
+    var firstAudioPlaybackAckClearedKeyGraceSeconds: TimeInterval = 10
     var appleGatedAudioActivationTimeoutNanoseconds: UInt64 = 5_000_000_000
     var foregroundSystemReceivePlaybackFallbackDelayNanoseconds: UInt64 = 300_000_000
     var presenceHeartbeatHTTPFallbackIntervalSeconds: TimeInterval = 4
@@ -274,7 +276,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var recentPeerDeviceEvidenceByContactID: [UUID: RecentPeerDeviceEvidence] = [:]
     var selectedContactPrewarmInFlight: Set<UUID> = []
     var selectedContactPrewarmedSelectionContactID: UUID?
-    var selectedContactPrewarmPipelineEnabled: Bool = true
+    var selectedContactPrewarmPipelineEnabled: Bool = false
+    var selectedContactDirectQuicPrewarmEnabled: Bool = false
     var localTransmitStopProjectionGraceStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
     var localTransmitStopProjectionGraceStartedAtMillisecondsByContactID: [UUID: Int64] = [:]
     var firstAudioPlaybackAckExpectationsByContactID: [UUID: FirstAudioPlaybackAckExpectation] = [:]
@@ -282,6 +285,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var firstAudioPlaybackAckSentKeys: Set<FirstAudioPlaybackAckSentKey> = []
     var firstAudioPlaybackAckSentEncryptedSequenceByKey: [FirstAudioPlaybackAckSentKey: UInt64] = [:]
     var firstAudioPlaybackAckCompletedKeys: Set<FirstAudioPlaybackAckSentKey> = []
+    var firstAudioPlaybackAckRecentlyClearedKeys: [FirstAudioPlaybackAckSentKey: Date] = [:]
     var directAudioPlaybackVerifiedKeys: Set<FirstAudioPlaybackAckSentKey> = []
     var pendingBeginTransmitAfterSettlingTask: Task<Void, Never>?
     private var diagnosticsAutoPublishTask: Task<Void, Never>?
@@ -418,7 +422,11 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     }
 
     private static var selectedContactPrewarmPipelineDefaultEnabled: Bool {
-        ProcessInfo.processInfo.environment["TURBO_IOS_SELECTED_CONTACT_PREWARM"] != "0"
+        ProcessInfo.processInfo.environment["TURBO_IOS_SELECTED_CONTACT_PREWARM"] == "1"
+    }
+
+    private static var selectedContactDirectQuicPrewarmDefaultEnabled: Bool {
+        ProcessInfo.processInfo.environment["TURBO_IOS_SELECTED_CONTACT_DIRECT_QUIC_PREWARM"] == "1"
     }
 #endif
 
@@ -455,6 +463,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             ProcessInfo.processInfo.environment["TURBO_IOS_STATE_CAPTURE_TELEMETRY"] == "1"
         selectedContactPrewarmPipelineEnabled =
             Self.selectedContactPrewarmPipelineDefaultEnabled && !Self.isRunningAutomatedTests
+        selectedContactDirectQuicPrewarmEnabled =
+            Self.selectedContactDirectQuicPrewarmDefaultEnabled && !Self.isRunningAutomatedTests
 #endif
         super.init()
         diagnostics.onHighSignalEvent = { [weak self] event in
@@ -2186,7 +2196,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             }
             return .directLowLatency
         }
-        if mediaTransportPathState == .fastRelay {
+        if mediaTransportPathState == .fastRelay,
+           mediaRuntime.receiverPrewarmRequestIsAcknowledged(for: contactID) {
             return .fastRelayBalanced
         }
         return .websocketContinuity

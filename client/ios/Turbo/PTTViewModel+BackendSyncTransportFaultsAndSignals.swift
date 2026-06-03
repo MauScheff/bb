@@ -952,6 +952,15 @@ extension PTTViewModel {
                 break
             }
             metadata["reason"] = dropReason
+            handleDirectQuicStalePlaybackDropIfNeeded(
+                contactID: contactID,
+                channelID: channelID,
+                fromDeviceID: fromDeviceID,
+                incomingAudioTransport: incomingAudioTransport,
+                dropReason: dropReason,
+                sequenceNumber: sequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds
+            )
 
             let disposition = mediaRuntime.consumeIncomingAudioDropDiagnosticDisposition(
                 for: contactID,
@@ -1514,6 +1523,9 @@ extension PTTViewModel {
             fromDeviceID: fromDeviceID,
             nowNanoseconds: receivedAtNanoseconds
         )
+        if incomingAudioTransport == .directQuic {
+            mediaRuntime.clearDirectQuicStalePlaybackDrops(for: contactID)
+        }
     }
 
     func incomingLiveAudioSenderClockExpirationMilliseconds(
@@ -1600,6 +1612,47 @@ extension PTTViewModel {
             return "dropped-expired-sender-clock-age"
         case nil:
             return "dropped-unknown"
+        }
+    }
+
+    private func handleDirectQuicStalePlaybackDropIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        dropReason: String,
+        sequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64
+    ) {
+        guard incomingAudioTransport == .directQuic,
+              dropReason == "duplicate-or-stale-sequence",
+              receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase == .receivingAudio
+        else { return }
+
+        let dropCount = mediaRuntime.recordDirectQuicStalePlaybackDrop(for: contactID)
+        let threshold = max(1, directQuicStalePlaybackDropFallbackThreshold)
+        guard dropCount >= threshold else { return }
+
+        if retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
+            contactID: contactID,
+            reason: "duplicate-or-stale-sequence",
+            sequenceNumber: sequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds
+        ) {
+            mediaRuntime.clearDirectQuicStalePlaybackDrops(for: contactID)
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Direct QUIC stale playback drop threshold reached; falling back to relay",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "directQuicSequenceNumber": sequenceNumber.map(String.init) ?? "none",
+                    "dropCount": String(dropCount),
+                    "threshold": String(threshold),
+                ]
+            )
         }
     }
 

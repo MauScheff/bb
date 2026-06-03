@@ -19,34 +19,32 @@ struct BeepBeepLiveActivityWidget: Widget {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(context.attributes.contactName)
                             .font(.headline)
-                        Text(context.state.phase.statusText)
+                        Text(displayHandle(context.attributes.contactHandle))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if context.state.canEnd {
-                        Link(destination: endURL(for: context)) {
-                            Label("End", systemImage: "phone.down.fill")
-                        }
+                    Link(destination: openURL(for: context)) {
+                        Label("Open", systemImage: "arrow.up.forward")
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     if let speakerName = context.state.speakerName {
-                        Text("\(speakerName) \(context.state.phase == .speaking ? "is speaking" : "is live")")
+                        Text("\(speakerName) \(context.state.phase == .speaking ? "is talking" : "is live")")
                             .font(.caption)
                             .lineLimit(1)
                     } else {
-                        Link("Open BeepBeep", destination: openURL(for: context))
+                        Text("Open the conversation")
                             .font(.caption)
                     }
                 }
             } compactLeading: {
-                Image(systemName: iconName(for: context.state.phase))
+                BeepBeepActivityMark(size: 20, showsBackground: false)
             } compactTrailing: {
                 Text(shortStatus(for: context.state.phase))
             } minimal: {
-                Image(systemName: "waveform")
+                BeepBeepActivityMark(size: 18, showsBackground: false)
             }
             .widgetURL(openURL(for: context))
         }
@@ -58,11 +56,7 @@ private struct BeepBeepLiveActivityLockScreenView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: iconName(for: context.state.phase))
-                .font(.system(size: 21, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .foregroundStyle(.white)
-                .background(Circle().fill(Color.accentColor))
+            BeepBeepActivityMark(size: 44, showsBackground: true)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(context.attributes.contactName)
@@ -77,21 +71,10 @@ private struct BeepBeepLiveActivityLockScreenView: View {
 
             Spacer(minLength: 10)
 
-            HStack(spacing: 12) {
-                if context.state.canEnd {
-                    Link(destination: endURL(for: context)) {
-                        Text("End")
-                            .font(.headline)
-                            .foregroundStyle(.red)
-                            .frame(minWidth: 44, minHeight: 36)
-                    }
-                }
-
-                Link(destination: openURL(for: context)) {
-                    Text("Open")
-                        .font(.headline)
-                        .frame(minWidth: 52, minHeight: 36)
-                }
+            Link(destination: openURL(for: context)) {
+                Text("Open")
+                    .font(.headline)
+                    .frame(minWidth: 52, minHeight: 36)
             }
         }
         .padding(.horizontal, 16)
@@ -102,18 +85,16 @@ private struct BeepBeepLiveActivityLockScreenView: View {
 
     private var statusLine: String {
         if let speakerName = context.state.speakerName {
-            return "\(context.state.phase.statusText) - \(speakerName)"
+            return context.state.phase == .speaking
+                ? "\(speakerName) is talking"
+                : "\(speakerName) is live"
         }
-        return context.state.phase.statusText
+        return displayHandle(context.attributes.contactHandle)
     }
 }
 
 private func openURL(for context: ActivityViewContext<BeepBeepLiveActivityAttributes>) -> URL {
     conversationURL(for: context, action: "open")
-}
-
-private func endURL(for context: ActivityViewContext<BeepBeepLiveActivityAttributes>) -> URL {
-    conversationURL(for: context, action: "end")
 }
 
 private func conversationURL(
@@ -130,16 +111,28 @@ private func conversationURL(
     return components.url ?? URL(string: "beepbeep://conversation")!
 }
 
-private func iconName(for phase: BeepBeepLiveActivityPhase) -> String {
-    switch phase {
-    case .connecting, .reconnecting:
-        return "antenna.radiowaves.left.and.right"
-    case .connected:
-        return "checkmark.circle.fill"
-    case .speaking:
-        return "waveform.circle.fill"
-    case .listening:
-        return "ear"
+private func displayHandle(_ handle: String) -> String {
+    let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "@" }
+    return trimmed.hasPrefix("@") ? trimmed : "@\(trimmed)"
+}
+
+private struct BeepBeepActivityMark: View {
+    let size: CGFloat
+    let showsBackground: Bool
+
+    var body: some View {
+        ZStack {
+            if showsBackground {
+                Circle()
+                    .fill(Color.accentColor)
+            }
+            Image(systemName: "waveform")
+                .font(.system(size: size * 0.46, weight: .semibold))
+                .foregroundStyle(showsBackground ? .white : Color.accentColor)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
@@ -148,7 +141,7 @@ private func shortStatus(for phase: BeepBeepLiveActivityPhase) -> String {
     case .connecting:
         return "..."
     case .connected:
-        return "On"
+        return "Open"
     case .speaking:
         return "Talk"
     case .listening:

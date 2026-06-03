@@ -551,6 +551,7 @@ extension PTTViewModel {
         guard selectedChannelSnapshot(for: contactID)?.membership.hasLocalMembership != true else { return }
 
         conversationActionCoordinator.clearLeaveAction(for: contactID)
+        selectedConversationCoordinator.send(.devicePTTTeardownCompleted(contactID: contactID))
         diagnostics.record(
             .state,
             message: "Completing reconciled teardown after local system session ended",

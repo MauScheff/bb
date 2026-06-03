@@ -93,6 +93,7 @@ extension PTTViewModel {
         contactID: UUID,
         reason: String
     ) {
+        guard selectedContactDirectQuicPrewarmEnabled else { return }
         guard selectedContactId == contactID else { return }
         let hasPeerWakeDevice: Bool = {
             if case .wakeCapable(let targetDeviceId) = readiness.remoteWakeCapability {
@@ -921,7 +922,10 @@ extension PTTViewModel {
     }
 
     func selectedContactDirectQuicPrewarmBlockReason(for contactID: UUID) -> String? {
-        directQuicSelectionPrewarmBlockReason(
+        guard selectedContactDirectQuicPrewarmEnabled else {
+            return "selected-prewarm-disabled"
+        }
+        return directQuicSelectionPrewarmBlockReason(
             for: contactID,
             requireSelectedContact: true
         )
@@ -929,6 +933,60 @@ extension PTTViewModel {
 
     func shouldRequestSelectedContactDirectQuicPrewarm(for contactID: UUID) -> Bool {
         selectedContactDirectQuicPrewarmBlockReason(for: contactID) == nil
+    }
+
+    func directQuicSelectionLifecycleBlockReason(for contactID: UUID) -> String? {
+        let projection = selectedConversationProjection(for: contactID)
+        if case .waitingForPeer(reason: .disconnecting) = projection.selectedConversationState.detail {
+            return "selected-disconnecting"
+        }
+        if projection.devicePTTContinuity == .disconnecting {
+            return "selected-disconnecting"
+        }
+
+        guard !hasActiveBackgroundPTTFlowOwningDirectQuic(for: contactID) else {
+            return nil
+        }
+        guard conversationActionCoordinator.pendingAction == .none else {
+            return nil
+        }
+        guard !backendJoinIsSettling(for: contactID) else {
+            return nil
+        }
+        guard !devicePTTEvidenceExists(for: contactID) else {
+            return nil
+        }
+        guard projection.selectedConversationState.relationship == .none else {
+            return nil
+        }
+        guard let channel = selectedChannelSnapshot(for: contactID),
+              channel.beepThreadProjection == .none,
+              channel.membership.hasLocalMembership,
+              channel.membership.hasPeerMembership else {
+            return nil
+        }
+        return "stale-backend-membership"
+    }
+
+    func directQuicPeerDirectWarmabilityBlockReason(for contactID: UUID) -> String? {
+        let projection = selectedConversationProjection(for: contactID)
+        if projection.selectedConversationState.phase == .wakeReady {
+            return "peer-wake-capable"
+        }
+
+        guard let channel = selectedChannelSnapshot(for: contactID) else {
+            return nil
+        }
+        if channel.remoteAudioReadiness == .wakeCapable {
+            return "peer-wake-capable"
+        }
+        if channel.membership.hasLocalMembership,
+           channel.membership.hasPeerMembership,
+           !channel.membership.peerDeviceConnected,
+           case .wakeCapable = channel.remoteWakeCapability {
+            return "peer-device-not-connected"
+        }
+        return nil
     }
 
     func directQuicSelectionPrewarmBlockReason(
@@ -943,6 +1001,12 @@ extension PTTViewModel {
         }
         if isDirectQuicAutoUpgradeDisabledForDebug {
             return "auto-upgrade-disabled"
+        }
+        if let lifecycleBlockReason = directQuicSelectionLifecycleBlockReason(for: contactID) {
+            return lifecycleBlockReason
+        }
+        if let warmabilityBlockReason = directQuicPeerDirectWarmabilityBlockReason(for: contactID) {
+            return warmabilityBlockReason
         }
         recoverStaleDirectQuicAttemptBlockingProbeIfNeeded(
             for: contactID,
@@ -1088,7 +1152,9 @@ extension PTTViewModel {
     ) async {
         let prewarmReason = "selection-direct-quic-prewarm-\(reason)"
         if let blockReason = selectedContactDirectQuicPrewarmBlockReason(for: contactID) {
-            if blockReason == "relay-only-forced" || blockReason == "direct-active" {
+            if blockReason == "relay-only-forced"
+                || blockReason == "direct-active"
+                || blockReason == "selected-prewarm-disabled" {
                 return
             }
             diagnostics.record(

@@ -2677,12 +2677,17 @@ extension PTTViewModel {
             }
 
             let allowsSelectionPrewarmRequest = payload.reason.hasPrefix("selection-direct-quic-prewarm-")
-            var blockReason = allowsSelectionPrewarmRequest
-                ? directQuicSelectionPrewarmBlockReason(
-                    for: contactID,
-                    requireSelectedContact: false
-                )
-                : automaticDirectQuicProbeBlockReason(for: contactID)
+            var blockReason: String?
+            if allowsSelectionPrewarmRequest {
+                blockReason = selectedContactDirectQuicPrewarmEnabled
+                    ? directQuicSelectionPrewarmBlockReason(
+                        for: contactID,
+                        requireSelectedContact: false
+                    )
+                    : "selected-prewarm-disabled"
+            } else {
+                blockReason = automaticDirectQuicProbeBlockReason(for: contactID)
+            }
             if allowsSelectionPrewarmRequest, blockReason == "retry-backoff",
                clearDirectQuicConnectivityBackoffForSelectedPrewarmRequestIfNeeded(
                 for: contactID,
@@ -2789,6 +2794,28 @@ extension PTTViewModel {
                     "peerDeviceId": peerDeviceID,
                     "activeAttemptId": mediaRuntime.directQuicUpgrade.attempt(for: contactID)?.attemptId ?? "none",
                 ]
+            )
+            return
+        }
+        if let warmabilityBlockReason = directQuicPeerDirectWarmabilityBlockReason(for: contactID) {
+            diagnostics.record(
+                .websocket,
+                message: "Direct QUIC active offer resend skipped because peer is not direct warmable",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": attempt.channelID,
+                    "attemptId": attempt.attemptId,
+                    "requestId": requestId,
+                    "reason": reason,
+                    "peerDeviceId": peerDeviceID,
+                    "blockReason": warmabilityBlockReason,
+                ]
+            )
+            await finishDirectQuicAttempt(
+                for: contactID,
+                reason: "peer-not-direct-warmable-\(warmabilityBlockReason)",
+                sendHangup: false,
+                applyRetryBackoff: false
             )
             return
         }

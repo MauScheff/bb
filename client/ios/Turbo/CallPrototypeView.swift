@@ -65,6 +65,36 @@ enum TurboCallScreenBackgroundAnimationFlag {
     }
 }
 
+enum TurboCallScreenStatisticsVisibilityFlag {
+    static func isEnabled(
+        bundle: Bundle = .main,
+        appStoreReceiptURL: URL? = nil
+    ) -> Bool {
+        #if DEBUG
+        true
+        #else
+        isTestFlightReceipt(bundle: bundle, appStoreReceiptURL: appStoreReceiptURL)
+        #endif
+    }
+
+    static func isTestFlightReceipt(
+        bundle: Bundle = .main,
+        appStoreReceiptURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        if bundle.object(forInfoDictionaryKey: "TurboForceCallScreenStatistics") as? Bool == true {
+            return true
+        }
+        if let appStoreReceiptURL {
+            return appStoreReceiptURL.lastPathComponent == "sandboxReceipt"
+        }
+        let sandboxReceiptURL = bundle.bundleURL
+            .appendingPathComponent("StoreKit", isDirectory: true)
+            .appendingPathComponent("sandboxReceipt", isDirectory: false)
+        return fileManager.fileExists(atPath: sandboxReceiptURL.path)
+    }
+}
+
 private struct HatTextureTuning: Equatable {
     var zoom: CGFloat = 1.81
     var opacity: Double = 0.98
@@ -380,6 +410,7 @@ struct TurboCallPrototypeView: View {
     let localTelemetry: ConversationParticipantTelemetry?
     let remoteParticipantTelemetry: ConversationParticipantTelemetry?
     var backgroundAnimationsEnabled: Bool = TurboCallScreenBackgroundAnimationFlag.isEnabled()
+    var callStatisticsVisible: Bool = TurboCallScreenStatisticsVisibilityFlag.isEnabled()
     var requestSubject: String? = nil
     let onClose: () -> Void
     let onLeave: () -> Void
@@ -412,11 +443,15 @@ struct TurboCallPrototypeView: View {
         GeometryReader { proxy in
             let usesWideLayout = proxy.size.width >= 700
             let cloudMotion = cloudMotion
+            let topSafePadding = Self.topChromePadding(
+                geometrySafeAreaInsets: proxy.safeAreaInsets
+            )
 
             ZStack {
                 cloudCallContent(
                     usesWideLayout: usesWideLayout,
-                    cloudMotion: cloudMotion
+                    cloudMotion: cloudMotion,
+                    topSafePadding: topSafePadding
                 )
             }
         }
@@ -501,10 +536,24 @@ struct TurboCallPrototypeView: View {
         #endif
     }
 
+    private static func topChromePadding(geometrySafeAreaInsets: EdgeInsets) -> CGFloat {
+        let safeAreaTop = max(geometrySafeAreaInsets.top, currentWindowSafeAreaInsets.top)
+        return max(safeAreaTop + 20, 52)
+    }
+
+    private static var currentWindowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes.compactMap { scene -> UIEdgeInsets? in
+            guard let windowScene = scene as? UIWindowScene else { return nil }
+            return windowScene.windows.first(where: \.isKeyWindow)?.safeAreaInsets
+                ?? windowScene.windows.first?.safeAreaInsets
+        }.first ?? .zero
+    }
+
     @ViewBuilder
     private func cloudCallContent(
         usesWideLayout: Bool,
-        cloudMotion: TurboCallCloudMotion
+        cloudMotion: TurboCallCloudMotion,
+        topSafePadding: CGFloat
     ) -> some View {
         TurboCallCloudBackground(
             seed: backgroundSeed,
@@ -526,8 +575,8 @@ struct TurboCallPrototypeView: View {
                 .frame(maxWidth: usesWideLayout ? 520 : .infinity)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, usesWideLayout ? 44 : 28)
-        .padding(.top, 18)
+        .padding(.horizontal, usesWideLayout ? 44 : 16)
+        .padding(.top, topSafePadding)
         .padding(.bottom, 58)
     }
 
@@ -622,13 +671,13 @@ struct TurboCallPrototypeView: View {
 
     private var topBar: some View {
         HStack {
-            Spacer()
-
             TurboGlassIconButton(
                 systemName: "arrow.down.right.and.arrow.up.left",
                 accessibilityLabel: "Minimize call",
                 action: onClose
             )
+
+            Spacer()
         }
     }
 
@@ -652,19 +701,15 @@ struct TurboCallPrototypeView: View {
                     .padding(.top, 6)
             }
 
-            #if DEBUG
-            if hasVisibleConversationParticipantTelemetry {
+            if callStatisticsVisible, hasVisibleConversationParticipantTelemetry {
                 conversationParticipantTelemetryRows
                     .frame(maxWidth: 360, alignment: .leading)
                     .padding(.top, 14)
-            }
-            #else
-            if let audio = remoteParticipantVolumeWarningAudio {
+            } else if let audio = remoteParticipantVolumeWarningAudio {
                 remoteParticipantVolumeWarningRow(for: audio)
                     .frame(maxWidth: 360, alignment: .leading)
                     .padding(.top, 14)
             }
-            #endif
         }
         .frame(maxWidth: 360, alignment: .center)
         .padding(.top, usesWideLayout ? 6 : 8)

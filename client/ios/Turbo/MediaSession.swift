@@ -70,16 +70,16 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
     )
 
     static let websocketContinuity = MediaTransportSenderConfiguration(
-        maximumPendingPayloads: 40,
-        maximumPayloadsPerMessage: 5,
-        payloadBatchCollectionNanoseconds: 80_000_000,
+        maximumPendingPayloads: 160,
+        maximumPayloadsPerMessage: 8,
+        payloadBatchCollectionNanoseconds: 120_000_000,
         minimumPayloadDispatchSpacingNanoseconds: 0,
         maximumInFlightSends: 1,
-        sendTimeoutNanoseconds: 750_000_000,
+        sendTimeoutNanoseconds: nil,
         slowSendDropThresholdNanoseconds: nil,
         dropsPendingPayloadsAfterSlowSend: false,
         retainedNewestPayloadsAfterSlowSend: 0,
-        stopDrainTimeoutNanoseconds: 1_200_000_000
+        stopDrainTimeoutNanoseconds: 2_000_000_000
     )
 
     static let wakeBackgroundContinuity = MediaTransportSenderConfiguration(

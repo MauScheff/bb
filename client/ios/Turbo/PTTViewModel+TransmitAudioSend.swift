@@ -66,6 +66,16 @@ extension PTTViewModel {
     }
 
     func clearFirstAudioPlaybackAckExpectations() {
+        let clearedAt = Date()
+        for expectation in firstAudioPlaybackAckExpectationsByContactID.values {
+            rememberFirstAudioPlaybackAckRecentlyClearedKey(
+                firstAudioPlaybackAckKey(for: expectation),
+                now: clearedAt
+            )
+        }
+        for key in firstAudioPlaybackAckCompletedKeys {
+            rememberFirstAudioPlaybackAckRecentlyClearedKey(key, now: clearedAt)
+        }
         firstAudioPlaybackAckTimeoutTasksByContactID.values.forEach { $0.cancel() }
         firstAudioPlaybackAckTimeoutTasksByContactID.removeAll()
         firstAudioPlaybackAckExpectationsByContactID.removeAll()
@@ -89,13 +99,64 @@ extension PTTViewModel {
         )
     }
 
+    func firstAudioPlaybackAckKey(
+        for expectation: FirstAudioPlaybackAckExpectation
+    ) -> FirstAudioPlaybackAckSentKey {
+        firstAudioPlaybackAckKey(
+            contactID: expectation.contactID,
+            channelID: expectation.channelID,
+            senderDeviceID: expectation.senderDeviceID,
+            receiverDeviceID: expectation.receiverDeviceID
+        )
+    }
+
+    func firstAudioPlaybackAckKeyMatchesClearFilter(
+        _ key: FirstAudioPlaybackAckSentKey,
+        contactID: UUID,
+        channelID: String?,
+        senderDeviceID: String?
+    ) -> Bool {
+        if key.contactID != contactID { return false }
+        if let channelID, key.channelID != channelID { return false }
+        if let senderDeviceID, key.senderDeviceID != senderDeviceID { return false }
+        return true
+    }
+
+    func pruneFirstAudioPlaybackAckRecentlyClearedKeys(now: Date = Date()) {
+        let graceSeconds = max(0, firstAudioPlaybackAckClearedKeyGraceSeconds)
+        firstAudioPlaybackAckRecentlyClearedKeys = firstAudioPlaybackAckRecentlyClearedKeys.filter {
+            now.timeIntervalSince($0.value) <= graceSeconds
+        }
+    }
+
+    func rememberFirstAudioPlaybackAckRecentlyClearedKey(
+        _ key: FirstAudioPlaybackAckSentKey,
+        now: Date = Date()
+    ) {
+        pruneFirstAudioPlaybackAckRecentlyClearedKeys(now: now)
+        firstAudioPlaybackAckRecentlyClearedKeys[key] = now
+    }
+
+    func hasRecentlyClearedFirstAudioPlaybackAckKey(
+        _ key: FirstAudioPlaybackAckSentKey,
+        now: Date = Date()
+    ) -> Bool {
+        pruneFirstAudioPlaybackAckRecentlyClearedKeys(now: now)
+        return firstAudioPlaybackAckRecentlyClearedKeys[key] != nil
+    }
+
     func clearFirstAudioPlaybackAckState(
         contactID: UUID,
         channelID: String? = nil,
         senderDeviceID: String? = nil
     ) {
+        let clearedAt = Date()
         if let expectation = firstAudioPlaybackAckExpectationsByContactID[contactID],
            channelID == nil || expectation.channelID == channelID {
+            rememberFirstAudioPlaybackAckRecentlyClearedKey(
+                firstAudioPlaybackAckKey(for: expectation),
+                now: clearedAt
+            )
             firstAudioPlaybackAckTimeoutTasksByContactID[contactID]?.cancel()
             firstAudioPlaybackAckTimeoutTasksByContactID[contactID] = nil
             firstAudioPlaybackAckExpectationsByContactID[contactID] = nil
@@ -106,12 +167,20 @@ extension PTTViewModel {
             if let senderDeviceID, key.senderDeviceID != senderDeviceID { return true }
             return false
         }
-        firstAudioPlaybackAckCompletedKeys = firstAudioPlaybackAckCompletedKeys.filter { key in
-            if key.contactID != contactID { return true }
-            if let channelID, key.channelID != channelID { return true }
-            if let senderDeviceID, key.senderDeviceID != senderDeviceID { return true }
-            return false
+        var retainedCompletedKeys: Set<FirstAudioPlaybackAckSentKey> = []
+        for key in firstAudioPlaybackAckCompletedKeys {
+            if firstAudioPlaybackAckKeyMatchesClearFilter(
+                key,
+                contactID: contactID,
+                channelID: channelID,
+                senderDeviceID: senderDeviceID
+            ) {
+                rememberFirstAudioPlaybackAckRecentlyClearedKey(key, now: clearedAt)
+            } else {
+                retainedCompletedKeys.insert(key)
+            }
         }
+        firstAudioPlaybackAckCompletedKeys = retainedCompletedKeys
         directAudioPlaybackVerifiedKeys = directAudioPlaybackVerifiedKeys.filter { key in
             if key.contactID != contactID { return true }
             if let channelID, key.channelID != channelID { return true }
@@ -216,6 +285,7 @@ extension PTTViewModel {
             senderDeviceID: senderDeviceID,
             receiverDeviceID: target.deviceID
         )
+        firstAudioPlaybackAckRecentlyClearedKeys.removeValue(forKey: key)
         guard !firstAudioPlaybackAckCompletedKeys.contains(key) else { return false }
         let identity = audioPayloadIdentity(payload)
         let ackID = UUID().uuidString
@@ -305,14 +375,18 @@ extension PTTViewModel {
             receiverDeviceID: payload.receiverDeviceId
         )
         guard let expectation = firstAudioPlaybackAckExpectationsByContactID[contactID] else {
-            if firstAudioPlaybackAckCompletedKeys.contains(completedKey) {
+            let completedKeyExists = firstAudioPlaybackAckCompletedKeys.contains(completedKey)
+            let recentlyClearedKeyExists = hasRecentlyClearedFirstAudioPlaybackAckKey(completedKey)
+            if completedKeyExists || recentlyClearedKeyExists {
                 let verifiedDirectAudio = payload.transport == "direct-quic"
-                if verifiedDirectAudio {
+                if verifiedDirectAudio && completedKeyExists {
                     directAudioPlaybackVerifiedKeys.insert(completedKey)
                 }
                 diagnostics.record(
                     .media,
-                    message: verifiedDirectAudio
+                    message: recentlyClearedKeyExists
+                        ? "Ignored delayed audio playback ACK after cleared expectation"
+                        : verifiedDirectAudio
                         ? "Recorded delayed Direct QUIC audio playback ACK after completed expectation"
                         : "Ignored duplicate audio playback ACK after completed expectation",
                     metadata: [
@@ -1114,7 +1188,7 @@ extension PTTViewModel {
 
                 if routeIsMediaRelayForced {
                     let shouldUseWebSocketContinuityForUnacknowledgedRelay = await MainActor.run {
-                        self.shouldUseWebSocketContinuityForUnacknowledgedForcedMediaRelay(target: target)
+                        self.shouldUseWebSocketContinuityForUnacknowledgedMediaRelay(target: target)
                     }
                     if shouldUseWebSocketContinuityForUnacknowledgedRelay {
                         await MainActor.run {
@@ -1836,8 +1910,7 @@ extension PTTViewModel {
         return "relay-websocket"
     }
 
-    func shouldUseWebSocketContinuityForUnacknowledgedForcedMediaRelay(target: TransmitTarget) -> Bool {
-        guard TurboMediaRelayDebugOverride.isForced() else { return false }
+    func shouldUseWebSocketContinuityForUnacknowledgedMediaRelay(target: TransmitTarget) -> Bool {
         guard !isDirectPathRelayOnlyForced else { return false }
         guard backendServices?.supportsWebSocket == true else { return false }
         let maximumAge = TimeInterval(directQuicAudioFreshnessMilliseconds) / 1_000
@@ -1920,7 +1993,14 @@ extension PTTViewModel {
             guard !mediaRuntime.isMediaRelayAudioSendSuppressed(for: key) else {
                 return nil
             }
-            return mediaRuntime.existingMediaRelayClient(for: key)
+            guard let client = mediaRuntime.existingMediaRelayClient(for: key) else {
+                return nil
+            }
+            if client.currentMediaMode() != .tcpOrdered,
+               shouldUseWebSocketContinuityForUnacknowledgedMediaRelay(target: target) {
+                return nil
+            }
+            return client
         }
     }
 

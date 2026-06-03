@@ -2491,6 +2491,64 @@ struct ConversationTests {
         #expect(transition.effects.isEmpty)
     }
 
+    @Test func selectedConversationReducerTeardownCompletionPreventsRepeatedTerminalTeardown() {
+        let contactID = UUID()
+        let selection = SelectedConversationSelection(
+            contactID: contactID,
+            contactName: "Avery",
+            contactIsOnline: true
+        )
+
+        var seededState = reduceSelectedConversationState([
+            .selectedContactChanged(selection),
+            .relationshipUpdated(.none),
+            .baseStateUpdated(.waitingForPeer),
+            .channelUpdated(
+                ChannelReadinessSnapshot(
+                    channelState: makeChannelState(
+                        status: .idle,
+                        canTransmit: false,
+                        selfJoined: false,
+                        peerJoined: false,
+                        peerDeviceConnected: false
+                    ),
+                    readiness: makeChannelReadiness(
+                        status: .inactive,
+                        selfHasActiveDevice: false,
+                        peerHasActiveDevice: false,
+                        remoteAudioReadiness: .unknown,
+                        remoteWakeCapability: .unavailable
+                    )
+                )
+            ),
+            .localSessionUpdated(
+                isJoined: false,
+                activeChannelID: nil,
+                pendingAction: .none,
+                pendingConnectAcceptedIncomingBeep: false,
+                localJoinFailure: nil
+            ),
+            .systemSessionUpdated(.none, matchesSelectedContact: false)
+        ])
+        seededState.hadConnectedDevicePTTContinuity = true
+
+        let completed = SelectedConversationReducer.reduce(
+            state: seededState,
+            event: .devicePTTTeardownCompleted(contactID: contactID)
+        )
+        let reconciled = SelectedConversationReducer.reduce(
+            state: completed.state,
+            event: .reconcileRequested
+        )
+
+        #expect(!completed.state.hadConnectedDevicePTTContinuity)
+        #expect(completed.state.reconciliationAction == .none)
+        #expect(completed.state.selectedConversationState.phase == .idle)
+        #expect(reconciled.effects.isEmpty)
+        #expect(reconciled.state.reconciliationAction == .none)
+        #expect(reconciled.state.selectedConversationState.phase == .idle)
+    }
+
     @Test func incomingBeepPrimaryActionUsesAcceptLabel() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(

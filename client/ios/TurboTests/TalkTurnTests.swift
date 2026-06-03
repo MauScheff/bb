@@ -1422,6 +1422,50 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func delayedRelayPlaybackAckAfterClearedExpectationDoesNotRecordViolation() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let completedKey = FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: "sender-device",
+            receiverDeviceID: "receiver-device"
+        )
+        viewModel.firstAudioPlaybackAckCompletedKeys.insert(completedKey)
+
+        viewModel.clearFirstAudioPlaybackAckState(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: "sender-device"
+        )
+        viewModel.handleAudioPlaybackStartedAck(
+            TurboAudioPlaybackStartedPayload(
+                ackId: "ack-delayed-cleared",
+                channelId: "channel-1",
+                senderDeviceId: "sender-device",
+                receiverDeviceId: "receiver-device",
+                transport: "relay-websocket",
+                transportDigest: "later-payload-digest",
+                encryptedSequenceNumber: nil
+            ),
+            contactID: contactID,
+            source: .backendWebSocket
+        )
+
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "transmit.first_audio_ack_without_expectation"
+                    && $0.metadata["ackId"] == "ack-delayed-cleared"
+            }
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignored delayed audio playback ACK after cleared expectation"
+            )
+        )
+    }
+
+    @MainActor
     @Test func websocketFallbackSlowOutboundSendRecordsNoticeInsteadOfContractViolation() {
         let viewModel = PTTViewModel()
 

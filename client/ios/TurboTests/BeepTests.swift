@@ -85,6 +85,7 @@ struct BeepTests {
 
         let contactID = UUID()
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.selectedContactId = contactID
         viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
         _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
@@ -123,6 +124,7 @@ struct BeepTests {
 
         let contactID = UUID()
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.selectedContactId = contactID
         viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
         _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(

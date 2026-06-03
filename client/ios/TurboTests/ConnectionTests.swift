@@ -762,6 +762,156 @@ struct ConnectionTests {
         }
     }
 
+    @Test func incomingAudioIngressExecutorAcceptsUnorderedPacketSequenceRestartWithinEpoch() async {
+        let contactID = UUID()
+        let executor = IncomingAudioIngressExecutor()
+        let policy = IncomingAudioIngressConfiguration(
+            mediaEncryptionRequired: false,
+            mediaEncryptionSession: nil
+        )
+        let baseTime: UInt64 = 12_000_000_000
+
+        func packet(
+            turn: String,
+            sequenceNumber: UInt64,
+            offsetMilliseconds: UInt64
+        ) -> IncomingAudioIngressPacket {
+            IncomingAudioIngressPacket(
+                payload: "\(turn)-voice-frame-\(sequenceNumber)",
+                channelID: "channel-1",
+                fromDeviceID: "device-b",
+                contactID: contactID,
+                incomingAudioTransport: .mediaRelayPacket,
+                transportSequenceNumber: sequenceNumber,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: baseTime + offsetMilliseconds * 1_000_000,
+                    sequenceNumber: sequenceNumber,
+                    sentAtMilliseconds: nil,
+                    source: "media-relay"
+                ),
+                receiveEpoch: 1
+            )
+        }
+
+        for sequenceNumber in UInt64(1) ... UInt64(407) {
+            let admission = await executor.admit(
+                packet(
+                    turn: "first",
+                    sequenceNumber: sequenceNumber,
+                    offsetMilliseconds: sequenceNumber
+                ),
+                policy: policy,
+                nowNanoseconds: baseTime + sequenceNumber * 1_000_000
+            )
+            guard case .accepted = admission else {
+                Issue.record("expected first turn packet \(sequenceNumber) to be accepted")
+                return
+            }
+        }
+
+        let restartedFirst = await executor.admit(
+            packet(turn: "second", sequenceNumber: 1, offsetMilliseconds: 1_000),
+            policy: policy,
+            nowNanoseconds: baseTime + 1_000_000_000
+        )
+        guard case .accepted(let acceptedRestart) = restartedFirst else {
+            Issue.record("expected restarted packet sequence to be accepted")
+            return
+        }
+        #expect(acceptedRestart.sequenceNumber == 1)
+
+        for sequenceNumber in UInt64(2) ... UInt64(151) {
+            let admission = await executor.admit(
+                packet(
+                    turn: "second",
+                    sequenceNumber: sequenceNumber,
+                    offsetMilliseconds: 1_000 + sequenceNumber
+                ),
+                policy: policy,
+                nowNanoseconds: baseTime + (1_000 + sequenceNumber) * 1_000_000
+            )
+            guard case .accepted = admission else {
+                Issue.record("expected restarted turn packet \(sequenceNumber) to avoid stale duplicate rejection")
+                return
+            }
+        }
+    }
+
+    @Test func incomingAudioIngressExecutorAcceptsRelayWebSocketSequenceRestartWithinEpoch() async {
+        let contactID = UUID()
+        let executor = IncomingAudioIngressExecutor()
+        let policy = IncomingAudioIngressConfiguration(
+            mediaEncryptionRequired: false,
+            mediaEncryptionSession: nil
+        )
+        let baseTime: UInt64 = 14_000_000_000
+
+        func packet(
+            turn: String,
+            sequenceNumber: UInt64,
+            offsetMilliseconds: UInt64
+        ) -> IncomingAudioIngressPacket {
+            IncomingAudioIngressPacket(
+                payload: "\(turn)-relay-websocket-voice-frame-\(sequenceNumber)",
+                channelID: "channel-1",
+                fromDeviceID: "device-b",
+                contactID: contactID,
+                incomingAudioTransport: .relayWebSocket,
+                transportSequenceNumber: sequenceNumber,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: baseTime + offsetMilliseconds * 1_000_000,
+                    sequenceNumber: sequenceNumber,
+                    sentAtMilliseconds: nil,
+                    source: "backend-websocket"
+                ),
+                receiveEpoch: 1
+            )
+        }
+
+        for sequenceNumber in UInt64(1) ... UInt64(407) {
+            let admission = await executor.admit(
+                packet(
+                    turn: "first",
+                    sequenceNumber: sequenceNumber,
+                    offsetMilliseconds: sequenceNumber
+                ),
+                policy: policy,
+                nowNanoseconds: baseTime + sequenceNumber * 1_000_000
+            )
+            guard case .accepted = admission else {
+                Issue.record("expected first fallback turn frame \(sequenceNumber) to be accepted")
+                return
+            }
+        }
+
+        let restartedFirst = await executor.admit(
+            packet(turn: "second", sequenceNumber: 1, offsetMilliseconds: 1_000),
+            policy: policy,
+            nowNanoseconds: baseTime + 1_000_000_000
+        )
+        guard case .accepted(let acceptedRestart) = restartedFirst else {
+            Issue.record("expected relay websocket sequence restart to be accepted as a new talk turn")
+            return
+        }
+        #expect(acceptedRestart.sequenceNumber == 1)
+
+        for sequenceNumber in UInt64(2) ... UInt64(65) {
+            let admission = await executor.admit(
+                packet(
+                    turn: "second",
+                    sequenceNumber: sequenceNumber,
+                    offsetMilliseconds: 1_000 + sequenceNumber
+                ),
+                policy: policy,
+                nowNanoseconds: baseTime + (1_000 + sequenceNumber) * 1_000_000
+            )
+            guard case .accepted = admission else {
+                Issue.record("expected restarted fallback frame \(sequenceNumber) to keep playing")
+                return
+            }
+        }
+    }
+
     @Test func incomingAudioIngressExecutorDropsExpiredPacketMediaQueueBeforePlayback() async {
         let contactID = UUID()
         let executor = IncomingAudioIngressExecutor()
@@ -1102,6 +1252,32 @@ struct ConnectionTests {
 
         #expect(!decision.shouldPlay)
         #expect(decision.dropReason == .orderedBacklog(elapsedNanoseconds: 1_300_000_000, expectedSequenceFloor: 98))
+    }
+
+    @Test func incomingAudioPlaybackGateAcceptsRelayWebSocketSequenceRestartWithinEpoch() {
+        let runtime = MediaRuntimeState()
+        let contactID = UUID()
+
+        for sequenceNumber in UInt64(1) ... UInt64(407) {
+            #expect(
+                runtime.acceptIncomingAudioForPlayback(
+                    contactID: contactID,
+                    sequenceNumber: sequenceNumber,
+                    transport: .relayWebSocket,
+                    nowNanoseconds: 1_000_000_000 + sequenceNumber * 1_000_000
+                ).shouldPlay
+            )
+        }
+
+        let restartedFirst = runtime.acceptIncomingAudioForPlayback(
+            contactID: contactID,
+            sequenceNumber: 1,
+            transport: .relayWebSocket,
+            nowNanoseconds: 2_000_000_000
+        )
+
+        #expect(restartedFirst.shouldPlay)
+        #expect(restartedFirst.dropReason == nil)
     }
 
     @Test func backendRuntimeConfigDecodesDirectQuicCapabilityAndPolicy() throws {
@@ -4957,6 +5133,55 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func selectedContactDirectQuicPrewarmIsDisabledByDefault() async {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "device-a"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+        let viewModel = PTTViewModel()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == "selected-prewarm-disabled")
+
+        await viewModel.maybeStartSelectedContactDirectQuicPrewarm(
+            for: contactID,
+            reason: "selected-contact"
+        )
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+    }
+
+    @MainActor
     @Test func selectedContactDirectQuicPrewarmDoesNotRequireLocalSession() {
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
         TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
@@ -4982,6 +5207,7 @@ struct ConnectionTests {
             )
         )
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5046,6 +5272,7 @@ struct ConnectionTests {
             )
         )
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5125,6 +5352,7 @@ struct ConnectionTests {
         )
         client.enableSentSignalCaptureForTesting()
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5204,6 +5432,7 @@ struct ConnectionTests {
         )
         client.enableSentSignalCaptureForTesting()
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5278,6 +5507,7 @@ struct ConnectionTests {
         )
         client.enableSentSignalCaptureForTesting()
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5339,6 +5569,268 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func selectedDirectQuicPrewarmIsBlockedDuringRecentSystemLeaveTeardown() async throws {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "zz-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+
+        let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.markStaleSystemRejoinSuppression(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "recent-system-leave"
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: false,
+                    peerHasActiveDevice: true,
+                    peerDirectQuicIdentity: TurboDirectQuicPeerIdentityPayload(
+                        fingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        status: "active",
+                        createdAt: nil,
+                        updatedAt: nil
+                    ),
+                    peerTargetDeviceId: "aa-device"
+                )
+            )
+        )
+
+        viewModel.syncSelectedConversationProjection()
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == "selected-disconnecting")
+
+        await viewModel.maybeStartSelectedContactDirectQuicPrewarm(
+            for: contactID,
+            reason: "channel-refresh"
+        )
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+        #expect(viewModel.diagnosticsTranscript.contains("Selection Direct QUIC prewarm skipped"))
+        #expect(viewModel.diagnosticsTranscript.contains("blockReason=selected-disconnecting"))
+    }
+
+    @MainActor
+    @Test func selectedDirectQuicPrewarmIsBlockedForStaleBackendMembershipWithoutLocalPTTEvidence() async throws {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "zz-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+
+        let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .waitingForPeer,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: false,
+                    peerHasActiveDevice: true,
+                    peerDirectQuicIdentity: TurboDirectQuicPeerIdentityPayload(
+                        fingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        status: "active",
+                        createdAt: nil,
+                        updatedAt: nil
+                    ),
+                    peerTargetDeviceId: "aa-device"
+                )
+            )
+        )
+
+        viewModel.syncSelectedConversationProjection()
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == "stale-backend-membership")
+
+        await viewModel.maybeStartSelectedContactDirectQuicPrewarm(
+            for: contactID,
+            reason: "readiness-channel-refresh"
+        )
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+        #expect(viewModel.diagnosticsTranscript.contains("Selection Direct QUIC prewarm skipped"))
+        #expect(viewModel.diagnosticsTranscript.contains("blockReason=stale-backend-membership"))
+    }
+
+    @MainActor
+    @Test func selectedDirectQuicPrewarmIsBlockedWhenJoinedPeerIsWakeCapable() async throws {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "aaa-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+
+        let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: false,
+                    remoteAudioReadiness: .wakeCapable,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "zzz-device")
+                )
+            )
+        )
+
+        viewModel.syncSelectedConversationProjection()
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == "peer-wake-capable")
+
+        await viewModel.maybeStartSelectedContactDirectQuicPrewarm(
+            for: contactID,
+            reason: "readiness-channel-refresh"
+        )
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+        #expect(viewModel.diagnosticsTranscript.contains("Selection Direct QUIC prewarm skipped"))
+        #expect(viewModel.diagnosticsTranscript.contains("blockReason=peer-wake-capable"))
+    }
+
+    @MainActor
     @Test func selectedPrewarmRequestResendsActiveDirectQuicOffer() async throws {
         let contactID = UUID()
         let client = TurboBackendClient(
@@ -5358,6 +5850,7 @@ struct ConnectionTests {
         client.enableSentSignalCaptureForTesting()
 
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -5438,6 +5931,108 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func selectedPrewarmRequestDoesNotResendActiveDirectQuicOfferDuringRecentSystemLeaveTeardown() async throws {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "aaa-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+
+        let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.markStaleSystemRejoinSuppression(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "recent-system-leave"
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    peerTargetDeviceId: "zzz-device"
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == "selected-disconnecting")
+
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel",
+            attemptID: "attempt-1",
+            peerDeviceID: "zzz-device"
+        )
+        let offer = TurboDirectQuicOfferPayload(
+            attemptId: "attempt-1",
+            channelId: "channel",
+            fromDeviceId: "aaa-device",
+            toDeviceId: "zzz-device",
+            quicAlpn: "turbo-ptt-v2",
+            certificateFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            candidates: [],
+            roleIntent: .listener
+        )
+        viewModel.mediaRuntime.directQuicUpgrade.markLocalOffer(offer, for: contactID)
+
+        let requestPayload = TurboDirectQuicUpgradeRequestPayload(
+            requestId: "request-1",
+            channelId: "channel",
+            fromDeviceId: "zzz-device",
+            toDeviceId: "aaa-device",
+            reason: "selection-direct-quic-prewarm-channel-refresh",
+            roleIntent: .listener
+        )
+        let requestEnvelope = try TurboSignalEnvelope.directQuicUpgradeRequest(
+            channelId: "channel",
+            fromUserId: "peer",
+            fromDeviceId: "zzz-device",
+            toUserId: "user-self",
+            toDeviceId: "aaa-device",
+            payload: requestPayload
+        )
+
+        viewModel.handleIncomingDirectQuicUpgradeRequest(
+            requestEnvelope,
+            contactID: contactID
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+        #expect(viewModel.diagnosticsTranscript.contains("Ignored Direct QUIC upgrade request because selection prewarm is blocked"))
+        #expect(viewModel.diagnosticsTranscript.contains("blockReason=selected-disconnecting"))
+    }
+
+    @MainActor
     @Test func directQuicSetupLivenessResendsUnansweredListenerOfferWithoutControlPlaneReconnect() async throws {
         let contactID = UUID()
         let client = TurboBackendClient(
@@ -5510,6 +6105,110 @@ struct ConnectionTests {
         #expect(resentPayload.attemptId == "attempt-1")
         #expect(viewModel.diagnosticsTranscript.contains("Direct QUIC active offer resent"))
         #expect(!viewModel.diagnosticsTranscript.contains("Reconnecting websocket before Direct QUIC setup liveness resend"))
+    }
+
+    @MainActor
+    @Test func directQuicSetupLivenessCancelsActiveOfferWhenPeerBecomesWakeCapable() async throws {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "aaa-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.enableSentSignalCaptureForTesting()
+
+        let viewModel = PTTViewModel()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: false,
+                    remoteAudioReadiness: .wakeCapable,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "zzz-device")
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel",
+            attemptID: "attempt-1",
+            peerDeviceID: "zzz-device"
+        )
+        let offer = TurboDirectQuicOfferPayload(
+            attemptId: "attempt-1",
+            channelId: "channel",
+            fromDeviceId: "aaa-device",
+            toDeviceId: "zzz-device",
+            quicAlpn: "turbo-ptt-v2",
+            certificateFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            candidates: [],
+            roleIntent: .listener
+        )
+        viewModel.mediaRuntime.directQuicUpgrade.markLocalOffer(offer, for: contactID)
+
+        await viewModel.resendActiveDirectQuicOfferForLivenessIfNeeded(
+            contactID: contactID,
+            attemptID: "attempt-1",
+            peerDeviceID: "zzz-device",
+            livenessStep: 2
+        )
+
+        #expect(client.sentSignalsForTesting().isEmpty)
+        #expect(viewModel.mediaRuntime.directQuicUpgrade.attempt(for: contactID) == nil)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Direct QUIC active offer resend skipped because peer is not direct warmable"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("blockReason=peer-wake-capable"))
     }
 
     @MainActor
@@ -5606,6 +6305,7 @@ struct ConnectionTests {
             )
         )
         let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "user-self",
@@ -12096,6 +12796,11 @@ struct ConnectionTests {
             return
         }
         #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: relayClient))
+        let requestID = viewModel.mediaRuntime.receiverPrewarmRequestID(for: target.contactID)
+        viewModel.mediaRuntime.markReceiverPrewarmAckReceived(
+            contactID: target.contactID,
+            requestID: requestID
+        )
         viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
         var sentMediaRelayPayloads: [String] = []
         viewModel.mediaRelayAudioSendOverride = { _, payload in
@@ -12123,6 +12828,93 @@ struct ConnectionTests {
                 == ["media-relay-packet"]
         )
         #expect(!viewModel.diagnosticsTranscript.contains("Delivered outbound audio over multipath transports"))
+    }
+
+    @MainActor
+    @Test func productionMediaRelayPacketStandbyUsesWebSocketUntilReceiverPrewarmAck() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let attempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: relayClient))
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .quicDatagram
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+
+        #expect(sentMediaRelayPayloads.isEmpty)
+        let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
+        #expect(sent.count == 1)
+        let envelope = try #require(sent.first)
+        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
+        #expect(relayPayload.payload == "payload-1")
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["relay-websocket"]
+        )
     }
 
     @MainActor
@@ -14794,6 +15586,24 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func outgoingFastRelayUsesContinuityPolicyUntilReceiverPrewarmAck() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .websocketContinuity)
+
+        let requestID = viewModel.mediaRuntime.receiverPrewarmRequestID(for: contactID)
+        viewModel.mediaRuntime.markReceiverPrewarmAckReceived(
+            contactID: contactID,
+            requestID: requestID
+        )
+
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .fastRelayBalanced)
+    }
+
+    @MainActor
     @Test func outgoingDirectQuicUsesBalancedPacketPolicyWhenRelayContinuityIsConfigured() {
         let previousRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         let previousRelayForced = TurboMediaRelayDebugOverride.isForced()
@@ -15438,6 +16248,79 @@ struct ConnectionTests {
             for: "Dropped stale outbound audio transport payload"
         )
         #expect(dropMetadata == nil)
+    }
+
+    @Test func websocketContinuityAudioSenderWaitsForStalledOrderedSend() async {
+        actor Gate {
+            var isOpen = false
+            var continuations: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    continuations.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiting = continuations
+                continuations.removeAll(keepingCapacity: false)
+                for continuation in waiting {
+                    continuation.resume()
+                }
+            }
+        }
+
+        actor Recorder {
+            var completedPayloads: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func appendPayload(_ payload: String) {
+                completedPayloads.append(payload)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let gate = Gate()
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                await gate.wait()
+                try Task.checkCancellation()
+                await recorder.appendPayload(payload)
+            },
+            reportFailure: { _ in },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            configuration: .websocketContinuity,
+            maximumPayloadsPerMessage: 1
+        )
+
+        let enqueueTask = Task {
+            await sender.enqueue(["chunk-0", "chunk-1", "chunk-2", "chunk-3"])
+        }
+
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        await gate.open()
+        await enqueueTask.value
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        let deliveredPayloads = await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode)
+        #expect(deliveredPayloads == ["chunk-0", "chunk-1", "chunk-2", "chunk-3"])
+        #expect(
+            await recorder.firstMetadata(
+                for: "Dropped stale outbound audio transport payload"
+            ) == nil
+        )
     }
 
     @Test func packetAudioSenderRetainsNewestLivePayloadAfterTimedOutTransportSend() async {
@@ -16333,6 +17216,156 @@ struct ConnectionTests {
 
         #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
         #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-relay-packet"])
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped incoming audio after receive epoch changed"
+                    && $0.metadata["incomingTransport"] == "media-relay-packet"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func repeatedStaleDirectQuicPlaybackDropsFallBackToRelayWithoutResettingReceiveEpoch() async throws {
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        TurboMediaRelayDebugOverride.setEnabled(false)
+        TurboMediaRelayDebugOverride.setForced(false)
+        defer {
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        client.setWebSocketConnectionStateForTesting(.connected)
+
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.applicationStateOverride = .active
+        viewModel.isPTTAudioSessionActive = true
+        viewModel.remoteAudioChunkContinuityGapNanoseconds = 2_000_000_000
+        viewModel.directQuicStalePlaybackDropFallbackThreshold = 3
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        let promoting = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.applyDirectQuicUpgradeTransition(promoting, for: contactID)
+        let direct = try #require(
+            viewModel.mediaRuntime.directQuicUpgrade.markDirectPathActivated(
+                for: contactID,
+                attemptID: "attempt-1",
+                nominatedPath: makeDirectQuicNominatedPath(attemptID: "attempt-1")
+            )
+        )
+        viewModel.applyDirectQuicUpgradeTransition(direct, for: contactID)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        let capturedReceiveEpoch = viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "first-live-packet",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 610,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(viewModel.mediaTransportPathState == .direct)
+
+        for duplicateIndex in 0..<2 {
+            await viewModel.handleIncomingDirectQuicAudioPayload(
+                DirectQuicIncomingAudioPayload(
+                    payload: "duplicate-direct-\(duplicateIndex)",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: 610,
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                ),
+                contactID: contactID,
+                attemptID: "attempt-1"
+            )
+        }
+        #expect(viewModel.mediaTransportPathState == .direct)
+
+        await viewModel.handleIncomingDirectQuicAudioPayload(
+            DirectQuicIncomingAudioPayload(
+                payload: "duplicate-direct-threshold",
+                datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 610,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            ),
+            contactID: contactID,
+            attemptID: "attempt-1"
+        )
+
+        #expect(viewModel.mediaTransportPathState != .direct)
+        #expect(mediaSession.beginReceiveEpochCallCount == 0)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Direct QUIC stale playback drop threshold reached; falling back to relay"
+                    && $0.metadata["directQuicSequenceNumber"] == "610"
+                    && $0.metadata["dropCount"] == "3"
+            }
+        )
+
+        await viewModel.handleIncomingAudioPayload(
+            "fresh-relay-packet",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 611,
+            expectedReceiveEpoch: capturedReceiveEpoch,
+            ingressContext: IncomingAudioIngressContext(
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 611,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                source: "media-relay-packet"
+            )
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "first-live-packet",
+            "fresh-relay-packet",
+        ])
         #expect(
             !viewModel.diagnostics.entries.contains {
                 $0.message == "Dropped incoming audio after receive epoch changed"

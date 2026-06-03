@@ -564,6 +564,9 @@ extension PTTViewModel {
             syncPTTState()
             resetTransmitSession(closeMediaSession: false)
             conversationActionCoordinator.clearLeaveAction(for: contactID)
+            if selectedChannelSnapshot(for: contactID)?.membership.hasLocalMembership != true {
+                selectedConversationCoordinator.send(.devicePTTTeardownCompleted(contactID: contactID))
+            }
             replaceDisconnectRecoveryTask(with: nil)
             updateStatusForSelectedContact()
             captureDiagnosticsState("device-ptt-teardown:local-reset")

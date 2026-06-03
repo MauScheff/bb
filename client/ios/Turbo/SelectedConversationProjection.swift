@@ -301,6 +301,7 @@ enum SelectedConversationEvent: Equatable {
     case incomingWakeActivationStateUpdated(IncomingWakeActivationState?)
     case senderAutoJoinCancelled(contactID: UUID)
     case connectionAttemptTimedOut(contactID: UUID)
+    case devicePTTTeardownCompleted(contactID: UUID)
     case joinRequested
     case disconnectRequested
     case reconcileRequested
@@ -428,6 +429,23 @@ enum SelectedConversationReducer {
             nextState.senderAutoJoinOnBeepAcceptanceDispatchInFlight = false
             nextState.senderAutoJoinOnBeepAcceptanceObservedOutgoingBeep = false
             nextState.interruptedConnectionAttemptContactID = contactID
+            recomputeDerivedState(&nextState)
+            return SelectedConversationTransition(state: nextState)
+        case .devicePTTTeardownCompleted(let contactID):
+            guard nextState.selection?.contactID == contactID else {
+                return SelectedConversationTransition(state: nextState)
+            }
+            nextState.hadConnectedDevicePTTContinuity = false
+            nextState.devicePTT.localSession = .absent
+            nextState.devicePTT.systemSessionState = .none
+            nextState.devicePTT.systemSessionMatchesContact = false
+            nextState.devicePTTContinuityProjection = .inactive
+            nextState.connectedExecutionProjection = nil
+            nextState.connectedControlPlaneProjection = .unavailable
+            nextState.reconciliationAction = .none
+            if nextState.devicePTTRestoreDispatchInFlightContactID == contactID {
+                nextState.devicePTTRestoreDispatchInFlightContactID = nil
+            }
             recomputeDerivedState(&nextState)
             return SelectedConversationTransition(state: nextState)
         case .joinRequested:
