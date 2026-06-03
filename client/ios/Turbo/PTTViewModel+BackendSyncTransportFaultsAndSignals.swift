@@ -282,6 +282,39 @@ extension PTTViewModel {
         envelope: TurboSignalEnvelope,
         contactID: UUID
     ) -> Bool {
+        if let localBlockReason = incomingDirectQuicLocalConversationBlockReason(
+            signal,
+            envelope: envelope,
+            contactID: contactID
+        ) {
+            diagnostics.record(
+                .websocket,
+                message: "Ignored stale Direct QUIC signal because local Conversation is not eligible",
+                metadata: [
+                    "type": envelope.type.rawValue,
+                    "channelId": envelope.channelId,
+                    "contactId": contactID.uuidString,
+                    "attemptId": signal.attemptId,
+                    "reason": localBlockReason,
+                    "fromDeviceId": envelope.fromDeviceId,
+                    "toDeviceId": envelope.toDeviceId,
+                    "activeChannelId": activeChannelId?.uuidString ?? "none",
+                    "isJoined": String(isJoined),
+                    "systemSessionMatches": String(systemSessionMatches(contactID)),
+                    "pendingLeave": String(
+                        conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID)
+                    ),
+                ]
+            )
+            _ = retireDirectQuicPathImmediately(
+                for: contactID,
+                reason: "incoming-signal-local-\(localBlockReason)",
+                sendHangup: false,
+                configureActiveRoute: false
+            )
+            return false
+        }
+
         switch signal {
         case .offer:
             if directQuicAttempt(for: contactID, matching: signal.attemptId)?.isDirectActive == true {
@@ -320,6 +353,47 @@ extension PTTViewModel {
             }
             return true
         }
+    }
+
+    func incomingDirectQuicLocalConversationBlockReason(
+        _ signal: TurboDirectQuicSignalPayload,
+        envelope: TurboSignalEnvelope,
+        contactID: UUID
+    ) -> String? {
+        if case .hangup = signal {
+            return nil
+        }
+        if conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) {
+            return "leave-in-flight"
+        }
+        if currentApplicationState() != .active,
+           !hasActiveBackgroundPTTFlowOwningDirectQuic(for: contactID) {
+            return "background-idle"
+        }
+        guard let contact = contacts.first(where: { $0.id == contactID }),
+              let backendChannelID = contact.backendChannelId,
+              !backendChannelID.isEmpty,
+              contact.remoteUserId != nil else {
+            return "channel-metadata-missing"
+        }
+        guard backendChannelID == envelope.channelId else {
+            return "channel-id-mismatch"
+        }
+        guard systemSessionMatches(contactID),
+              isJoined,
+              activeChannelId == contactID else {
+            return "local-session-not-aligned"
+        }
+        guard let channel = selectedChannelSnapshot(for: contactID) else {
+            return "channel-snapshot-missing"
+        }
+        guard channel.membership.hasLocalMembership else {
+            return "local-membership-missing"
+        }
+        guard channel.membership.peerDeviceConnected else {
+            return "peer-device-not-connected"
+        }
+        return nil
     }
 
     func shouldAcceptIncomingDirectQuicSignal(
@@ -547,6 +621,27 @@ extension PTTViewModel {
     ) {
         guard incomingAudioTransport == .directQuic else { return }
         guard let gapNanoseconds = observation.gapNanoseconds else { return }
+
+        if retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
+            contactID: contactID,
+            reason: "incoming-audio-continuity-gap",
+            sequenceNumber: nil
+        ) {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Preserved fallback receive epoch after Direct QUIC continuity gap",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                    "gapMilliseconds": String(gapNanoseconds / 1_000_000),
+                    "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
+                ]
+            )
+            return
+        }
 
         mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
@@ -1008,17 +1103,6 @@ extension PTTViewModel {
             )
             return
         }
-        recordAcceptedIncomingAudioBookkeeping(
-            incomingMediaPayload: incomingMediaPayload,
-            audioPayload: audioPayload,
-            channelID: channelID,
-            fromDeviceID: fromDeviceID,
-            contactID: contactID,
-            incomingAudioTransport: incomingAudioTransport,
-            playbackSequenceNumber: playbackSequenceNumber,
-            receivedAtNanoseconds: receivedAtNanoseconds,
-            frameDurationNanoseconds: frameDurationNanoseconds
-        )
         let alreadyHasPendingWake = pttWakeRuntime.hasPendingWake(for: contactID)
         let shouldArmDeferredBackgroundAudioWakeCandidate =
             !alreadyHasPendingWake
@@ -1084,13 +1168,32 @@ extension PTTViewModel {
         }
         if bufferForegroundSystemReceiveAudioChunkUntilPTTActivation(
             audioPayload,
+            incomingMediaPayload: incomingMediaPayload,
             channelID: channelID,
+            fromUserID: fromUserID,
+            fromDeviceID: fromDeviceID,
             contactID: contactID,
             incomingAudioTransport: incomingAudioTransport,
+            playbackSequenceNumber: playbackSequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            frameDurationNanoseconds: frameDurationNanoseconds,
+            ingressSource: ingressContext?.source ?? "incoming-audio",
             applicationState: applicationState
         ) {
             return
         }
+        recordAcceptedIncomingAudioBookkeeping(
+            incomingMediaPayload: incomingMediaPayload,
+            audioPayload: audioPayload,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            playbackSequenceNumber: playbackSequenceNumber,
+            receivedAtNanoseconds: receivedAtNanoseconds,
+            frameDurationNanoseconds: frameDurationNanoseconds
+        )
         if bufferWakeAudioChunkUntilPTTActivation(
             audioPayload,
             channelID: channelID,
@@ -1247,6 +1350,43 @@ extension PTTViewModel {
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
                 ingressSource: ingressSource
+            )
+        }
+    }
+
+    func playBufferedForegroundSystemReceiveAudioChunks(
+        _ bufferedAudioChunks: [BufferedForegroundReceiveAudioChunk],
+        contactID: UUID
+    ) async {
+        for bufferedAudioChunk in bufferedAudioChunks {
+            recordAcceptedIncomingAudioBookkeeping(
+                incomingMediaPayload: bufferedAudioChunk.incomingMediaPayload,
+                audioPayload: bufferedAudioChunk.payload,
+                channelID: bufferedAudioChunk.channelID,
+                fromDeviceID: bufferedAudioChunk.fromDeviceID,
+                contactID: contactID,
+                incomingAudioTransport: bufferedAudioChunk.transport,
+                playbackSequenceNumber: bufferedAudioChunk.playbackSequenceNumber,
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                frameDurationNanoseconds: bufferedAudioChunk.frameDurationNanoseconds
+            )
+            let playbackAccepted = await receiveRemoteAudioChunk(
+                bufferedAudioChunk.payload,
+                incomingAudioTransport: bufferedAudioChunk.transport
+            )
+            await completeIncomingAudioPlayback(
+                playbackAccepted: playbackAccepted,
+                incomingMediaPayload: bufferedAudioChunk.incomingMediaPayload,
+                audioPayload: bufferedAudioChunk.payload,
+                channelID: bufferedAudioChunk.channelID,
+                fromUserID: bufferedAudioChunk.fromUserID,
+                fromDeviceID: bufferedAudioChunk.fromDeviceID,
+                contactID: contactID,
+                incomingAudioTransport: bufferedAudioChunk.transport,
+                playbackSequenceNumber: bufferedAudioChunk.playbackSequenceNumber,
+                localQueueDelayNanoseconds: bufferedAudioChunk.localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: bufferedAudioChunk.senderSentAtMilliseconds,
+                ingressSource: bufferedAudioChunk.ingressSource
             )
         }
     }

@@ -444,18 +444,22 @@ extension PTTViewModel {
                 minimal: diagnosticsUploadMinimal(uploadMode),
                 engineTraceStepLimit: engineTraceStepLimit ?? uploadMode.defaultEngineTraceStepLimit
             )
+        let snapshot = diagnosticsUploadTiny(uploadMode)
+            ? diagnosticsTinySnapshot
+            : diagnosticsSnapshot
         return TurboDiagnosticsUploadRequest(
             deviceId: deviceID,
             appVersion: appVersionDescription,
             backendBaseURL: backendBaseURL,
             selectedHandle: selectedContact?.handle,
-            snapshot: diagnosticsSnapshot,
+            snapshot: snapshot,
             transcript: diagnosticsTranscriptText(
                 structuredEnvelopeJSON: structuredEnvelopeJSON,
                 includePersistedLogTail: uploadMode == .full,
                 compact: diagnosticsUploadCompact(uploadMode),
                 minimal: diagnosticsUploadMinimal(uploadMode),
-                tiny: diagnosticsUploadTiny(uploadMode)
+                tiny: diagnosticsUploadTiny(uploadMode),
+                includeSnapshot: !diagnosticsUploadTiny(uploadMode)
             )
         )
     }

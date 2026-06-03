@@ -4834,8 +4834,13 @@ extension PTTViewModel {
                 activationMode: .systemActivated,
                 startupMode: .playbackOnly
             )
+            mediaRuntime.deactivateForegroundSystemReceivePlaybackFallback(for: receiveContactID)
             let bufferedAudioChunks = mediaRuntime.takeForegroundSystemReceiveAudioChunks(
                 for: receiveContactID
+            )
+            mediaRuntime.replaceForegroundSystemReceivePlaybackFallbackTask(
+                for: receiveContactID,
+                with: nil
             )
             if !bufferedAudioChunks.isEmpty {
                 diagnostics.record(
@@ -4848,12 +4853,10 @@ extension PTTViewModel {
                     ]
                 )
                 markRemoteAudioActivity(for: receiveContactID, source: .audioChunk)
-                for bufferedAudioChunk in bufferedAudioChunks {
-                    await receiveRemoteAudioChunk(
-                        bufferedAudioChunk.payload,
-                        incomingAudioTransport: bufferedAudioChunk.transport
-                    )
-                }
+                await playBufferedForegroundSystemReceiveAudioChunks(
+                    bufferedAudioChunks,
+                    contactID: receiveContactID
+                )
             } else {
                 diagnostics.record(
                     .media,

@@ -206,6 +206,115 @@ extension PTTViewModel {
         )
     }
 
+    func scheduleForegroundSystemReceivePlaybackFallback(
+        for contactID: UUID,
+        channelID: String
+    ) {
+        guard foregroundSystemReceivePlaybackFallbackDelayNanoseconds > 0 else { return }
+        guard !isPTTAudioSessionActive else { return }
+        guard currentApplicationState() == .active else { return }
+        guard !mediaRuntime.hasActiveForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: channelID
+        ) else { return }
+        guard !mediaRuntime.hasForegroundSystemReceivePlaybackFallbackTask(for: contactID) else {
+            return
+        }
+        let delayNanoseconds = foregroundSystemReceivePlaybackFallbackDelayNanoseconds
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled else { return }
+            await self?.runForegroundSystemReceivePlaybackFallbackIfNeeded(
+                for: contactID,
+                channelID: channelID,
+                reason: "ptt-activation-timeout"
+            )
+        }
+        mediaRuntime.replaceForegroundSystemReceivePlaybackFallbackTask(
+            for: contactID,
+            with: task
+        )
+    }
+
+    func runForegroundSystemReceivePlaybackFallbackIfNeeded(
+        for contactID: UUID,
+        channelID: String,
+        reason: String
+    ) async {
+        defer {
+            mediaRuntime.replaceForegroundSystemReceivePlaybackFallbackTask(for: contactID, with: nil)
+        }
+
+        let applicationState = currentApplicationState()
+        guard applicationState == .active else { return }
+        guard !isPTTAudioSessionActive else { return }
+        guard shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+            for: contactID,
+            channelID: channelID,
+            applicationState: applicationState
+        ) else { return }
+
+        let bufferedChunkCount = mediaRuntime.foregroundSystemReceiveBufferedAudioChunkCount(for: contactID)
+        guard bufferedChunkCount > 0 else { return }
+        mediaRuntime.activateForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: channelID,
+            reason: reason
+        )
+
+        diagnostics.recordContractViolation(
+            DiagnosticsContracts.Transmit.appleGatedAudioActivationDeadlineElapsed(
+                contactID: contactID,
+                channelID: channelID,
+                channelUUID: channelUUID(for: contactID) ?? pttCoordinator.state.systemChannelUUID ?? UUID(),
+                targetDeviceID: directQuicPeerDeviceID(for: contactID) ?? "unknown",
+                trigger: "foreground-receive-playback-fallback",
+                startupPolicy: directQuicTransmitStartupPolicy.rawValue,
+                isPTTAudioSessionActive: isPTTAudioSessionActive,
+                timeoutMilliseconds: foregroundSystemReceivePlaybackFallbackDelayNanoseconds / 1_000_000
+            )
+        )
+        diagnostics.record(
+            .media,
+            message: "PTT activation timed out; starting app-managed foreground receive playback fallback",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "bufferedChunkCount": String(bufferedChunkCount),
+                "reason": reason,
+            ]
+        )
+        captureDiagnosticsState("foreground-receive:fallback-started")
+
+        await ensureMediaSession(
+            for: contactID,
+            activationMode: .appManaged,
+            startupMode: .playbackOnly
+        )
+        guard mediaRuntime.markForegroundSystemReceivePlaybackFallbackReady(
+            for: contactID,
+            channelID: channelID
+        ) else { return }
+        let bufferedAudioChunks = mediaRuntime.takeForegroundSystemReceiveAudioChunks(for: contactID)
+        guard !bufferedAudioChunks.isEmpty else { return }
+        markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        diagnostics.record(
+            .media,
+            message: "Flushing buffered foreground receive audio through app-managed playback fallback",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "bufferedChunkCount": String(bufferedAudioChunks.count),
+                "reason": reason,
+            ]
+        )
+        await playBufferedForegroundSystemReceiveAudioChunks(
+            bufferedAudioChunks,
+            contactID: contactID
+        )
+        captureDiagnosticsState("foreground-receive:fallback-flushed")
+    }
+
     func runWakePlaybackFallbackIfNeeded(for contactID: UUID) async {
         await runWakePlaybackFallbackIfNeeded(
             for: contactID,

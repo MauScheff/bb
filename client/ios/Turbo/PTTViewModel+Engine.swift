@@ -481,8 +481,10 @@ extension PTTViewModel {
             engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: false)
             ?? engineBackendActiveTransmitID(for: contactID)
             ?? EngineTransmitID("remote-\(channelID)-\(fromDeviceID)-audio")
-        let identity = audioPayloadIdentity(originalPayload)
-        let sequence = identity.encryptedSequenceNumber.map(engineAudioSequence) ?? mediaRuntime.nextEngineRemoteAudioSequence(for: contactID)
+        let sequence = engineRemoteAudioSequence(
+            openedPayload: openedPayload,
+            contactID: contactID
+        )
         let digest = AudioChunkPayloadCodec.transportDigest(openedPayload)
         receiveEngineEvent(
             .media(
@@ -788,6 +790,27 @@ extension PTTViewModel {
     private func engineAudioSequence(_ sequenceNumber: UInt64) -> Int {
         let max = UInt64(Int.max)
         return Int(sequenceNumber > max ? sequenceNumber % max : sequenceNumber)
+    }
+
+    private func engineRemoteAudioSequence(
+        openedPayload: String,
+        contactID: UUID
+    ) -> Int {
+        let voiceFrameIndex = VoiceAudioFramePayloadCodec
+            .decodeTransportFrames(openedPayload)?
+            .lazy
+            .compactMap { frame -> UInt64? in
+                if case .opus(let opusFrame) = frame {
+                    return opusFrame.frameIndex
+                }
+                return nil
+            }
+            .first
+
+        if let voiceFrameIndex {
+            return engineAudioSequence(voiceFrameIndex)
+        }
+        return mediaRuntime.nextEngineRemoteAudioSequence(for: contactID)
     }
 
     private func handleEngineTransition(

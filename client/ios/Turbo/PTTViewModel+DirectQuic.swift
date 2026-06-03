@@ -1567,6 +1567,17 @@ extension PTTViewModel {
                 || remoteReceivePhase == .receivingAudio
         else { return }
 
+        if retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
+            contactID: contactID,
+            attemptID: attemptID,
+            reason: "expired-live-backlog",
+            sequenceNumber: sequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            thresholdNanoseconds: thresholdNanoseconds
+        ) {
+            return
+        }
+
         mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
@@ -1612,6 +1623,65 @@ extension PTTViewModel {
                 "thresholdMs": String(thresholdNanoseconds / 1_000_000),
             ]
         )
+    }
+
+    @discardableResult
+    func retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
+        contactID: UUID,
+        attemptID: String? = nil,
+        reason: String,
+        sequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64? = nil,
+        thresholdNanoseconds: UInt64? = nil
+    ) -> Bool {
+        let selectedTransport = selectedMediaTransportState(for: contactID)
+        guard selectedTransport.fallbackReady,
+              let attempt = directQuicAttempt(for: contactID, matching: attemptID),
+              selectedTransport.directMediaPathActive
+                || attempt.isDirectActive
+                || selectedTransport.pathState == .direct
+                || selectedTransport.pathState == .promoting else {
+            return false
+        }
+
+        guard retireDirectQuicPathImmediately(
+            for: contactID,
+            reason: reason,
+            sendHangup: false,
+            configureActiveRoute: true
+        ) else {
+            return false
+        }
+
+        startMediaRelayFallbackAfterDirectQuicPathLost(
+            contactID: contactID,
+            channelID: attempt.channelID,
+            peerDeviceID: attempt.peerDeviceID,
+            reason: reason
+        )
+
+        var metadata = [
+            "contactId": contactID.uuidString,
+            "channelId": attempt.channelID,
+            "attemptId": attempt.attemptId,
+            "reason": reason,
+            "directQuicSequenceNumber": sequenceNumber.map(String.init) ?? "none",
+            "fallback": selectedTransport.fallbackDiagnosticsValue,
+            "selectedTransport": selectedTransport.diagnosticsValue,
+        ]
+        if let localQueueDelayNanoseconds {
+            metadata["localQueueDelayMs"] = String(localQueueDelayNanoseconds / 1_000_000)
+        }
+        if let thresholdNanoseconds {
+            metadata["thresholdMs"] = String(thresholdNanoseconds / 1_000_000)
+        }
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Retired Direct QUIC receive path after stale live audio; preserving fallback receive epoch",
+            metadata: metadata
+        )
+        return true
     }
 
     @discardableResult

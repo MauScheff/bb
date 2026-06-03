@@ -392,6 +392,7 @@ struct TurboCallPrototypeView: View {
     @State private var transmitPressBeganAt: Date?
     @State private var pendingHoldToTalkTask: Task<Void, Never>?
     @State private var holdToTalkDidBeginTransmit = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let cloudTuning = TurboCallCloudTuning()
     @State private var cloudFrozenTime: TimeInterval = Date.timeIntervalSinceReferenceDate
     @State private var displayedTalkEnergy: Double = 0
@@ -645,18 +646,33 @@ struct TurboCallPrototypeView: View {
     }
 
     private var callAvatar: some View {
-        Circle()
-            .fill(callAvatarColor)
-            .overlay(
-                Text(initials(for: contact.name))
-                    .font(.system(size: 26, weight: .medium, design: .default))
-                    .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.91))
-                    .tracking(0.8)
-            )
-            .overlay(
-                Circle()
-                    .strokeBorder(.white.opacity(0.08), lineWidth: 1)
-            )
+        TimelineView(.animation) { timeline in
+            let pulse = callAvatarPresencePulse(at: timeline.date)
+            Circle()
+                .fill(callAvatarColor)
+                .overlay(
+                    Text(initials(for: contact.name))
+                        .font(.system(size: 26, weight: .medium, design: .default))
+                        .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.91))
+                        .tracking(0.8)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(.white.opacity(0.08), lineWidth: 1)
+                )
+                .overlay(
+                    Circle()
+                        .strokeBorder(.white.opacity(pulse.ringOpacity), lineWidth: pulse.ringWidth)
+                        .blur(radius: 0.5)
+                )
+                .shadow(
+                    color: Color.white.opacity(pulse.glowOpacity),
+                    radius: pulse.shadowRadius,
+                    x: 0,
+                    y: 0
+                )
+                .scaleEffect(pulse.scale)
+        }
     }
 
     private var callAvatarColor: Color {
@@ -1110,9 +1126,9 @@ struct TurboCallPrototypeView: View {
 
         switch selectedConversationState.detail {
         case .transmitting:
-            return readyStatusText
+            return transmitReadyStatusText(now: now)
         case .receiving:
-            return "Talking"
+            return "Present"
         case .ready, .readyHoldToTalkDisabled:
             return readyStatusText
         case .startingTransmit:
@@ -1162,13 +1178,13 @@ struct TurboCallPrototypeView: View {
             return selectedConversationState.statusMessage
         }
         if selectedConversationState.statusMessage == "Connected" {
-            return "Ready"
+            return "Present"
         }
         if selectedConversationState.phase == .wakeReady {
             return selectedConversationState.statusMessage
         }
         if talkButtonIsEnabled {
-            return "Ready"
+            return "Present"
         }
         return selectedConversationState.statusMessage == "Connecting..." ? "Wait" : selectedConversationState.statusMessage
     }
@@ -1196,6 +1212,45 @@ struct TurboCallPrototypeView: View {
         mediaSessionContactID == contact.id
             && isPTTAudioSessionActive
             && mediaConnectionState == .connected
+    }
+
+    private struct CallAvatarPresencePulse {
+        let scale: CGFloat
+        let ringOpacity: Double
+        let ringWidth: CGFloat
+        let glowOpacity: Double
+        let shadowRadius: CGFloat
+    }
+
+    private func callAvatarPresencePulse(at date: Date) -> CallAvatarPresencePulse {
+        guard selectedConversationState.detail == .receiving else {
+            return CallAvatarPresencePulse(
+                scale: 1,
+                ringOpacity: 0.08,
+                ringWidth: 1,
+                glowOpacity: 0,
+                shadowRadius: 0
+            )
+        }
+
+        let baseIntensity: CGFloat = reduceMotion ? 0.02 : 0.06
+        let liveIntensity: CGFloat
+        if let percent = remoteParticipantTelemetry?.audio?.volumePercent {
+            liveIntensity = max(0.0, min(1.0, CGFloat(percent) / 100.0))
+        } else {
+            liveIntensity = 0.45
+        }
+        let phase = date.timeIntervalSinceReferenceDate * 2.6
+        let wave = 0.5 + 0.5 * CGFloat(sin(phase))
+        let intensity = baseIntensity + (liveIntensity * 0.10)
+
+        return CallAvatarPresencePulse(
+            scale: 1 + (intensity * 0.35) + (wave * intensity * 0.55),
+            ringOpacity: 0.10 + (wave * 0.10) + (liveIntensity * 0.05),
+            ringWidth: 1 + (wave * 0.7),
+            glowOpacity: 0.08 + (wave * 0.12) + (liveIntensity * 0.08),
+            shadowRadius: 6 + (wave * 8) + (liveIntensity * 3)
+        )
     }
 
     private func initials(for name: String) -> String {

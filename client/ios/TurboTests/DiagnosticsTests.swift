@@ -231,7 +231,35 @@ struct DiagnosticsTests {
                 && $0.contains("\(DiagnosticsUploadMode.minimal.maximumRequestBodyBytes)")
         })
         #expect(!prepared.request.transcript.contains("STRUCTURED DIAGNOSTICS"))
+        #expect(!prepared.request.transcript.contains("STATE SNAPSHOT"))
         #expect(prepared.request.selectedHandle == nil)
+    }
+
+    @Test func diagnosticsTinyUploadUsesEmergencySnapshotForNoisyReports() throws {
+        let viewModel = PTTViewModel()
+        let largeValue = String(repeating: "x", count: 20_000)
+        for index in 0..<20 {
+            viewModel.diagnostics.record(
+                .media,
+                message: "Noisy media diagnostic \(index)",
+                metadata: [
+                    "oversized": largeValue,
+                    "index": "\(index)",
+                ]
+            )
+        }
+
+        let prepared = try viewModel.diagnosticsPreparedUploadRequest(
+            deviceID: "device-upload-test",
+            backendBaseURL: "https://example.test/s/turbo",
+            preferredUploadMode: .compact
+        )
+
+        #expect(prepared.uploadMode == .tiny)
+        #expect(prepared.requestBodySizeBytes <= DiagnosticsUploadMode.tiny.maximumRequestBodyBytes)
+        #expect(prepared.request.snapshot.count < 8_000)
+        #expect(!prepared.request.transcript.contains("STATE SNAPSHOT"))
+        #expect(!prepared.request.transcript.contains(largeValue))
     }
 
     @Test func diagnosticsUploadModesUseBoundedFallbackTimeoutsAndPayloadBudgets() {

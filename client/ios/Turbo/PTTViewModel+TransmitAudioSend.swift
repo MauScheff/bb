@@ -1283,6 +1283,228 @@ extension PTTViewModel {
                 let directTransport = directTransportForAudioSend
                 var prearmedDirectAckExpectation = false
                 var directAckPrearmTask: Task<Void, Never>?
+                let standbyRelayClient = await self.existingMediaRelayClientForAudioFanout(
+                    target: target,
+                    localDeviceID: fromDeviceID
+                )
+                let standbyRelayIsTCPContinuity = standbyRelayClient.map {
+                    isMediaRelayTcpContinuityPath($0)
+                } ?? false
+                let standbyRelayLegacyPCMBypass = standbyRelayClient.map {
+                    shouldBypassMediaRelayPacketForLegacyPCM($0)
+                } ?? false
+                let transportPlan = OutboundAudioTransportPlan.dynamic(
+                    directAvailable: directTransport != nil,
+                    directVerified: directAudioInitiallyVerified,
+                    standbyRelayAvailable: standbyRelayClient != nil,
+                    standbyRelayIsTCPContinuity: standbyRelayIsTCPContinuity,
+                    legacyPCMRequiresWebSocketRelay: standbyRelayLegacyPCMBypass
+                )
+                if let directTransport,
+                   let relayClient = standbyRelayClient,
+                   transportPlan.startsWithStandbyRelayBeforeUnverifiedDirect {
+                    do {
+                        let mediaMode = try await mediaRelaySend(relayClient)
+                        let deliveredTransport = IncomingAudioPayloadTransport(
+                            mediaRelayMediaMode: mediaMode
+                        ).diagnosticsValue
+                        deliveredTransports.append(deliveredTransport)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        deliveryFailures.append((
+                            relayClient.currentMediaTransportLabel(),
+                            error
+                        ))
+                        await MainActor.run {
+                            self.recordMediaRelayPeerUnavailableInvariantIfNeeded(
+                                error: error,
+                                contactID: target.contactID,
+                                channelID: target.channelID,
+                                peerDeviceID: target.deviceID,
+                                operation: "audio-payload"
+                            )
+                            self.diagnostics.record(
+                                .media,
+                                level: .error,
+                                message: "Media relay audio send failed during unverified Direct QUIC shadow send",
+                                metadata: [
+                                    "contactId": target.contactID.uuidString,
+                                    "channelId": target.channelID,
+                                    "error": error.localizedDescription,
+                                ]
+                            )
+                            if self.isMediaRelayPeerUnavailable(error) {
+                                self.suppressMediaRelayAudioSendUntilNextIdlePrewarm(
+                                    localDeviceID: fromDeviceID,
+                                    contactID: target.contactID,
+                                    channelID: target.channelID,
+                                    peerDeviceID: target.deviceID,
+                                    reason: "audio-payload"
+                                )
+                                self.clearStaleMediaRelayClient(
+                                    localDeviceID: fromDeviceID,
+                                    channelID: target.channelID,
+                                    peerDeviceID: target.deviceID,
+                                    client: relayClient,
+                                    reason: "audio-payload"
+                                )
+                            }
+                        }
+                    }
+
+                    if !deliveredTransports.isEmpty, firstPlaybackAckExpectationGate.take() {
+                        let deliveredTransportsSnapshot = deliveredTransports
+                        await MainActor.run {
+                            _ = self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
+                                transportPayload,
+                                target: target,
+                                deliveredTransports: deliveredTransportsSnapshot
+                            )
+                        }
+                    }
+                    if !deliveredTransports.isEmpty {
+                        let primaryDeliveredTransports = deliveredTransports
+                        let deliveryFailureCountAtPrimary = deliveryFailures.count
+                        scheduleLocalAudioCapturedSync(transportPayload)
+                        Task(priority: .userInitiated) { [weak self] in
+                            guard let shadowOwner = self else { return }
+                            do {
+                                try Task.checkCancellation()
+                                let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
+                                if let directQuicAudioSendOverride {
+                                    try await directQuicAudioSendOverride(directTransport, transportPayload)
+                                } else {
+                                    try await directTransport.sendAudioPayload(transportPayload)
+                                }
+                                recordSlowOutboundAudioSendStage(
+                                    "direct-quic-shadow-send",
+                                    directSendStartedAt,
+                                    transportPayload.count
+                                )
+                                let shadowDeliveredTransports = primaryDeliveredTransports + ["direct-quic"]
+                                await MainActor.run {
+                                    shadowOwner.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
+                                        contactID: target.contactID,
+                                        deliveredTransports: shadowDeliveredTransports
+                                    )
+                                    if outboundDeliveryDiagnosticsLimiter.take() {
+                                        shadowOwner.diagnostics.record(
+                                            .media,
+                                            message: "Delivered outbound audio over unverified Direct QUIC shadow transport",
+                                            metadata: [
+                                                "contactId": target.contactID.uuidString,
+                                                "channelId": target.channelID,
+                                                "verifiedDirectAudio": "false",
+                                                "sampled": "true",
+                                            ]
+                                        )
+                                    }
+                                    shadowOwner.diagnostics.record(
+                                        .media,
+                                        message: "Delivered outbound audio over multipath transports",
+                                        metadata: [
+                                            "contactId": target.contactID.uuidString,
+                                            "channelId": target.channelID,
+                                            "transports": shadowDeliveredTransports.joined(separator: ","),
+                                            "failureCount": String(deliveryFailureCountAtPrimary),
+                                        ]
+                                    )
+                                }
+                            } catch is CancellationError {
+                            } catch {
+                                await MainActor.run {
+                                    shadowOwner.directAudioPlaybackVerifiedKeys.remove(directAudioAckKey)
+                                    shadowOwner.diagnostics.record(
+                                        .media,
+                                        level: .error,
+                                        message: "Direct QUIC shadow audio send failed during multipath fanout",
+                                        metadata: [
+                                            "contactId": target.contactID.uuidString,
+                                            "channelId": target.channelID,
+                                            "error": error.localizedDescription,
+                                        ]
+                                    )
+                                }
+                            }
+                        }
+                        return
+                    }
+                    do {
+                        try Task.checkCancellation()
+                        let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
+                        if let directQuicAudioSendOverride {
+                            try await directQuicAudioSendOverride(directTransport, transportPayload)
+                        } else {
+                            try await directTransport.sendAudioPayload(transportPayload)
+                        }
+                        recordSlowOutboundAudioSendStage(
+                            "direct-quic-shadow-send",
+                            directSendStartedAt,
+                            transportPayload.count
+                        )
+                        deliveredTransports.append("direct-quic")
+                        scheduleLocalAudioCapturedSync(transportPayload)
+                        if !Task.isCancelled, outboundDeliveryDiagnosticsLimiter.take() {
+                            diagnosticsStore.record(
+                                .media,
+                                message: "Delivered outbound audio over unverified Direct QUIC shadow transport",
+                                metadata: [
+                                    "contactId": target.contactID.uuidString,
+                                    "channelId": target.channelID,
+                                    "verifiedDirectAudio": "false",
+                                    "sampled": "true",
+                                ]
+                            )
+                        }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        deliveryFailures.append(("direct-quic", error))
+                        await MainActor.run {
+                            self.directAudioPlaybackVerifiedKeys.remove(directAudioAckKey)
+                            self.diagnostics.record(
+                                .media,
+                                level: .error,
+                                message: "Direct QUIC shadow audio send failed during multipath fanout",
+                                metadata: [
+                                    "contactId": target.contactID.uuidString,
+                                    "channelId": target.channelID,
+                                    "error": error.localizedDescription,
+                                ]
+                            )
+                        }
+                    }
+                    if !deliveredTransports.isEmpty {
+                        let deliveredTransportsSnapshot = deliveredTransports
+                        await MainActor.run {
+                            self.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
+                                contactID: target.contactID,
+                                deliveredTransports: deliveredTransportsSnapshot
+                            )
+                        }
+                    }
+                    if deliveredTransports.count > 1 {
+                        let deliveredTransportNames = deliveredTransports.joined(separator: ",")
+                        let deliveryFailureCount = deliveryFailures.count
+                        await MainActor.run {
+                            self.diagnostics.record(
+                                .media,
+                                message: "Delivered outbound audio over multipath transports",
+                                metadata: [
+                                    "contactId": target.contactID.uuidString,
+                                    "channelId": target.channelID,
+                                    "transports": deliveredTransportNames,
+                                    "failureCount": String(deliveryFailureCount),
+                                ]
+                            )
+                        }
+                    }
+                    if deliveredTransports.isEmpty, let firstFailure = deliveryFailures.first {
+                        throw firstFailure.error
+                    }
+                    return
+                }
                 if let directTransport {
                     do {
                         if directAckPrearmGate.take() {
@@ -1360,17 +1582,14 @@ extension PTTViewModel {
                     }
                 }
 
-                let standbyRelayClient = await self.existingMediaRelayClientForAudioFanout(
-                    target: target,
-                    localDeviceID: fromDeviceID
-                )
                 if let relayClient = standbyRelayClient {
                     let shouldSendStandbyRelayAfterUnverifiedDirect =
-                        !directAudioInitiallyVerified && deliveredTransports.contains("direct-quic")
-                    let bypassMediaRelayPacket = shouldBypassMediaRelayPacketForLegacyPCM(relayClient)
+                        transportPlan.attemptsStandbyRelayAfterUnverifiedDirect
+                            && deliveredTransports.contains("direct-quic")
+                    let bypassMediaRelayPacket = standbyRelayLegacyPCMBypass
                     if bypassMediaRelayPacket {
                         recordLegacyPCMMediaRelayPacketBypass("media-relay-standby-legacy-pcm")
-                    } else if isMediaRelayTcpContinuityPath(relayClient) {
+                    } else if transportPlan.usesTcpContinuityRelay {
                         var prearmedTcpContinuityAckExpectation = false
                         do {
                             prearmedTcpContinuityAckExpectation = await MainActor.run {

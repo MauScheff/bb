@@ -245,6 +245,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var localTransmitStopProjectionGraceNanoseconds: UInt64 = 3_000_000_000
     var firstAudioPlaybackAckTimeoutNanoseconds: UInt64 = 2_000_000_000
     var appleGatedAudioActivationTimeoutNanoseconds: UInt64 = 5_000_000_000
+    var foregroundSystemReceivePlaybackFallbackDelayNanoseconds: UInt64 = 300_000_000
     var presenceHeartbeatHTTPFallbackIntervalSeconds: TimeInterval = 4
     var presenceHeartbeatWebSocketIntervalSeconds: TimeInterval = 1.5
     var foregroundAppManagedInteractiveAudioPrewarmEnabled = true
@@ -1682,6 +1683,43 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         return (coreLines + contactLines).joined(separator: "\n")
     }
 
+    var diagnosticsTinySnapshot: String {
+        let fields = diagnosticsStateFields
+        let keys = [
+            "selectedContact",
+            "selectedConversationPhase",
+            "selectedConversationStatus",
+            "selectedConversationRelationship",
+            "pendingAction",
+            "activeChannelId",
+            "isJoined",
+            "isTransmitting",
+            "isPTTAudioSessionActive",
+            "mediaState",
+            "mediaSessionContact",
+            "backendChannelStatus",
+            "backendReadiness",
+            "backendSelfJoined",
+            "backendPeerJoined",
+            "backendPeerDeviceConnected",
+            "remoteAudioReadiness",
+            "remoteWakeCapability",
+            "incomingWakeActivationState",
+            "backendStatus",
+            "status",
+        ]
+        return keys.compactMap { key -> String? in
+            guard let value = fields[key] else { return nil }
+            return "\(key)=\(Self.truncatedDiagnosticsValue(value, limit: 240))"
+        }
+        .joined(separator: "\n")
+    }
+
+    private static func truncatedDiagnosticsValue(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        return String(value.prefix(limit)) + "...<truncated>"
+    }
+
     var diagnosticsTranscript: String {
         diagnosticsTranscriptText()
     }
@@ -1776,16 +1814,17 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         includePersistedLogTail: Bool = false,
         compact: Bool = false,
         minimal: Bool = false,
-        tiny: Bool = false
+        tiny: Bool = false,
+        includeSnapshot: Bool = true
     ) -> String {
         diagnostics.exportText(
-            snapshot: diagnosticsSnapshot,
+            snapshot: includeSnapshot ? diagnosticsSnapshot : nil,
             structuredEnvelopeJSON: structuredEnvelopeJSON,
             includePersistedLogTail: includePersistedLogTail,
             stateCaptureExportLimit: tiny ? 0 : minimal ? 3 : compact ? 12 : nil,
             invariantViolationExportLimit: tiny ? 2 : minimal ? 4 : compact ? 12 : nil,
             reducerTransitionReportExportLimit: tiny ? 0 : minimal ? 6 : compact ? 24 : nil,
-            entryExportLimit: tiny ? 12 : minimal ? 4 : compact ? 40 : nil
+            entryExportLimit: tiny ? 4 : minimal ? 4 : compact ? 40 : nil
         )
     }
 
@@ -2121,12 +2160,22 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             return .wakeBackgroundContinuity
         }
         if shouldUseDirectQuicTransport(for: contactID) {
+            if hasConfiguredOutgoingAudioContinuityFallback() {
+                return .fastRelayBalanced
+            }
             return .directLowLatency
         }
         if mediaTransportPathState == .fastRelay {
             return .fastRelayBalanced
         }
         return .websocketContinuity
+    }
+
+    func hasConfiguredOutgoingAudioContinuityFallback() -> Bool {
+        guard !isDirectPathRelayOnlyForced else { return false }
+        guard !TurboMediaRelayDebugOverride.isForced() else { return false }
+        guard TurboMediaRelayDebugOverride.isEnabled() else { return false }
+        return TurboMediaRelayDebugOverride.config()?.isConfigured == true
     }
 
     func shouldUseWakeBackgroundContinuityForOutgoingAudio(for contactID: UUID) -> Bool {

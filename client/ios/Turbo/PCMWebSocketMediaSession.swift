@@ -623,6 +623,9 @@ actor AudioChunkSender {
         guard outboundTransportSlowSendReportBudget > 0 else { return }
         outboundTransportSlowSendReportBudget -= 1
         guard let reportEvent else { return }
+        let exceedsDestructiveDropThreshold =
+            dropsPendingPayloadsAfterSlowSend
+            && slowSendDropThresholdNanoseconds.map { elapsedNanoseconds >= $0 } == true
         var metadata = [
             "diagnosticLevel": DiagnosticsLevel.notice.rawValue,
             "elapsedMilliseconds": String(elapsedNanoseconds / 1_000_000),
@@ -634,7 +637,7 @@ actor AudioChunkSender {
                 : "ordered-fallback-slow-send",
             "transportDigest": AudioChunkPayloadCodec.transportDigest(payload),
         ]
-        if dropsPendingPayloadsAfterSlowSend {
+        if exceedsDestructiveDropThreshold {
             metadata["contractKind"] = DiagnosticsContractKind.liveness.rawValue
             metadata["scope"] = DiagnosticsInvariantScope.local.rawValue
         }

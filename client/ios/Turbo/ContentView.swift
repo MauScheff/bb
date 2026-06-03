@@ -45,6 +45,33 @@ struct CallScreenDismissalPresentationState: Equatable {
     let minimizedCallContactID: UUID?
 }
 
+private struct TurboCallScreenLiquidGlassTransition: ViewModifier {
+    var progress: CGFloat
+    let reduceMotion: Bool
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let resolvedProgress = reduceMotion ? 1 : progress
+        content
+            .opacity(resolvedProgress)
+            .scaleEffect(0.985 + (0.015 * resolvedProgress), anchor: .center)
+            .blur(radius: reduceMotion ? 0 : (1 - resolvedProgress) * 10)
+    }
+}
+
+private extension AnyTransition {
+    static func callScreenLiquidGlassCrossfade(reduceMotion: Bool) -> AnyTransition {
+        .modifier(
+            active: TurboCallScreenLiquidGlassTransition(progress: 0, reduceMotion: reduceMotion),
+            identity: TurboCallScreenLiquidGlassTransition(progress: 1, reduceMotion: reduceMotion)
+        )
+    }
+}
+
 private struct AddContactConfirmation: Equatable, Identifiable {
     let id = UUID()
     let message: String
@@ -92,6 +119,7 @@ struct ContentView: View {
     @State private var handleSetupError: String?
     @State private var contactDeleteError: String?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @MainActor
     init(viewModel: PTTViewModel) {
@@ -165,9 +193,14 @@ struct ContentView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .overlay {
+            callScreenPresentationOverlay
+        }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: viewModel.activeIncomingBeep?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: addContactConfirmation?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: isShowingTransportPathInfo)
+        .animation(callScreenPresentationAnimation, value: isShowingCallPrototype)
+        .animation(callScreenPresentationAnimation, value: callScreenPresentedContactID)
         .background {
             ShakeReportDetector {
                 startShakeReport()
@@ -356,26 +389,6 @@ struct ContentView: View {
                             requestedAt: Date(),
                             userReport: ""
                         )
-                    }
-                )
-            }
-        }
-        .fullScreenCover(isPresented: $isShowingCallPrototype) {
-            callScreenView(
-                contact: callPrototypeContact,
-                selectedConversationState: callPrototypeSelectedConversationState,
-                primaryAction: callPrototypePrimaryAction,
-                onClose: { isShowingCallPrototype = false }
-            )
-        }
-        .fullScreenCover(isPresented: callScreenPresentationBinding) {
-            if let contact = callScreenContact {
-                callScreenView(
-                    contact: contact,
-                    selectedConversationState: viewModel.selectedConversationState(for: contact.id),
-                    primaryAction: callScreenPrimaryAction(for: contact),
-                    onClose: {
-                        minimizeCallScreen(for: contact)
                     }
                 )
             }
@@ -697,6 +710,51 @@ struct ContentView: View {
                 minimizedCallContactID = contact.id
             }
         )
+    }
+
+    private var callScreenPresentedContactID: UUID? {
+        guard !isShowingCallPrototype,
+              route == .live,
+              let contact = callScreenContact,
+              minimizedCallContactID != contact.id else {
+            return nil
+        }
+        return contact.id
+    }
+
+    private var callScreenPresentationAnimation: Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.16)
+            : .smooth(duration: 0.34, extraBounce: 0)
+    }
+
+    @ViewBuilder
+    private var callScreenPresentationOverlay: some View {
+        if isShowingCallPrototype {
+            callScreenView(
+                contact: callPrototypeContact,
+                selectedConversationState: callPrototypeSelectedConversationState,
+                primaryAction: callPrototypePrimaryAction,
+                onClose: { isShowingCallPrototype = false }
+            )
+            .ignoresSafeArea()
+            .transition(.callScreenLiquidGlassCrossfade(reduceMotion: reduceMotion))
+            .zIndex(20)
+        } else if let contact = callScreenContact,
+                  callScreenPresentationBinding.wrappedValue {
+            callScreenView(
+                contact: contact,
+                selectedConversationState: viewModel.selectedConversationState(for: contact.id),
+                primaryAction: callScreenPrimaryAction(for: contact),
+                onClose: {
+                    minimizeCallScreen(for: contact)
+                }
+            )
+            .id(contact.id)
+            .ignoresSafeArea()
+            .transition(.callScreenLiquidGlassCrossfade(reduceMotion: reduceMotion))
+            .zIndex(20)
+        }
     }
 
     private var currentUIProjectionDiagnostics: UIProjectionDiagnostics {

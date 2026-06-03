@@ -10,12 +10,27 @@ import Foundation
 
 struct BufferedForegroundReceiveAudioChunk: Equatable {
     let payload: String
+    let incomingMediaPayload: String
+    let channelID: String
+    let fromUserID: String
+    let fromDeviceID: String
     let transport: IncomingAudioPayloadTransport
+    let playbackSequenceNumber: UInt64?
+    let localQueueDelayNanoseconds: UInt64
+    let senderSentAtMilliseconds: Int64?
+    let frameDurationNanoseconds: UInt64?
+    let ingressSource: String
 }
 
 struct BufferedForegroundReceiveAudioChunkResult: Equatable {
     let bufferedChunkCount: Int
     let droppedChunkCount: Int
+}
+
+struct ForegroundSystemReceivePlaybackFallbackState: Equatable {
+    let channelID: String
+    let reason: String
+    var isPlaybackReady: Bool
 }
 
 final class BackendRuntimeState {
@@ -1779,7 +1794,7 @@ nonisolated final class OutgoingAudioSendTargetGate: @unchecked Sendable {
 }
 
 final class MediaRuntimeState {
-    private static let maximumForegroundSystemReceiveBufferedAudioChunks = 12
+    private static let maximumForegroundSystemReceiveBufferedAudioChunks = 300
     private static let mediaEncryptionReceiveSequenceWindow: UInt64 = 256
     private static let mediaEncryptionRecentReceiveSequenceLimit = 256
 
@@ -1855,6 +1870,10 @@ final class MediaRuntimeState {
     private var encryptedAudioRecoveryTasksByContactID: [UUID: Task<Void, Never>] = [:]
     private var foregroundSystemReceiveBufferedAudioChunksByContactID:
         [UUID: [BufferedForegroundReceiveAudioChunk]] = [:]
+    private var foregroundSystemReceivePlaybackFallbackTasksByContactID:
+        [UUID: Task<Void, Never>] = [:]
+    private var foregroundSystemReceivePlaybackFallbackActiveByContactID:
+        [UUID: ForegroundSystemReceivePlaybackFallbackState] = [:]
 
     var hasSession: Bool {
         session != nil
@@ -1902,11 +1921,88 @@ final class MediaRuntimeState {
     ) -> [BufferedForegroundReceiveAudioChunk] {
         let chunks = foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] ?? []
         foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] = nil
+        replaceForegroundSystemReceivePlaybackFallbackTask(for: contactID, with: nil)
         return chunks
+    }
+
+    func foregroundSystemReceiveBufferedAudioChunkCount(for contactID: UUID) -> Int {
+        foregroundSystemReceiveBufferedAudioChunksByContactID[contactID]?.count ?? 0
     }
 
     func clearForegroundSystemReceiveAudioChunks(for contactID: UUID) {
         foregroundSystemReceiveBufferedAudioChunksByContactID[contactID] = nil
+        foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID] = nil
+        replaceForegroundSystemReceivePlaybackFallbackTask(for: contactID, with: nil)
+    }
+
+    func activateForegroundSystemReceivePlaybackFallback(
+        for contactID: UUID,
+        channelID: String,
+        reason: String
+    ) {
+        foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID] =
+            ForegroundSystemReceivePlaybackFallbackState(
+                channelID: channelID,
+                reason: reason,
+                isPlaybackReady: false
+            )
+    }
+
+    @discardableResult
+    func markForegroundSystemReceivePlaybackFallbackReady(
+        for contactID: UUID,
+        channelID: String
+    ) -> Bool {
+        guard var state = foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID],
+              state.channelID == channelID else {
+            return false
+        }
+        state.isPlaybackReady = true
+        foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID] = state
+        return true
+    }
+
+    func hasActiveForegroundSystemReceivePlaybackFallback(
+        for contactID: UUID,
+        channelID: String? = nil
+    ) -> Bool {
+        guard let state = foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID] else {
+            return false
+        }
+        guard let channelID else { return true }
+        return state.channelID == channelID
+    }
+
+    func hasReadyForegroundSystemReceivePlaybackFallback(
+        for contactID: UUID,
+        channelID: String? = nil
+    ) -> Bool {
+        guard let state = foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID],
+              state.isPlaybackReady else {
+            return false
+        }
+        guard let channelID else { return true }
+        return state.channelID == channelID
+    }
+
+    func deactivateForegroundSystemReceivePlaybackFallback(for contactID: UUID) {
+        foregroundSystemReceivePlaybackFallbackActiveByContactID[contactID] = nil
+    }
+
+    func hasForegroundSystemReceivePlaybackFallbackTask(for contactID: UUID) -> Bool {
+        foregroundSystemReceivePlaybackFallbackTasksByContactID[contactID] != nil
+    }
+
+    func replaceForegroundSystemReceivePlaybackFallbackTask(
+        for contactID: UUID,
+        with task: Task<Void, Never>?
+    ) {
+        foregroundSystemReceivePlaybackFallbackTasksByContactID[contactID]?.cancel()
+        if let task {
+            foregroundSystemReceivePlaybackFallbackTasksByContactID[contactID] = task
+        } else {
+            foregroundSystemReceivePlaybackFallbackTasksByContactID.removeValue(forKey: contactID)
+        }
     }
 
     func updateConnectionState(_ state: MediaConnectionState) {
@@ -2740,6 +2836,9 @@ final class MediaRuntimeState {
         incomingAudioPlaybackGateByContactID = [:]
         incomingAudioReceiveEpochByContactID = [:]
         foregroundSystemReceiveBufferedAudioChunksByContactID = [:]
+        foregroundSystemReceivePlaybackFallbackTasksByContactID.values.forEach { $0.cancel() }
+        foregroundSystemReceivePlaybackFallbackTasksByContactID = [:]
+        foregroundSystemReceivePlaybackFallbackActiveByContactID = [:]
         pendingEncryptedAudioPayloadsByContactID = [:]
         encryptedAudioRecoveryTasksByContactID.values.forEach { $0.cancel() }
         encryptedAudioRecoveryTasksByContactID = [:]

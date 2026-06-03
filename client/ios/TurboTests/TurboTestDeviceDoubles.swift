@@ -124,6 +124,7 @@ final class RecordingMediaSession: MediaSession {
     weak var delegate: MediaSessionDelegate?
     private(set) var state: MediaConnectionState = .idle
     private(set) var closedDeactivateAudioSessionFlags: [Bool] = []
+    private(set) var startCallCount = 0
     private(set) var startSendingAudioCallCount = 0
     private(set) var stopSendingAudioCallCount = 0
     private(set) var abortSendingAudioCallCount = 0
@@ -139,6 +140,7 @@ final class RecordingMediaSession: MediaSession {
     private(set) var sendAudioChunkWasClearedAfterAbortSendingAudio = false
     private var currentSendAudioChunk: (@Sendable (String) async throws -> Void)?
     var startSendingAudioDelayNanoseconds: UInt64?
+    var startDelayNanoseconds: UInt64?
     var audioRouteDidChangeDelayNanoseconds: UInt64?
     var receiveRemoteAudioChunkDelayNanoseconds: UInt64?
     var hasPendingPlaybackResult = false
@@ -166,6 +168,12 @@ final class RecordingMediaSession: MediaSession {
         activationMode _: MediaSessionActivationMode,
         startupMode _: MediaSessionStartupMode
     ) async throws {
+        startCallCount += 1
+        if let startDelayNanoseconds {
+            state = .preparing
+            delegate?.mediaSession(self, didChange: .preparing)
+            try? await Task.sleep(nanoseconds: startDelayNanoseconds)
+        }
         state = .connected
         delegate?.mediaSession(self, didChange: .connected)
     }

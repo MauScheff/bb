@@ -230,6 +230,73 @@ struct TalkTurnTests {
         )
     }
 
+    @Test func encryptedPacketSequenceDoesNotDriveEngineRemotePlayoutSequence() throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: UUID(),
+            backendChannelId: "channel-a-b",
+            remoteUserId: "remote-user"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, peerTargetDeviceId: "peer-device")
+            )
+        )
+
+        viewModel.syncEngineJoinedConversation(contactID: contactID, reason: "test")
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-a-b",
+            senderDeviceID: "peer-device",
+            source: "test"
+        )
+        let encryptedEnvelope = try encodedEncryptedAudioPacket(sequenceNumber: 67)
+        let openedOpusFrame = try #require(
+            VoiceAudioFramePayloadCodec.encodeOpus(
+                packet: Data([1, 2, 3]),
+                frameIndex: 0
+            )
+        )
+
+        viewModel.syncEngineRemoteAudioReceived(
+            originalPayload: encryptedEnvelope,
+            openedPayload: openedOpusFrame,
+            channelID: "channel-a-b",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            source: "test"
+        )
+
+        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 1)
+        if case .receiving(let epoch) = viewModel.engineSnapshot.receive {
+            #expect(epoch.playout.nextExpectedSequence.rawValue == 1)
+            #expect(epoch.playout.queuedChunks.isEmpty)
+        } else {
+            Issue.record("expected engine receive epoch after remote audio")
+        }
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Buffered media frame in jitter buffer"
+            )
+        )
+    }
+
     @Test func remoteStopAndPlaybackDrainClearsEngineReceive() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

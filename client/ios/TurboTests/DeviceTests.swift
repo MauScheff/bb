@@ -1937,7 +1937,7 @@ struct DeviceTests {
     }
 
     @MainActor
-    @Test func appleGatedForegroundIncomingAudioBufferKeepsOnlyStartupCushionBeforeActivation() async throws {
+    @Test func appleGatedForegroundIncomingAudioBufferPreservesStartupPrefixBeforeActivation() async throws {
         let previousPolicy = UserDefaults.standard.string(
             forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
         )
@@ -2000,16 +2000,14 @@ struct DeviceTests {
 
         #expect(mediaSession.receivedRemoteAudioChunks == [])
         #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "droppedStaleBufferedChunkCount=1"
-            )
+            viewModel.diagnosticsTranscript.contains("droppedStaleBufferedChunkCount=1") == false
         )
 
         viewModel.isPTTAudioSessionActive = true
         await viewModel.handleActivatedAudioSession(.sharedInstance())
 
         #expect(
-            mediaSession.receivedRemoteAudioChunks == (8..<burstCount).map {
+            mediaSession.receivedRemoteAudioChunks == (0..<burstCount).map {
                 "payload-\($0)"
             }
         )
@@ -2017,6 +2015,284 @@ struct DeviceTests {
             viewModel.diagnosticsTranscript.contains(
                 "Flushing buffered foreground receive audio after PTT activation"
             )
+        )
+    }
+
+    @MainActor
+    @Test func appleGatedForegroundFallbackStartingBuffersAudioUntilPlaybackReady() async throws {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.foregroundSystemReceivePlaybackFallbackDelayNanoseconds = 10_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
+        viewModel.isPTTAudioSessionActive = false
+        let mediaSession = RecordingMediaSession()
+        mediaSession.delegate = viewModel
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.activateForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: "channel-123",
+            reason: "test-starting"
+        )
+
+        await viewModel.handleIncomingAudioPayload(
+            "payload-0",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 0
+        )
+        await viewModel.handleIncomingAudioPayload(
+            "payload-1",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 1
+        )
+
+        #expect(mediaSession.receivedRemoteAudioChunks == [])
+        #expect(viewModel.diagnosticsTranscript.contains("bufferedChunkCount=2"))
+        #expect(
+            viewModel.mediaRuntime.markForegroundSystemReceivePlaybackFallbackReady(
+                for: contactID,
+                channelID: "channel-123"
+            )
+        )
+        let bufferedAudioChunks = viewModel.mediaRuntime.takeForegroundSystemReceiveAudioChunks(
+            for: contactID
+        )
+        #expect(bufferedAudioChunks.map(\.payload) == ["payload-0", "payload-1"])
+        await viewModel.playBufferedForegroundSystemReceiveAudioChunks(
+            bufferedAudioChunks,
+            contactID: contactID
+        )
+        #expect(mediaSession.receivedRemoteAudioChunks == ["payload-0", "payload-1"])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Dropped incoming audio frame before playback"
+            )
+                == false
+        )
+    }
+
+    @MainActor
+    @Test func appleGatedForegroundIncomingAudioFallsBackWhenPTTActivationCallbackIsMissed() async throws {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.foregroundSystemReceivePlaybackFallbackDelayNanoseconds = 10_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
+        viewModel.isPTTAudioSessionActive = false
+        let mediaSession = RecordingMediaSession()
+        mediaSession.delegate = viewModel
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+
+        await viewModel.handleIncomingAudioPayload(
+            "AQI=",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 0
+        )
+        for _ in 0..<40 where mediaSession.receivedRemoteAudioChunks.isEmpty {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "PTT activation timed out; starting app-managed foreground receive playback fallback"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Flushing buffered foreground receive audio through app-managed playback fallback"
+            )
+        )
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "engine.ptt_activation_deadline_elapsed"
+                    && $0.metadata["trigger"] == "foreground-receive-playback-fallback"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func appleGatedForegroundFallbackKeepsPlayingLaterChunksUntilPTTActivation() async throws {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.foregroundSystemReceivePlaybackFallbackDelayNanoseconds = 1_000_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
+        viewModel.isPTTAudioSessionActive = false
+        let mediaSession = RecordingMediaSession()
+        mediaSession.delegate = viewModel
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+
+        await viewModel.handleIncomingAudioPayload(
+            "payload-0",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 0
+        )
+        await viewModel.runForegroundSystemReceivePlaybackFallbackIfNeeded(
+            for: contactID,
+            channelID: "channel-123",
+            reason: "test"
+        )
+        #expect(
+            await mediaSession.waitForReceivedChunkCount(
+                1,
+                timeoutNanoseconds: 1_000_000_000
+            )
+        )
+
+        await viewModel.handleIncomingAudioPayload(
+            "payload-1",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 1
+        )
+        #expect(
+            await mediaSession.waitForReceivedChunkCount(
+                2,
+                timeoutNanoseconds: 200_000_000
+            )
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks == ["payload-0", "payload-1"])
+        #expect(
+            viewModel.diagnostics.invariantViolations.filter {
+                $0.invariantID == "engine.ptt_activation_deadline_elapsed"
+                    && $0.metadata["trigger"] == "foreground-receive-playback-fallback"
+            }.count == 1
         )
     }
 

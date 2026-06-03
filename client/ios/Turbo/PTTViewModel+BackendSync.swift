@@ -478,10 +478,15 @@ extension PTTViewModel {
 
     func shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
         for contactID: UUID,
+        channelID: String? = nil,
         applicationState: UIApplication.State
     ) -> Bool {
         guard applicationState == .active else { return false }
         guard !isPTTAudioSessionActive else { return false }
+        guard !mediaRuntime.hasReadyForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: channelID
+        ) else { return false }
         guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
         guard let channelUUID = channelUUID(for: contactID) else { return false }
         return pttCoordinator.state.systemChannelUUID == channelUUID
@@ -491,19 +496,37 @@ extension PTTViewModel {
     @discardableResult
     func bufferForegroundSystemReceiveAudioChunkUntilPTTActivation(
         _ payload: String,
+        incomingMediaPayload: String,
         channelID: String,
+        fromUserID: String,
+        fromDeviceID: String,
         contactID: UUID,
         incomingAudioTransport: IncomingAudioPayloadTransport,
+        playbackSequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        frameDurationNanoseconds: UInt64?,
+        ingressSource: String,
         applicationState: UIApplication.State
     ) -> Bool {
         guard shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
             for: contactID,
+            channelID: channelID,
             applicationState: applicationState
         ) else { return false }
         let bufferResult = mediaRuntime.bufferForegroundSystemReceiveAudioChunk(
             BufferedForegroundReceiveAudioChunk(
                 payload: payload,
-                transport: incomingAudioTransport
+                incomingMediaPayload: incomingMediaPayload,
+                channelID: channelID,
+                fromUserID: fromUserID,
+                fromDeviceID: fromDeviceID,
+                transport: incomingAudioTransport,
+                playbackSequenceNumber: playbackSequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                frameDurationNanoseconds: frameDurationNanoseconds,
+                ingressSource: ingressSource
             ),
             for: contactID
         )
@@ -517,6 +540,10 @@ extension PTTViewModel {
                 "bufferedChunkCount": String(bufferResult.bufferedChunkCount),
                 "droppedStaleBufferedChunkCount": String(bufferResult.droppedChunkCount),
             ]
+        )
+        scheduleForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: channelID
         )
         return true
     }

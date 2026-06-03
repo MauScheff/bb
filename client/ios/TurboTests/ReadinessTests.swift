@@ -2059,7 +2059,7 @@ struct ReadinessTests {
             primaryActionLabel: "Hold To Talk",
             primaryActionEnabled: true,
             selectedConversationPhase: "ready",
-            selectedConversationStatus: "Ready"
+            selectedConversationStatus: "Present"
         )
 
         #expect(projection.derivedInvariantCandidates.isEmpty)
