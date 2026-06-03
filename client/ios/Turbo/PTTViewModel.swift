@@ -260,10 +260,12 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var lastReportedPTTDescriptorName: String?
     var lastReportedPTTDescriptorChannelUUID: UUID?
     var lastReportedPTTDescriptorReason: String?
+    var pttInitializationInFlight = false
     @ObservationIgnored
     var systemActiveRemoteParticipantNameByChannelUUID: [UUID: String] = [:]
     var localOnlySystemLeaveSuppressions: [UUID: LocalOnlySystemLeaveSuppression] = [:]
     var staleSystemRejoinSuppressions: [UUID: StaleSystemRejoinSuppression] = [:]
+    var restoredSystemSessionQuarantineChannelUUIDs: Set<UUID> = []
     var systemTransmitBeginRecoveryAttemptsByChannelUUID: [UUID: Int] = [:]
     var pendingSystemTransmitRetryAfterRejoinByContactID: [UUID: UUID] = [:]
     var recentOutgoingJoinAcceptedTokensByContactID: [UUID: RecentOutgoingJoinAcceptedToken] = [:]
@@ -643,18 +645,23 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     func syncPTTState() {
         let previousActiveChannelID = activeChannelId
+        let systemChannelUUID = pttCoordinator.state.systemChannelUUID
+        let systemSessionIsRestored =
+            systemChannelUUID.map { isRestoredSystemSessionQuarantined(channelUUID: $0) } ?? false
         let resolvedSystemContactID =
             pttCoordinator.state.activeContactID
-            ?? pttCoordinator.state.systemChannelUUID.flatMap { contactId(for: $0) }
+            ?? (systemSessionIsRestored ? nil : systemChannelUUID.flatMap { contactId(for: $0) })
         if let contactID = resolvedSystemContactID,
-           pttCoordinator.state.isJoined {
+           pttCoordinator.state.isJoined,
+           !systemSessionIsRestored {
             forceSyncEngineJoinedConversation(contactID: contactID, reason: "ptt-sync")
         } else if let previousActiveChannelID,
                   engine.snapshot.conversation.joinedEvidence?.friend.contactID.rawValue == previousActiveChannelID.uuidString {
             syncEngineDisconnect(contactID: previousActiveChannelID, reason: "ptt-sync-left")
         }
         if let contactID = resolvedSystemContactID,
-           pttCoordinator.state.isTransmitting {
+           pttCoordinator.state.isTransmitting,
+           !systemSessionIsRestored {
             syncEngineObservedSystemTransmit(
                 contactID: contactID,
                 channelUUID: pttCoordinator.state.systemChannelUUID,
@@ -664,6 +671,17 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
                   !transmitRuntime.isPressingTalk,
                   !transmitCoordinator.state.isPressingTalk {
             clearEngineTransmitIfActive(reason: "ptt-sync-ended")
+        }
+        if systemSessionIsRestored,
+           let systemChannelUUID {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Quarantined restored PTT session from live transmit authority",
+                metadata: [
+                    "channelUUID": systemChannelUUID.uuidString,
+                    "resolvedContactId": pttCoordinator.state.activeContactID?.uuidString ?? "none",
+                ]
+            )
         }
         updateAutomaticAudioRouteMonitoring(reason: "ptt-sync")
         captureDiagnosticsState("ptt-sync")

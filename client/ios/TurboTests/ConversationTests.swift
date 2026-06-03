@@ -2674,6 +2674,14 @@ struct ConversationTests {
                 remoteUserId: "peer-user"
             )
         ]
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
         viewModel.transmitRuntime.markPressBegan()
         viewModel.transmitRuntime.noteSystemTransmitBeginRequested(channelUUID: channelUUID)
 
@@ -3272,8 +3280,7 @@ struct ConversationTests {
             remoteUserId: "user-avery"
         )
         viewModel.contacts = [contact]
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(channelUUID)
 
         #expect(viewModel.activeConversationContact?.id == contactID)
         #expect(viewModel.activeConversationContact?.handle == "@avery")
@@ -3286,8 +3293,7 @@ struct ConversationTests {
 
         #expect(!viewModel.shouldShowContactsLoadingPlaceholder)
 
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(channelUUID)
 
         #expect(viewModel.shouldShowContactsLoadingPlaceholder)
     }
@@ -3297,8 +3303,7 @@ struct ConversationTests {
         let viewModel = PTTViewModel()
         let channelUUID = UUID()
 
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(channelUUID)
 
         let contentView = ContentView(viewModel: viewModel)
 
@@ -3314,8 +3319,7 @@ struct ConversationTests {
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let channelUUID = UUID()
 
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(channelUUID)
 
         viewModel.endSystemSession()
 
@@ -3528,9 +3532,11 @@ struct ConversationTests {
 
     @MainActor
     @Test func resolvingRestoredSystemSessionBindsContactAndFlushesDeferredTokenUpload() async {
-        let viewModel = PTTViewModel()
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
+        viewModel.handleRestoredChannel(channelUUID)
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -3542,8 +3548,6 @@ struct ConversationTests {
                 remoteUserId: "user-avery"
             )
         ]
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: nil))
-        viewModel.syncPTTState()
         viewModel.pttSystemPolicyCoordinator.send(
             .ephemeralTokenReceived(tokenHex: "deadbeef", backendChannelID: nil)
         )
@@ -3557,8 +3561,10 @@ struct ConversationTests {
 
         #expect(resolvedContactID == contactID)
         #expect(viewModel.selectedContactId == contactID)
-        #expect(viewModel.isJoined)
-        #expect(viewModel.activeChannelId == contactID)
+        #expect(!viewModel.isJoined)
+        #expect(viewModel.activeChannelId == nil)
+        #expect(viewModel.activeConversationContact?.id == contactID)
+        #expect(!viewModel.canBeginTransmit(for: contactID))
         #expect(
             viewModel.pttCoordinator.state.systemSessionState
                 == .active(contactID: contactID, channelUUID: channelUUID)
@@ -3573,6 +3579,56 @@ struct ConversationTests {
                 )
             ]
         )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Resolved restored PTT channel contact without live transmit authority"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func resolvedRestoredSystemSessionDoesNotBeginTransmitBeforeFreshJoin() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+
+        viewModel.applicationStateOverride = .active
+        viewModel.handleRestoredChannel(channelUUID)
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-avery"
+            )
+        ]
+
+        _ = await viewModel.resolveRestoredSystemSessionIfPossible(trigger: "test")
+
+        viewModel.beginTransmit()
+
+        #expect(pttClient.beginTransmitRequests.isEmpty)
+        #expect(viewModel.activeConversationContact?.id == contactID)
+        #expect(!viewModel.isJoined)
+        #expect(viewModel.activeChannelId == nil)
+        #expect(viewModel.diagnosticsTranscript.contains("reason=not-joined"))
+
+        viewModel.handleDidJoinChannel(channelUUID, reason: "fresh-join-test")
+        try await waitForCondition(
+            "fresh join clears restored-session quarantine",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 20_000_000
+        ) {
+            !viewModel.isRestoredSystemSessionQuarantined(channelUUID: channelUUID)
+                && viewModel.isJoined
+                && viewModel.activeChannelId == contactID
+                && viewModel.systemSessionMatches(contactID)
+                && viewModel.selectedConversationCoordinator.state.devicePTT.systemSessionMatchesContact
+        }
     }
 
     @MainActor
@@ -3592,8 +3648,7 @@ struct ConversationTests {
                 remoteUserId: "user-avery"
             )
         ]
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: restoredChannelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(restoredChannelUUID)
 
         viewModel.clearUnresolvedRestoredSystemSessionIfNeeded(trigger: "test")
 
@@ -3625,16 +3680,16 @@ struct ConversationTests {
                 remoteUserId: "user-avery"
             )
         ]
-        viewModel.pttCoordinator.send(.restoredChannel(channelUUID: restoredChannelUUID, contactID: nil))
-        viewModel.syncPTTState()
+        viewModel.handleRestoredChannel(restoredChannelUUID)
 
         viewModel.clearUnresolvedRestoredSystemSessionIfNeeded(trigger: "test")
 
         #expect(pttClient.leaveRequests.isEmpty)
-        #expect(viewModel.isJoined)
+        #expect(!viewModel.isJoined)
+        #expect(viewModel.activeChannelId == nil)
         #expect(
             viewModel.pttCoordinator.state.systemSessionState
-                == .mismatched(channelUUID: restoredChannelUUID)
+                == .active(contactID: contactID, channelUUID: restoredChannelUUID)
         )
     }
 

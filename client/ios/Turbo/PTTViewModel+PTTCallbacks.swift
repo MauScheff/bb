@@ -191,6 +191,12 @@ extension PTTViewModel {
             return nil
         }
 
+        if !isRestoredSystemSessionQuarantined(channelUUID: channelUUID) {
+            markRestoredSystemSessionQuarantined(
+                channelUUID: channelUUID,
+                reason: "resolve-restored-channel"
+            )
+        }
         if selectedContactId == nil {
             selectContact(
                 contact,
@@ -202,7 +208,7 @@ extension PTTViewModel {
         syncPTTState()
         diagnostics.record(
             .pushToTalk,
-            message: "Resolved restored PTT channel contact",
+            message: "Resolved restored PTT channel contact without live transmit authority",
             metadata: [
                 "channelUUID": channelUUID.uuidString,
                 "contactId": contactID.uuidString,
@@ -210,14 +216,15 @@ extension PTTViewModel {
                 "trigger": trigger,
             ]
         )
-        syncPTTSystemChannelDescriptor(channelUUID, reason: "resolved-restored-channel")
-        syncPTTTransmissionMode(reason: "resolved-restored-channel")
-        syncPTTServiceStatus(reason: "resolved-restored-channel")
+        if pttSystemClient.isReady {
+            syncPTTSystemChannelDescriptor(channelUUID, reason: "resolved-restored-channel")
+            syncPTTTransmissionMode(reason: "resolved-restored-channel")
+            syncPTTServiceStatus(reason: "resolved-restored-channel")
+        }
         if let backendChannelID = contact.backendChannelId {
             await pttSystemPolicyCoordinator.handle(.backendChannelReady(backendChannelID))
             syncPTTSystemPolicyState()
         }
-        await prewarmLocalMediaIfNeeded(for: contactID)
         captureDiagnosticsState("ptt-callback:restored-resolved")
         return contactID
     }
@@ -249,6 +256,10 @@ extension PTTViewModel {
         )
 
         try? pttSystemClient.leaveChannel(channelUUID: channelUUID)
+        clearRestoredSystemSessionQuarantine(
+            channelUUID: channelUUID,
+            reason: "restored-unresolved-cleared"
+        )
         pttCoordinator.reset()
         syncPTTState()
         tearDownTransmitRuntime(resetCoordinator: true)
@@ -682,7 +693,12 @@ extension PTTViewModel {
                 ),
                 afterStateUpdate: { [weak self] in
                     guard let self else { return }
+                    self.clearRestoredSystemSessionQuarantine(
+                        channelUUID: channelUUID,
+                        reason: "did-join"
+                    )
                     self.syncPTTState()
+                    self.syncSelectedConversationProjection()
                     if let contactID {
                         self.clearDirectQuicFreshSessionGuards(
                             for: contactID,
@@ -808,6 +824,9 @@ extension PTTViewModel {
         let state = pttCoordinator.state
         guard state.isJoined,
               state.systemChannelUUID == channelUUID else {
+            return false
+        }
+        guard !isRestoredSystemSessionQuarantined(channelUUID: channelUUID) else {
             return false
         }
 
@@ -1602,6 +1621,10 @@ extension PTTViewModel {
 
     func handleRestoredChannel(_ channelUUID: UUID) {
         let contactID = contactId(for: channelUUID)
+        markRestoredSystemSessionQuarantined(
+            channelUUID: channelUUID,
+            reason: "apple-restored-channel"
+        )
         diagnostics.record(
             .pushToTalk,
             message: "Restored PTT channel",
@@ -1613,20 +1636,24 @@ extension PTTViewModel {
         )
         pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: contactID))
         syncPTTState()
-        syncPTTSystemChannelDescriptor(channelUUID, reason: "restored-channel")
-        syncPTTTransmissionMode(reason: "restored-channel")
-        syncPTTServiceStatus(reason: "restored-channel")
-        syncPTTAccessoryButtonEvents(reason: "restored-channel")
+        if pttSystemClient.isReady {
+            syncPTTSystemChannelDescriptor(channelUUID, reason: "restored-channel")
+            syncPTTTransmissionMode(reason: "restored-channel")
+            syncPTTServiceStatus(reason: "restored-channel")
+            syncPTTAccessoryButtonEvents(reason: "restored-channel")
+        } else {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Deferred restored PTT channel policy sync until manager ready",
+                metadata: ["channelUUID": channelUUID.uuidString]
+            )
+        }
         if let contactID {
             Task {
                 if let backendChannelID = contacts.first(where: { $0.id == contactID })?.backendChannelId {
                     await pttSystemPolicyCoordinator.handle(.backendChannelReady(backendChannelID))
                     syncPTTSystemPolicyState()
                 }
-                await prewarmForegroundTalkPathIfNeeded(
-                    for: contactID,
-                    reason: "restored-channel"
-                )
             }
         }
         captureDiagnosticsState("ptt-callback:restored")

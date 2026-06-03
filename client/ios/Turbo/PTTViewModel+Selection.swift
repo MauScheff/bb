@@ -180,9 +180,15 @@ extension PTTViewModel {
 
     func systemSessionMatches(_ contactID: UUID) -> Bool {
         switch systemSessionState {
-        case .active(let activeContactID, _):
+        case .active(let activeContactID, let channelUUID):
+            guard !isRestoredSystemSessionQuarantined(channelUUID: channelUUID) else {
+                return false
+            }
             return activeContactID == contactID
         case .mismatched(let channelUUID):
+            guard !isRestoredSystemSessionQuarantined(channelUUID: channelUUID) else {
+                return false
+            }
             guard let contact = contacts.first(where: { $0.id == contactID }) else { return false }
             return contact.channelId == channelUUID
         case .none:

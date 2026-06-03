@@ -22,6 +22,36 @@ extension PTTViewModel {
         let reason: String
     }
 
+    func markRestoredSystemSessionQuarantined(channelUUID: UUID, reason: String) {
+        restoredSystemSessionQuarantineChannelUUIDs.insert(channelUUID)
+        diagnostics.record(
+            .pushToTalk,
+            message: "Quarantined restored PTT session",
+            metadata: [
+                "channelUUID": channelUUID.uuidString,
+                "reason": reason,
+            ]
+        )
+    }
+
+    func clearRestoredSystemSessionQuarantine(channelUUID: UUID, reason: String) {
+        guard restoredSystemSessionQuarantineChannelUUIDs.remove(channelUUID) != nil else {
+            return
+        }
+        diagnostics.record(
+            .pushToTalk,
+            message: "Cleared restored PTT session quarantine",
+            metadata: [
+                "channelUUID": channelUUID.uuidString,
+                "reason": reason,
+            ]
+        )
+    }
+
+    func isRestoredSystemSessionQuarantined(channelUUID: UUID) -> Bool {
+        restoredSystemSessionQuarantineChannelUUIDs.contains(channelUUID)
+    }
+
     func markLocalOnlySystemLeave(
         channelUUID: UUID,
         contactID: UUID,
@@ -558,6 +588,12 @@ extension PTTViewModel {
 
     func initializeIfNeeded() async {
         guard !pttSystemClient.isReady else { return }
+        guard !pttInitializationInFlight else {
+            diagnostics.record(.app, message: "Skipped duplicate PTT initialization")
+            return
+        }
+        pttInitializationInFlight = true
+        defer { pttInitializationInFlight = false }
         refreshMicrophonePermission()
         diagnostics.record(.app, message: "Initializing app")
         recordPhysicalBoundaryLaunchProfileIfPresent()
@@ -566,6 +602,13 @@ extension PTTViewModel {
         do {
             try await pttSystemClient.configure(callbacks: pttSystemCallbacks)
             diagnostics.record(.pushToTalk, message: "PTT channel manager ready")
+            if let restoredChannelUUID = pttCoordinator.state.systemChannelUUID,
+               isRestoredSystemSessionQuarantined(channelUUID: restoredChannelUUID) {
+                syncPTTSystemChannelDescriptor(restoredChannelUUID, reason: "restored-channel-ready")
+                syncPTTTransmissionMode(reason: "restored-channel-ready")
+                syncPTTServiceStatus(reason: "restored-channel-ready")
+                syncPTTAccessoryButtonEvents(reason: "restored-channel-ready")
+            }
             captureDiagnosticsState("app-initialize:ptt-ready")
         } catch {
             statusMessage = "Failed to init: \(error.localizedDescription)"
@@ -620,6 +663,10 @@ extension PTTViewModel {
         }
 
         try? pttSystemClient.leaveChannel(channelUUID: activeSystemChannelUUID)
+        clearRestoredSystemSessionQuarantine(
+            channelUUID: activeSystemChannelUUID,
+            reason: "end-system-session"
+        )
         pttCoordinator.reset()
         syncPTTState()
         tearDownTransmitRuntime(resetCoordinator: true)
