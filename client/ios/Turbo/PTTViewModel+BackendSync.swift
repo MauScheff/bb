@@ -479,6 +479,7 @@ extension PTTViewModel {
     func shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
         for contactID: UUID,
         channelID: String? = nil,
+        incomingAudioTransport: IncomingAudioPayloadTransport? = nil,
         applicationState: UIApplication.State
     ) -> Bool {
         guard applicationState == .active else { return false }
@@ -487,6 +488,18 @@ extension PTTViewModel {
             for: contactID,
             channelID: channelID
         ) else { return false }
+        if incomingAudioTransport?.isUnreliablePacketMedia == true,
+           prefersForegroundAppManagedReceivePlayback(
+            for: contactID,
+            applicationState: applicationState,
+            incomingAudioTransport: incomingAudioTransport
+           ),
+           !mediaRuntime.hasActiveForegroundSystemReceivePlaybackFallback(
+            for: contactID,
+            channelID: channelID
+           ) {
+            return false
+        }
         guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
         guard let channelUUID = channelUUID(for: contactID) else { return false }
         return pttCoordinator.state.systemChannelUUID == channelUUID
@@ -512,6 +525,7 @@ extension PTTViewModel {
         guard shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
             for: contactID,
             channelID: channelID,
+            incomingAudioTransport: incomingAudioTransport,
             applicationState: applicationState
         ) else { return false }
         let bufferResult = mediaRuntime.bufferForegroundSystemReceiveAudioChunk(

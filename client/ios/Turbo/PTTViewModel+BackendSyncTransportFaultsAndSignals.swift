@@ -849,18 +849,46 @@ extension PTTViewModel {
             return
 
         case .rejected(.duplicatePlaintext(let previousTransport, let transportDigest)):
-            diagnostics.record(
-                .media,
-                message: "Ignored duplicate plaintext audio payload from standby transport",
-                metadata: [
-                    "contactId": contactID.uuidString,
-                    "channelId": channelID,
-                    "fromDeviceId": fromDeviceID,
-                    "transport": String(describing: incomingAudioTransport),
-                    "previousTransport": String(describing: previousTransport),
-                    "transportDigest": transportDigest,
-                ]
+            let disposition = mediaRuntime.consumeIncomingAudioDropDiagnosticDisposition(
+                for: contactID,
+                transport: incomingAudioTransport,
+                reason: "duplicate-plaintext-standby",
+                detailedReportLimit: 3
             )
+            switch disposition {
+            case .detailed:
+                diagnostics.record(
+                    .media,
+                    message: "Ignored duplicate plaintext audio payload from standby transport",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "channelId": channelID,
+                        "fromDeviceId": fromDeviceID,
+                        "transport": String(describing: incomingAudioTransport),
+                        "previousTransport": String(describing: previousTransport),
+                        "transportDigest": transportDigest,
+                    ]
+                )
+
+            case .suppressedNotice:
+                diagnostics.record(
+                    .media,
+                    level: .notice,
+                    message: "Suppressing repetitive duplicate plaintext audio diagnostics",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "channelId": channelID,
+                        "fromDeviceId": fromDeviceID,
+                        "transport": incomingAudioTransport.diagnosticsValue,
+                        "previousTransport": previousTransport.diagnosticsValue,
+                        "reason": "duplicate-plaintext-standby",
+                        "detailedReportLimit": "3",
+                    ]
+                )
+
+            case .suppressed:
+                break
+            }
             return
 
         case .rejected(
@@ -950,7 +978,7 @@ extension PTTViewModel {
                         ),
                         metadata: metadata
                     )
-                    forceStopRemoteReceiveAfterExpiredLiveAudio(
+                    handleExpiredLiveAudioDrop(
                         contactID: contactID,
                         channelID: channelID,
                         fromDeviceID: fromDeviceID,
@@ -977,7 +1005,7 @@ extension PTTViewModel {
                         ),
                         metadata: metadata
                     )
-                    forceStopRemoteReceiveAfterExpiredLiveAudio(
+                    handleExpiredLiveAudioDrop(
                         contactID: contactID,
                         channelID: channelID,
                         fromDeviceID: fromDeviceID,
@@ -1067,7 +1095,7 @@ extension PTTViewModel {
                 ]
             )
         }
-        let receivedAtNanoseconds = admittedPacket.admittedAtNanoseconds
+        let receivedAtNanoseconds = admittedPacket.ingressReceivedAtNanoseconds
         if shouldUseImmediateIncomingAudioPlayback(
             for: contactID,
             applicationState: applicationState,
@@ -1247,6 +1275,22 @@ extension PTTViewModel {
             return
         }
         if mediaSessionContactID == contactID, mediaConnectionState == .preparing {
+            if incomingAudioTransport.isUnreliablePacketMedia {
+                scheduleIncomingAudioPlaybackCompletion(
+                    audioPayload: audioPayload,
+                    incomingMediaPayload: incomingMediaPayload,
+                    channelID: channelID,
+                    fromUserID: fromUserID,
+                    fromDeviceID: fromDeviceID,
+                    contactID: contactID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    ingressSource: ingressContext?.source ?? "incoming-audio"
+                )
+                return
+            }
             let playbackAccepted = await receiveRemoteAudioChunk(
                 audioPayload,
                 incomingAudioTransport: incomingAudioTransport
@@ -1278,6 +1322,22 @@ extension PTTViewModel {
             activationMode: receiveActivationMode,
             startupMode: .playbackOnly
         )
+        if incomingAudioTransport.isUnreliablePacketMedia {
+            scheduleIncomingAudioPlaybackCompletion(
+                audioPayload: audioPayload,
+                incomingMediaPayload: incomingMediaPayload,
+                channelID: channelID,
+                fromUserID: fromUserID,
+                fromDeviceID: fromDeviceID,
+                contactID: contactID,
+                incomingAudioTransport: incomingAudioTransport,
+                playbackSequenceNumber: playbackSequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                ingressSource: ingressContext?.source ?? "incoming-audio"
+            )
+            return
+        }
         let playbackAccepted = await receiveRemoteAudioChunk(
             audioPayload,
             incomingAudioTransport: incomingAudioTransport
@@ -1406,6 +1466,7 @@ extension PTTViewModel {
         ) else { return false }
         guard !shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
             for: contactID,
+            incomingAudioTransport: incomingAudioTransport,
             applicationState: applicationState
         ) else { return false }
         return true
@@ -1450,7 +1511,8 @@ extension PTTViewModel {
             contactID: contactID,
             channelID: channelID,
             incomingAudioTransport: incomingAudioTransport,
-            fromDeviceID: fromDeviceID
+            fromDeviceID: fromDeviceID,
+            nowNanoseconds: receivedAtNanoseconds
         )
     }
 
@@ -1539,6 +1601,37 @@ extension PTTViewModel {
         case nil:
             return "dropped-unknown"
         }
+    }
+
+    private func handleExpiredLiveAudioDrop(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        reason: String
+    ) {
+        guard !incomingAudioTransport.isUnreliablePacketMedia else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Preserved remote receive after expired packet audio",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "transport": incomingAudioTransport.diagnosticsValue,
+                    "reason": reason,
+                ]
+            )
+            return
+        }
+        forceStopRemoteReceiveAfterExpiredLiveAudio(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            reason: reason
+        )
     }
 
     private func forceStopRemoteReceiveAfterExpiredLiveAudio(

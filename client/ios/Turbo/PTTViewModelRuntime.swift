@@ -857,6 +857,7 @@ struct IncomingAudioIngressAcceptedPacket: Sendable {
     let sequenceNumber: UInt64?
     let encryptedSequenceNumber: UInt64?
     let senderSentAtMilliseconds: Int64?
+    let ingressReceivedAtNanoseconds: UInt64
     let admittedAtNanoseconds: UInt64
     let localQueueDelayNanoseconds: UInt64
     let frameDurationNanoseconds: UInt64?
@@ -1107,6 +1108,7 @@ actor IncomingAudioIngressExecutor {
                 sequenceNumber: playbackSequenceNumber,
                 encryptedSequenceNumber: encryptedSequenceNumber,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
+                ingressReceivedAtNanoseconds: ingressReceivedAtNanoseconds,
                 admittedAtNanoseconds: nowNanoseconds,
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds,
                 frameDurationNanoseconds: frameDurationNanoseconds,

@@ -1993,7 +1993,7 @@ struct DeviceTests {
                 fromUserID: "peer-user",
                 fromDeviceID: "peer-device",
                 contactID: contactID,
-                incomingAudioTransport: .mediaRelayPacket,
+                incomingAudioTransport: .relayWebSocket,
                 transportSequenceNumber: UInt64(index)
             )
         }
@@ -2173,7 +2173,7 @@ struct DeviceTests {
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
             contactID: contactID,
-            incomingAudioTransport: .mediaRelayPacket,
+            incomingAudioTransport: .relayWebSocket,
             transportSequenceNumber: 0
         )
         for _ in 0..<40 where mediaSession.receivedRemoteAudioChunks.isEmpty {
@@ -2255,7 +2255,7 @@ struct DeviceTests {
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
             contactID: contactID,
-            incomingAudioTransport: .mediaRelayPacket,
+            incomingAudioTransport: .relayWebSocket,
             transportSequenceNumber: 0
         )
         await viewModel.runForegroundSystemReceivePlaybackFallbackIfNeeded(

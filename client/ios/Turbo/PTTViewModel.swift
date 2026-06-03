@@ -1824,7 +1824,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             stateCaptureExportLimit: tiny ? 0 : minimal ? 3 : compact ? 12 : nil,
             invariantViolationExportLimit: tiny ? 2 : minimal ? 4 : compact ? 12 : nil,
             reducerTransitionReportExportLimit: tiny ? 0 : minimal ? 6 : compact ? 24 : nil,
-            entryExportLimit: tiny ? 4 : minimal ? 4 : compact ? 40 : nil
+            entryExportLimit: tiny ? 4 : minimal ? 4 : compact ? 40 : nil,
+            metadataPairExportLimit: tiny ? 8 : nil,
+            metadataValueExportLimit: tiny ? 160 : nil,
+            lineExportLimit: tiny ? 1_200 : nil
         )
     }
 

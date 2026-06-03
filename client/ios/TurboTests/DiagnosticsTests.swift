@@ -237,8 +237,8 @@ struct DiagnosticsTests {
 
     @Test func diagnosticsTinyUploadUsesEmergencySnapshotForNoisyReports() throws {
         let viewModel = PTTViewModel()
-        let largeValue = String(repeating: "x", count: 20_000)
-        for index in 0..<20 {
+        let largeValue = String(repeating: "x", count: 50_000)
+        for index in 0..<8 {
             viewModel.diagnostics.record(
                 .media,
                 message: "Noisy media diagnostic \(index)",

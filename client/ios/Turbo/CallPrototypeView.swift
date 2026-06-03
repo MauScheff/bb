@@ -634,15 +634,61 @@ struct TurboCallPrototypeView: View {
 
     @ViewBuilder
     private func identityRow(usesWideLayout: Bool) -> some View {
-        HStack(alignment: .center, spacing: usesWideLayout ? 22 : 18) {
-            identityText
-                .frame(maxWidth: .infinity, alignment: .leading)
-
+        let avatarSize: CGFloat = usesWideLayout ? 108 : 96
+        VStack(spacing: usesWideLayout ? 14 : 12) {
             callAvatar
-                .frame(width: usesWideLayout ? 84 : 76, height: usesWideLayout ? 84 : 76)
+                .frame(width: avatarSize, height: avatarSize)
+                .padding(.bottom, 2)
+
+            presenceText
+
+            if let requestSubjectText {
+                Text(requestSubjectText)
+                    .font(.system(size: 16, weight: .medium, design: .default))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 6)
+            }
+
+            #if DEBUG
+            if hasVisibleConversationParticipantTelemetry {
+                conversationParticipantTelemetryRows
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .padding(.top, 14)
+            }
+            #else
+            if let audio = remoteParticipantVolumeWarningAudio {
+                remoteParticipantVolumeWarningRow(for: audio)
+                    .frame(maxWidth: 360, alignment: .leading)
+                    .padding(.top, 14)
+            }
+            #endif
         }
         .frame(maxWidth: 360, alignment: .center)
         .padding(.top, usesWideLayout ? 6 : 8)
+    }
+
+    private var presenceText: some View {
+        VStack(alignment: .center, spacing: 8) {
+            Text(contact.name)
+                .font(.system(size: 31, weight: .medium, design: .default))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.58)
+                .multilineTextAlignment(.center)
+
+            let status = callStatusText(now: Date())
+            Text(status)
+                .font(.system(size: 20, weight: .regular, design: .default))
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .multilineTextAlignment(.center)
+                .animation(.easeInOut(duration: 0.18), value: status)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var callAvatar: some View {
@@ -687,41 +733,6 @@ struct TurboCallPrototypeView: View {
             (partial ^ UInt32(scalar.value)) &* 16_777_619
         }
         return palette[Int(hash % UInt32(palette.count))]
-    }
-
-    private var identityText: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(contact.name)
-                .font(.system(size: 31, weight: .medium, design: .default))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.58)
-                .multilineTextAlignment(.leading)
-
-            let status = callStatusText(now: Date())
-            Text(status)
-                .font(.system(size: 20, weight: .regular, design: .default))
-                .foregroundStyle(.white.opacity(0.48))
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .multilineTextAlignment(.leading)
-                .animation(.easeInOut(duration: 0.18), value: status)
-
-            if hasVisibleConversationParticipantTelemetry {
-                conversationParticipantTelemetryRows
-                    .padding(.top, 14)
-            }
-
-            if let requestSubjectText {
-                Text(requestSubjectText)
-                    .font(.system(size: 16, weight: .medium, design: .default))
-                    .foregroundStyle(.white.opacity(0.68))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                    .multilineTextAlignment(.leading)
-                    .padding(.top, 14)
-            }
-        }
     }
 
     private var requestSubjectText: String? {
@@ -801,6 +812,24 @@ struct TurboCallPrototypeView: View {
                 accessibilityLabel: audioEncryptionStatus.accessibilityLabel
             )
         }
+    }
+
+    private var remoteParticipantVolumeWarningAudio: ConversationParticipantTelemetry.Audio? {
+        guard let audio = remoteParticipantTelemetry?.audio,
+              isVolumeVeryLow(audio.volumePercent) else {
+            return nil
+        }
+        return audio
+    }
+
+    private func remoteParticipantVolumeWarningRow(for audio: ConversationParticipantTelemetry.Audio) -> some View {
+        conversationParticipantTelemetryRow(
+            symbolName: audioSymbolName(for: audio),
+            text: remoteParticipantAudioStatusText(for: audio),
+            fontSize: 15,
+            color: remoteParticipantAudioStatusColor(for: audio),
+            accessibilityLabel: remoteParticipantAudioStatusAccessibilityLabel(for: audio)
+        )
     }
 
     private func conversationParticipantTelemetryRow(
@@ -1223,13 +1252,25 @@ struct TurboCallPrototypeView: View {
     }
 
     private func callAvatarPresencePulse(at date: Date) -> CallAvatarPresencePulse {
-        guard selectedConversationState.detail == .receiving else {
+        let remoteUserIsSpeaking = selectedConversationState.detail == .receiving
+        let localUserIsTransmitting = isTalkButtonActive
+        guard remoteUserIsSpeaking || localUserIsTransmitting else {
             return CallAvatarPresencePulse(
                 scale: 1,
                 ringOpacity: 0.08,
                 ringWidth: 1,
                 glowOpacity: 0,
                 shadowRadius: 0
+            )
+        }
+
+        guard remoteUserIsSpeaking else {
+            return CallAvatarPresencePulse(
+                scale: 1.012,
+                ringOpacity: 0.22,
+                ringWidth: 1.35,
+                glowOpacity: 0.10,
+                shadowRadius: 7
             )
         }
 

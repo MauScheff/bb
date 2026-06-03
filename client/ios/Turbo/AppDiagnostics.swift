@@ -1943,7 +1943,10 @@ final class DiagnosticsStore {
         stateCaptureExportLimit: Int? = nil,
         invariantViolationExportLimit: Int? = nil,
         reducerTransitionReportExportLimit: Int? = nil,
-        entryExportLimit: Int? = nil
+        entryExportLimit: Int? = nil,
+        metadataPairExportLimit: Int? = nil,
+        metadataValueExportLimit: Int? = nil,
+        lineExportLimit: Int? = nil
     ) -> String {
         var sections: [String] = []
         if let snapshot, !snapshot.isEmpty {
@@ -1965,7 +1968,10 @@ final class DiagnosticsStore {
                     capture.changedKeys.isEmpty
                     ? "none"
                     : capture.changedKeys.joined(separator: ",")
-                return "[\(timestamp)] [\(capture.reason)] changed=\(changed) \(capture.summaryLine)"
+                return Self.boundedExportLine(
+                    "[\(timestamp)] [\(capture.reason)] changed=\(changed) \(capture.summaryLine)",
+                    limit: lineExportLimit
+                )
             }
             sections.append("STATE TIMELINE\n" + lines.joined(separator: "\n"))
         }
@@ -1978,11 +1984,15 @@ final class DiagnosticsStore {
         } else {
             let lines = exportedInvariantViolations.map { violation in
                 let timestamp = DiagnosticsStore.iso8601TimestampFormatter.string(from: violation.timestamp)
-                let metadata =
-                    violation.metadata.isEmpty
-                    ? ""
-                    : " " + violation.metadata.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
-                return "[\(timestamp)] [\(violation.invariantID)] [\(violation.scope.rawValue)] \(violation.message)\(metadata)"
+                let metadata = Self.exportedMetadataSuffix(
+                    violation.metadata,
+                    pairLimit: metadataPairExportLimit,
+                    valueLimit: metadataValueExportLimit
+                )
+                return Self.boundedExportLine(
+                    "[\(timestamp)] [\(violation.invariantID)] [\(violation.scope.rawValue)] \(violation.message)\(metadata)",
+                    limit: lineExportLimit
+                )
             }
             sections.append("INVARIANT VIOLATIONS\n" + lines.joined(separator: "\n"))
         }
@@ -2006,7 +2016,10 @@ final class DiagnosticsStore {
                     report.invariantViolationsEmitted.isEmpty
                     ? "none"
                     : report.invariantViolationsEmitted.joined(separator: ",")
-                return "[\(report.reducerName)] [\(report.eventName)] effects=\(effects) invariants=\(invariants)\(correlations) from=\(report.previousStateSummary) to=\(report.nextStateSummary)"
+                return Self.boundedExportLine(
+                    "[\(report.reducerName)] [\(report.eventName)] effects=\(effects) invariants=\(invariants)\(correlations) from=\(report.previousStateSummary) to=\(report.nextStateSummary)",
+                    limit: lineExportLimit
+                )
             }
             sections.append("REDUCER TRANSITIONS\n" + lines.joined(separator: "\n"))
         }
@@ -2017,11 +2030,15 @@ final class DiagnosticsStore {
         } else {
             let lines = exportedEntries.map { entry in
                 let timestamp = DiagnosticsStore.iso8601TimestampFormatter.string(from: entry.timestamp)
-                let metadata =
-                    entry.metadata.isEmpty
-                    ? ""
-                    : " " + entry.metadata.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
-                return "[\(timestamp)] [\(entry.level.rawValue)] [\(entry.subsystem.rawValue)] \(entry.message)\(metadata)"
+                let metadata = Self.exportedMetadataSuffix(
+                    entry.metadata,
+                    pairLimit: metadataPairExportLimit,
+                    valueLimit: metadataValueExportLimit
+                )
+                return Self.boundedExportLine(
+                    "[\(timestamp)] [\(entry.level.rawValue)] [\(entry.subsystem.rawValue)] \(entry.message)\(metadata)",
+                    limit: lineExportLimit
+                )
             }
             sections.append("DIAGNOSTICS\n" + lines.joined(separator: "\n"))
         }
@@ -2033,6 +2050,33 @@ final class DiagnosticsStore {
         }
 
         return sections.joined(separator: "\n\n")
+    }
+
+    private static func exportedMetadataSuffix(
+        _ metadata: [String: String],
+        pairLimit: Int?,
+        valueLimit: Int?
+    ) -> String {
+        guard !metadata.isEmpty else { return "" }
+
+        let sortedPairs = metadata.sorted { lhs, rhs in lhs.key < rhs.key }
+        let retainedPairs = pairLimit.map { Array(sortedPairs.prefix(max(0, $0))) } ?? sortedPairs
+        var parts = retainedPairs.map { key, value in
+            "\(key)=\(boundedExportText(value, limit: valueLimit))"
+        }
+        if let pairLimit, sortedPairs.count > max(0, pairLimit) {
+            parts.append("metadataTruncated=\(sortedPairs.count - max(0, pairLimit))")
+        }
+        return " " + parts.joined(separator: " ")
+    }
+
+    private static func boundedExportLine(_ line: String, limit: Int?) -> String {
+        boundedExportText(line, limit: limit)
+    }
+
+    private static func boundedExportText(_ text: String, limit: Int?) -> String {
+        guard let limit, limit >= 0, text.count > limit else { return text }
+        return String(text.prefix(limit)) + "...<truncated>"
     }
 
     private func persistedLogTail(maxBytes: Int) -> String? {
