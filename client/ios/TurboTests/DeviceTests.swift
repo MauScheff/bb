@@ -4180,6 +4180,37 @@ struct DeviceTests {
     }
 
     @MainActor
+    @Test func backendBootstrapFailureMessageIncludesStepHostAndURLReason() {
+        let viewModel = PTTViewModel()
+        let message = viewModel.backendBootstrapFailureMessage(
+            step: "auth-session",
+            error: URLError(.cannotFindHost),
+            baseURL: URL(string: "https://api.beepbeep.to")!
+        )
+
+        #expect(message == "Could not reach api.beepbeep.to during auth-session: cannot find host")
+    }
+
+    @MainActor
+    @Test func onboardingSurfacesPreservedBackendBootstrapFailure() {
+        let viewModel = PTTViewModel()
+        viewModel.backendStatusMessage = "Reconnecting backend..."
+        viewModel.statusMessage = "Reconnecting..."
+        viewModel.lastBackendBootstrapFailureMessage =
+            "Could not reach api.beepbeep.to during device-registration: request timed out"
+
+        #expect(viewModel.surfaceLastBackendBootstrapFailureForOnboardingIfPresent())
+        #expect(
+            viewModel.backendStatusMessage
+                == "Could not reach api.beepbeep.to during device-registration: request timed out"
+        )
+        #expect(
+            viewModel.statusMessage
+                == "Could not reach api.beepbeep.to during device-registration: request timed out"
+        )
+    }
+
+    @MainActor
     @Test func transientForegroundSyncFailureRecoversConnectedControlPlane() {
         let viewModel = PTTViewModel()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())

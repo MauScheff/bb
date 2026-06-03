@@ -723,11 +723,15 @@ extension PTTViewModel {
             self?.handleWebSocketStateChange(state)
         }
 
+        var bootstrapStep = "runtime-config"
         do {
             let runtimeConfig = try await client.fetchRuntimeConfig()
             let localRelayOnlyOverride = TurboDirectPathDebugOverride.isRelayOnlyForced()
+            bootstrapStep = "auth-session"
+            let authSession = try await client.authenticate()
+            bootstrapStep = "profile-sync"
             let session = try await synchronizedProfileSessionIfNeeded(
-                try await client.authenticate(),
+                authSession,
                 using: client
             )
             guard backendConfigurationIsCurrent(key: key) else {
@@ -745,6 +749,7 @@ extension PTTViewModel {
             let mediaEncryptionIdentity = provisionMediaEncryptionIdentityForRegistration(
                 deviceID: client.deviceID
             )
+            bootstrapStep = "device-registration"
             _ = try await client.registerDevice(
                 label: UIDevice.current.name,
                 alertPushToken: alertPushTokenHex.isEmpty ? nil : alertPushTokenHex,
@@ -757,6 +762,7 @@ extension PTTViewModel {
             if let directQuicIdentity {
                 directQuicRegisteredFingerprint = directQuicIdentity.fingerprint
             }
+            bootstrapStep = "presence-heartbeat"
             _ = try await client.heartbeatPresence()
             backendRuntime.markPresenceHeartbeatSent()
             guard backendConfigurationIsCurrent(key: key) else {
@@ -835,11 +841,18 @@ extension PTTViewModel {
                 )
             }
             replaceBackendBootstrapRetryTask(with: nil)
+            lastBackendBootstrapFailureMessage = nil
             syncPTTServiceStatus(reason: "backend-connected")
             captureDiagnosticsState("backend-config:connected")
         } catch {
+            let failureMessage = backendBootstrapFailureMessage(
+                step: bootstrapStep,
+                error: error,
+                baseURL: backendConfig.baseURL
+            )
+            lastBackendBootstrapFailureMessage = failureMessage
             resetBackendRuntimeForReconnect()
-            backendSyncCoordinator.send(.bootstrapFailed(error.localizedDescription))
+            backendSyncCoordinator.send(.bootstrapFailed(failureMessage))
             scheduleBackendBootstrapRetryIfNeeded(trigger: "configure", error: error)
             updatePrimaryStatusAfterBackendBootstrapFailure(
                 retrying: statusMessage == "Reconnecting..."
@@ -848,7 +861,14 @@ extension PTTViewModel {
                 .backend,
                 level: .error,
                 message: "Backend connection failed",
-                metadata: ["error": error.localizedDescription]
+                metadata: [
+                    "step": bootstrapStep,
+                    "baseURL": backendConfig.baseURL.absoluteString,
+                    "failure": failureMessage,
+                    "error": error.localizedDescription,
+                    "errorDomain": (error as NSError).domain,
+                    "errorCode": String((error as NSError).code),
+                ]
             )
             syncPTTServiceStatus(reason: "backend-connect-failed")
             captureDiagnosticsState("backend-config:failed")

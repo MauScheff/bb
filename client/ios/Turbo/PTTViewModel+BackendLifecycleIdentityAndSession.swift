@@ -115,6 +115,7 @@ extension PTTViewModel {
         await configureBackendIfNeeded()
 
         guard backendRuntime.isReady else {
+            _ = surfaceLastBackendBootstrapFailureForOnboardingIfPresent()
             captureDiagnosticsState("identity-restore:failed")
             return false
         }
@@ -137,6 +138,7 @@ extension PTTViewModel {
         await configureBackendIfNeeded()
 
         guard backendRuntime.isReady else {
+            _ = surfaceLastBackendBootstrapFailureForOnboardingIfPresent()
             captureDiagnosticsState("identity-create:failed")
             return false
         }

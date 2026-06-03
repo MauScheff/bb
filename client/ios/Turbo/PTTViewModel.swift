@@ -222,6 +222,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var backendConfigurationTask: Task<Void, Never>?
     var backendConfigurationKey: String?
     var backendConfigurationToken: UUID?
+    var lastBackendBootstrapFailureMessage: String?
     var isPTTAudioSessionActive: Bool = false
     var localAudioLevel: Double = 0
     var backendBootstrapRetryDelayNanoseconds: UInt64 = 2_000_000_000
@@ -757,6 +758,47 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     func resetBackendRuntimeForReconnect() {
         backendRuntime.disconnectForReconnect()
         controlPlaneCoordinator.send(.reset)
+    }
+
+    func backendBootstrapFailureMessage(
+        step: String,
+        error: Error,
+        baseURL: URL
+    ) -> String {
+        let host = baseURL.host ?? baseURL.absoluteString
+        return "Could not reach \(host) during \(step): \(backendBootstrapFailureReason(error))"
+    }
+
+    func backendBootstrapFailureReason(_ error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else {
+            return error.localizedDescription
+        }
+
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut:
+            return "request timed out"
+        case .networkConnectionLost:
+            return "network connection was lost"
+        case .notConnectedToInternet:
+            return "not connected to the internet"
+        case .cannotConnectToHost:
+            return "cannot connect to host"
+        case .cannotFindHost:
+            return "cannot find host"
+        case .dnsLookupFailed:
+            return "DNS lookup failed"
+        default:
+            return error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func surfaceLastBackendBootstrapFailureForOnboardingIfPresent() -> Bool {
+        guard let message = lastBackendBootstrapFailureMessage else { return false }
+        backendStatusMessage = message
+        statusMessage = message
+        return true
     }
 
     func replaceBackendConfig(with config: TurboBackendConfig?) {
