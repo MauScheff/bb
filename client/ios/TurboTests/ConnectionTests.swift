@@ -4609,6 +4609,158 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func backgroundReadyChannelMediaRelayPrejoinRequiresPTTWakeActivation() async {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let viewModel = PTTViewModel()
+        viewModel.replaceBackendConfig(with: makeUnreachableBackendConfig())
+        viewModel.applicationStateOverride = .background
+        viewModel.selectedContactId = contactID
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Peer",
+                handle: "@peer",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer-user"
+            )
+        ]
+
+        var connectRequests: [(contactID: UUID, channelID: String, peerDeviceID: String, localDeviceID: String)] = []
+        viewModel.mediaRelayConnectOverride = { _, _, contactID, channelID, peerDeviceID, localDeviceID in
+            connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
+            return .quicDatagram
+        }
+
+        await viewModel.prejoinMediaRelayForReadyChannelIfNeeded(
+            contactID: contactID,
+            channelReadiness: makeChannelReadiness(
+                status: .ready,
+                peerTargetDeviceId: "peer-device"
+            )
+        )
+
+        #expect(connectRequests.isEmpty)
+        #expect(!viewModel.mediaRuntime.hasActiveMediaRelayClient)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message
+                    == "Contract precondition failed: ready-channel media relay prejoin requires foreground or active PTT wake audio activation"
+                    && $0.metadata["invariantID"] == "ptt.background_media_prejoin_requires_wake_activation"
+                    && $0.metadata["applicationState"] == "background"
+                    && $0.metadata["pendingWake"] == "false"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "ptt.background_media_prejoin_requires_wake_activation"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func backgroundReadyChannelMediaRelayPrejoinAllowsActivatedPTTWake() async {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let viewModel = PTTViewModel()
+        viewModel.replaceBackendConfig(with: makeUnreachableBackendConfig())
+        viewModel.applicationStateOverride = .background
+        viewModel.isPTTAudioSessionActive = true
+        viewModel.selectedContactId = contactID
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Peer",
+                handle: "@peer",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.pttWakeRuntime.store(
+            PendingIncomingPTTPush(
+                contactID: contactID,
+                channelUUID: channelUUID,
+                payload: TurboPTTPushPayload(
+                    event: .transmitStart,
+                    channelId: "channel",
+                    activeSpeaker: "@peer",
+                    activeSpeakerDisplayName: "Peer",
+                    senderUserId: "peer-user",
+                    senderDeviceId: "peer-device"
+                ),
+                hasConfirmedIncomingPush: true,
+                activationState: .systemActivated
+            )
+        )
+
+        var connectRequests: [(contactID: UUID, channelID: String, peerDeviceID: String, localDeviceID: String)] = []
+        viewModel.mediaRelayConnectOverride = { _, _, contactID, channelID, peerDeviceID, localDeviceID in
+            connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
+            return .quicDatagram
+        }
+
+        await viewModel.prejoinMediaRelayForReadyChannelIfNeeded(
+            contactID: contactID,
+            channelReadiness: makeChannelReadiness(
+                status: .ready,
+                peerTargetDeviceId: "peer-device"
+            )
+        )
+
+        #expect(connectRequests.count == 1)
+        #expect(connectRequests.first?.contactID == contactID)
+        #expect(connectRequests.first?.channelID == "channel")
+        #expect(connectRequests.first?.peerDeviceID == "peer-device")
+        #expect(connectRequests.first?.localDeviceID == "test-device")
+        #expect(viewModel.mediaRuntime.hasActiveMediaRelayClient)
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "ptt.background_media_prejoin_requires_wake_activation"
+            )
+        )
+    }
+
+    @MainActor
     @Test func networkPathChangeClearsSelectedDirectQuicConnectivityBackoff() async {
         let contactID = UUID()
         let viewModel = PTTViewModel()

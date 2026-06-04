@@ -817,6 +817,20 @@
       "status": "active"
     },
     {
+      "id": "ptt.background_media_prejoin_requires_wake_activation",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "A ready-channel media relay prejoin was attempted while the app was backgrounded or inactive without active PushToTalk wake audio activation.",
+      "evidenceFields": ["contactId", "channelId", "peerDeviceId", "applicationState", "systemSession", "pendingWake", "wakeActivationState", "isPTTAudioSessionActive"],
+      "detectors": ["Turbo/PTTViewModel+TransmitAudioSend.swift"],
+      "regressions": ["TurboTests/ConnectionTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Ready-channel media relay prejoin is foreground-only unless the contact has a pending PushToTalk wake and the PTT audio session is already active.",
+      "alertPolicy": "diagnostics",
+      "status": "active"
+    },
+    {
       "id": "receiver.background_not_ready_without_wake_reason",
       "scope": "local",
       "owner": "app",

@@ -2700,11 +2700,64 @@ extension PTTViewModel {
             }
             return
         }
+        let shouldPrejoin = await MainActor.run {
+            shouldPrejoinReadyChannelMediaRelay(
+                contactID: contactID,
+                channelID: channelReadiness.channelId,
+                peerDeviceID: peerDeviceID
+            )
+        }
+        guard shouldPrejoin else { return }
         await connectMediaRelayForReceiveIfNeeded(
             contactID: contactID,
             channelID: channelReadiness.channelId,
             peerDeviceID: peerDeviceID
         )
+    }
+
+    func shouldPrejoinReadyChannelMediaRelay(
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        applicationState: UIApplication.State? = nil
+    ) -> Bool {
+        let applicationState = applicationState ?? currentApplicationState()
+        guard applicationState != .active else { return true }
+        let hasActivatedWake =
+            pttWakeRuntime.hasPendingWake(for: contactID)
+            && isPTTAudioSessionActive
+        guard hasActivatedWake else {
+            diagnostics.recordContractViolation(
+                DiagnosticsContracts.Media.readyChannelMediaRelayPrejoinRequiresPTTWakeActivation(
+                    contactID: contactID,
+                    channelID: channelID,
+                    peerDeviceID: peerDeviceID,
+                    applicationState: readyChannelMediaRelayApplicationStateDescription(applicationState),
+                    systemSession: String(describing: pttCoordinator.state.systemSessionState),
+                    pendingWake: pttWakeRuntime.hasPendingWake(for: contactID),
+                    wakeActivationState: pttWakeRuntime.incomingWakeActivationState(for: contactID)
+                        .map { String(describing: $0) } ?? "none",
+                    isPTTAudioSessionActive: isPTTAudioSessionActive
+                )
+            )
+            return false
+        }
+        return true
+    }
+
+    private func readyChannelMediaRelayApplicationStateDescription(
+        _ applicationState: UIApplication.State
+    ) -> String {
+        switch applicationState {
+        case .active:
+            return "active"
+        case .background:
+            return "background"
+        case .inactive:
+            return "inactive"
+        @unknown default:
+            return "unknown"
+        }
     }
 
     func takeShouldAwaitInitialOutboundAudioSendGate() -> Bool {

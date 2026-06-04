@@ -629,6 +629,36 @@ enum DiagnosticsContracts {
                 ]
             )
         }
+
+        static func readyChannelMediaRelayPrejoinRequiresPTTWakeActivation(
+            contactID: UUID,
+            channelID: String,
+            peerDeviceID: String,
+            applicationState: String,
+            systemSession: String,
+            pendingWake: Bool,
+            wakeActivationState: String,
+            isPTTAudioSessionActive: Bool
+        ) -> DiagnosticsContractSpec {
+            DiagnosticsContractSpec(
+                name: "ptt.background_media_prejoin_requires_wake_activation",
+                kind: .precondition,
+                invariantID: "ptt.background_media_prejoin_requires_wake_activation",
+                scope: .local,
+                subsystem: .media,
+                message: "ready-channel media relay prejoin requires foreground or active PTT wake audio activation",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "peerDeviceId": peerDeviceID,
+                    "applicationState": applicationState,
+                    "systemSession": systemSession,
+                    "pendingWake": String(pendingWake),
+                    "wakeActivationState": wakeActivationState,
+                    "isPTTAudioSessionActive": String(isPTTAudioSessionActive),
+                ]
+            )
+        }
     }
 }
 
