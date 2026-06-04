@@ -1758,25 +1758,32 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         scenarioRunID: String? = nil,
         compact: Bool = false,
         minimal: Bool = false,
+        tiny: Bool = false,
         engineTraceStepLimit: Int? = nil
     ) -> DiagnosticsEnvelope {
-        let invariantViolations = minimal
+        let invariantViolations = tiny
+            ? Array(diagnostics.invariantViolations.prefix(2))
+            : minimal
             ? Array(diagnostics.invariantViolations.prefix(4))
             : compact
                 ? Array(diagnostics.invariantViolations.prefix(12))
                 : diagnostics.invariantViolations
-        let stateCaptures = minimal
+        let stateCaptures = tiny
+            ? []
+            : minimal
             ? Array(diagnostics.stateCaptures.prefix(3))
             : compact
                 ? Array(diagnostics.stateCaptures.prefix(12))
                 : diagnostics.stateCaptures
-        let reducerTransitionReports = minimal
+        let reducerTransitionReports = tiny
+            ? []
+            : minimal
             ? Array(diagnostics.reducerTransitionReports.prefix(6))
             : compact
                 ? Array(diagnostics.reducerTransitionReports.prefix(24))
                 : diagnostics.reducerTransitionReports
-        let traceStepLimit = engineTraceStepLimit ?? (minimal ? 48 : compact ? 120 : nil)
-        let trace = traceStepLimit.flatMap { compactEngineTrace(maxSteps: $0) } ?? engineTrace
+        let traceStepLimit = engineTraceStepLimit ?? (tiny ? 0 : minimal ? 48 : compact ? 120 : nil)
+        let trace = traceStepLimit.map { compactEngineTrace(maxSteps: $0) } ?? engineTrace
         return DiagnosticsEnvelope(
             schemaVersion: 1,
             appVersion: appVersion,
@@ -1800,6 +1807,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         scenarioRunID: String? = nil,
         compact: Bool = false,
         minimal: Bool = false,
+        tiny: Bool = false,
         engineTraceStepLimit: Int? = nil
     ) throws -> String {
         try Self.structuredDiagnosticsEnvelopeJSON(
@@ -1809,6 +1817,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
                 scenarioRunID: scenarioRunID,
                 compact: compact,
                 minimal: minimal,
+                tiny: tiny,
                 engineTraceStepLimit: engineTraceStepLimit
             )
         )

@@ -230,9 +230,21 @@ struct DiagnosticsTests {
             $0.contains("minimal")
                 && $0.contains("\(DiagnosticsUploadMode.minimal.maximumRequestBodyBytes)")
         })
-        #expect(!prepared.request.transcript.contains("STRUCTURED DIAGNOSTICS"))
+        #expect(prepared.request.transcript.contains("STRUCTURED DIAGNOSTICS"))
         #expect(!prepared.request.transcript.contains("STATE SNAPSHOT"))
         #expect(prepared.request.selectedHandle == nil)
+        let marker = "STRUCTURED DIAGNOSTICS\n"
+        let sectionStart = try #require(prepared.request.transcript.range(of: marker)?.upperBound)
+        let sectionTail = prepared.request.transcript[sectionStart...]
+        let sectionEnd = sectionTail.range(of: "\nSTATE TIMELINE\n")?.lowerBound ?? sectionTail.endIndex
+        let sectionJSON = String(sectionTail[..<sectionEnd])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let envelope = try decoder.decode(DiagnosticsEnvelope.self, from: Data(sectionJSON.utf8))
+        #expect(envelope.engineTrace == nil)
+        #expect(envelope.stateCaptures.isEmpty)
+        #expect(envelope.reducerTransitionReports.isEmpty)
     }
 
     @Test func diagnosticsTinyUploadUsesEmergencySnapshotForNoisyReports() throws {

@@ -505,7 +505,8 @@ struct ConnectionTests {
         let executor = IncomingAudioIngressExecutor()
         let policy = IncomingAudioIngressConfiguration(
             mediaEncryptionRequired: true,
-            mediaEncryptionSession: session
+            mediaEncryptionSession: session,
+            liveAudioBacklogExpirationNanoseconds: 300_000_000
         )
         let baseTime: UInt64 = 10_000_000_000
 
@@ -540,20 +541,23 @@ struct ConnectionTests {
         #expect(acceptedFirst.sequenceNumber == 1)
         #expect(acceptedFirst.encryptedSequenceNumber == 1)
 
-        let staleSecond = await executor.admit(
-            packet(payload: secondEncrypted, receivedAtNanoseconds: baseTime + 400_000_000),
+        let expiredSecond = await executor.admit(
+            packet(payload: secondEncrypted, receivedAtNanoseconds: baseTime),
             policy: policy,
             nowNanoseconds: baseTime + 400_000_000
         )
-        guard case .rejected(.droppedByPlaybackGate(let decision, let sequenceNumber, _, _, _)) = staleSecond else {
-            Issue.record("expected delayed encrypted packet to be dropped by the playback gate")
+        guard case .rejected(.droppedByPlaybackGate(let decision, let sequenceNumber, _, _, let localQueueDelay)) = expiredSecond else {
+            Issue.record("expected expired encrypted packet to be dropped by the playback gate")
             return
         }
-        #expect(sequenceNumber == 2)
-        if case .orderedBacklog = decision.dropReason {
+        #expect(sequenceNumber == nil)
+        if case .expiredLiveBacklog(let delay, let threshold) = decision.dropReason {
+            #expect(delay == 400_000_000)
+            #expect(threshold == 300_000_000)
         } else {
-            Issue.record("expected ordered backlog drop")
+            Issue.record("expected expired live backlog drop")
         }
+        #expect(localQueueDelay == 400_000_000)
 
         let playableSecondCopy = await executor.admit(
             packet(payload: secondEncrypted, receivedAtNanoseconds: baseTime + 40_000_000),
@@ -735,7 +739,7 @@ struct ConnectionTests {
             return
         }
 
-        let staleOrdered = await Task.detached {
+        let delayedOrdered = await Task.detached {
             await executor.admit(
                 packet(
                     payload: "ordered-frame-2",
@@ -748,17 +752,10 @@ struct ConnectionTests {
                 nowNanoseconds: baseTime + 400_000_000
             )
         }.value
-        if case .rejected(.droppedByPlaybackGate(let decision, let sequenceNumber, _, _, let localQueueDelay)) = staleOrdered {
-            #expect(sequenceNumber == 2)
-            if case .orderedBacklog(let elapsedNanoseconds, let expectedSequenceFloor) = decision.dropReason {
-                #expect(elapsedNanoseconds == 400_000_000)
-                #expect(expectedSequenceFloor > 2)
-            } else {
-                Issue.record("expected ordered backlog drop")
-            }
-            #expect(localQueueDelay == 0)
+        if case .accepted(let acceptedOrdered) = delayedOrdered {
+            #expect(acceptedOrdered.sequenceNumber == 2)
         } else {
-            Issue.record("expected delayed ordered frame to be dropped as stale backlog")
+            Issue.record("expected delayed ordered TCP frame to stay playable")
         }
     }
 
@@ -1230,7 +1227,7 @@ struct ConnectionTests {
         )
     }
 
-    @Test func incomingAudioPlaybackGateDropsFastRelayTcpBacklogCatchupFrames() {
+    @Test func incomingAudioPlaybackGateKeepsSlowSequentialFastRelayTcpFallbackFrames() {
         let runtime = MediaRuntimeState()
         let contactID = UUID()
 
@@ -1250,8 +1247,8 @@ struct ConnectionTests {
             nowNanoseconds: 2_300_000_000
         )
 
-        #expect(!decision.shouldPlay)
-        #expect(decision.dropReason == .orderedBacklog(elapsedNanoseconds: 1_300_000_000, expectedSequenceFloor: 98))
+        #expect(decision.shouldPlay)
+        #expect(decision.dropReason == nil)
     }
 
     @Test func incomingAudioPlaybackGateAcceptsRelayWebSocketSequenceRestartWithinEpoch() {
@@ -15831,6 +15828,39 @@ struct ConnectionTests {
             "frame-3",
             "frame-4",
         ])
+    }
+
+    @Test func audioChunkSenderRunsTransportSendsOffSenderActor() async {
+        let startedPayloads = LockedStringEvents()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                let decodedPayload = AudioChunkPayloadCodec.decode(payload).first ?? payload
+                startedPayloads.append(decodedPayload)
+                if decodedPayload == "chunk-0" {
+                    Self.blockCurrentThreadForTesting(milliseconds: 250)
+                }
+            },
+            reportFailure: { _ in },
+            maximumPendingPayloads: 4,
+            maximumPayloadsPerMessage: 1,
+            maximumInFlightSends: 2
+        )
+
+        let enqueueTask = Task {
+            await sender.enqueue(["chunk-0", "chunk-1"])
+        }
+        await enqueueTask.value
+
+        for _ in 0..<50 {
+            if startedPayloads.snapshot().contains("chunk-0") { break }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        #expect(startedPayloads.snapshot().contains("chunk-0"))
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        #expect(startedPayloads.snapshot().contains("chunk-1"))
+
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
     }
 
     @Test func fastRelayAudioSenderKeepsQueuedPayloadsAfterBriefSlowSend() async {

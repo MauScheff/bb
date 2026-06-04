@@ -436,14 +436,13 @@ extension PTTViewModel {
         uploadMode: DiagnosticsUploadMode = .full,
         engineTraceStepLimit: Int? = nil
     ) throws -> TurboDiagnosticsUploadRequest {
-        let structuredEnvelopeJSON = diagnosticsUploadTiny(uploadMode)
-            ? nil
-            : try diagnosticsStructuredEnvelopeJSON(
-                appVersion: appVersionDescription,
-                compact: diagnosticsUploadCompact(uploadMode),
-                minimal: diagnosticsUploadMinimal(uploadMode),
-                engineTraceStepLimit: engineTraceStepLimit ?? uploadMode.defaultEngineTraceStepLimit
-            )
+        let structuredEnvelopeJSON = try diagnosticsStructuredEnvelopeJSON(
+            appVersion: appVersionDescription,
+            compact: diagnosticsUploadCompact(uploadMode),
+            minimal: diagnosticsUploadMinimal(uploadMode),
+            tiny: diagnosticsUploadTiny(uploadMode),
+            engineTraceStepLimit: engineTraceStepLimit ?? uploadMode.defaultEngineTraceStepLimit
+        )
         let snapshot = diagnosticsUploadTiny(uploadMode)
             ? diagnosticsTinySnapshot
             : diagnosticsSnapshot

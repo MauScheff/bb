@@ -1557,6 +1557,7 @@ private struct IncomingAudioPlaybackPolicy {
             return policy(
                 frameDurationNanoseconds: 20_000_000,
                 maximumHoldNanoseconds: 220_000_000,
+                dropsOrderedBacklog: false,
                 ordering: .orderedReliable(graceFrames: 5)
             )
         case .relayWebSocket:

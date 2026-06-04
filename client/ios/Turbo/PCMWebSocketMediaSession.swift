@@ -242,15 +242,17 @@ actor AudioChunkSender {
                 createdAt: sendCreatedAt,
                 startedAt: nil
             )
-            let sendTask = Task {
+            let sendTask = Task.detached(priority: .userInitiated) { [sendChunk] in
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
-                self.markTransportSendStarted(
+                await self.markTransportSendStarted(
                     sendID: sendID,
                     startedAt: sendStartedAt
                 )
                 let result: Result<Void, Error>
                 do {
+                    try Task.checkCancellation()
                     try await sendChunk(payload)
+                    try Task.checkCancellation()
                     result = .success(())
                 } catch {
                     result = .failure(error)
