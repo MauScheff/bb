@@ -1631,6 +1631,36 @@ struct DeviceTests {
             ) == false
         )
         #expect(
+            viewModel.prefersForegroundAppManagedReceivePlayback(
+                for: contactID,
+                applicationState: .active,
+                incomingAudioTransport: .relayWebSocket
+            ) == false
+        )
+        viewModel.markRemoteAudioActivity(for: contactID)
+        #expect(
+            viewModel.prefersForegroundAppManagedReceivePlayback(
+                for: contactID,
+                applicationState: .active,
+                incomingAudioTransport: .relayWebSocket
+            ) == false
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        #expect(
+            viewModel.prefersForegroundAppManagedReceivePlayback(
+                for: contactID,
+                applicationState: .active,
+                incomingAudioTransport: .relayWebSocket
+            )
+        )
+        #expect(
+            viewModel.shouldUseSystemActivatedReceivePlayback(
+                for: contactID,
+                applicationState: .active,
+                incomingAudioTransport: .relayWebSocket
+            ) == false
+        )
+        #expect(
             viewModel.shouldDeferBackgroundPlaybackUntilPTTAudioActivation(
                 for: contactID,
                 applicationState: .background
@@ -1835,7 +1865,7 @@ struct DeviceTests {
     }
 
     @MainActor
-    @Test func appleGatedForegroundIncomingAudioChunkUsesExistingMediaPlaybackWithoutWake() async throws {
+    @Test func appleGatedForegroundLiveRelayFallbackUsesExistingPlaybackWithoutPTTActivation() async throws {
         let previousPolicy = UserDefaults.standard.string(
             forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
         )
@@ -1856,6 +1886,7 @@ struct DeviceTests {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -1881,6 +1912,8 @@ struct DeviceTests {
         let mediaSession = RecordingMediaSession()
         mediaSession.delegate = viewModel
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        viewModel.markRemoteAudioActivity(for: contactID)
 
         viewModel.handleIncomingSignal(
             TurboSignalEnvelope(
@@ -1896,7 +1929,7 @@ struct DeviceTests {
         try await Task.sleep(nanoseconds: 100_000_000)
 
         #expect(viewModel.pttWakeRuntime.pendingIncomingPush == nil)
-        #expect(mediaSession.receivedRemoteAudioChunks == [])
+        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Using app-managed wake playback for foreground audio"
@@ -1914,25 +1947,12 @@ struct DeviceTests {
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Buffered foreground receive audio chunk until PTT activation"
-            )
-        )
-
-        viewModel.isPTTAudioSessionActive = true
-        await viewModel.handleActivatedAudioSession(.sharedInstance())
-
-        #expect(mediaSession.receivedRemoteAudioChunks == ["AQI="])
-        #expect(mediaSession.audioRouteDidChangeCallCount == 0)
-        #expect(viewModel.mediaSessionContactID == contactID)
-        #expect(viewModel.mediaConnectionState == .connected)
-        #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "Deferred audio route refresh during live receive"
-            )
+            ) == false
         )
         #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "Flushing buffered foreground receive audio after PTT activation"
-            )
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "engine.ptt_activation_deadline_elapsed"
+            } == false
         )
     }
 

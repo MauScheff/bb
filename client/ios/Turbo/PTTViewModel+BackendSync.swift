@@ -432,6 +432,12 @@ extension PTTViewModel {
                 incomingAudioTransport == .directQuic
                     || incomingAudioTransport == .mediaRelayPacket
                     || incomingAudioTransport == .mediaRelayTcp
+                    || (
+                        incomingAudioTransport == .relayWebSocket
+                        && mediaTransportPathState.isFastRelay
+                        && receiveExecutionCoordinator.state
+                            .remoteActivityByContactID[contactID]?.phase == .receivingAudio
+                    )
             )
         let isAlreadyAppManagedFallback =
             pttWakeRuntime.incomingWakeActivationState(for: contactID) == .appManagedFallback
@@ -488,12 +494,11 @@ extension PTTViewModel {
             for: contactID,
             channelID: channelID
         ) else { return false }
-        if incomingAudioTransport?.isUnreliablePacketMedia == true,
-           prefersForegroundAppManagedReceivePlayback(
+        if prefersForegroundAppManagedReceivePlayback(
             for: contactID,
             applicationState: applicationState,
             incomingAudioTransport: incomingAudioTransport
-           ),
+        ),
            !mediaRuntime.hasActiveForegroundSystemReceivePlaybackFallback(
             for: contactID,
             channelID: channelID
