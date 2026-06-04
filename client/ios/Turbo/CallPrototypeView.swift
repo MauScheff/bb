@@ -68,13 +68,29 @@ enum TurboCallScreenBackgroundAnimationFlag {
 enum TurboCallScreenStatisticsVisibilityFlag {
     static func isEnabled(
         bundle: Bundle = .main,
-        appStoreReceiptURL: URL? = nil
+        appStoreReceiptURL: URL? = nil,
+        appStoreReceiptURLProvider: (Bundle) -> URL? = { $0.appStoreReceiptURL }
     ) -> Bool {
         #if DEBUG
         true
         #else
-        isTestFlightReceipt(bundle: bundle, appStoreReceiptURL: appStoreReceiptURL)
+        isEnabledForProductionLikeBuild(
+            bundle: bundle,
+            appStoreReceiptURL: appStoreReceiptURL,
+            appStoreReceiptURLProvider: appStoreReceiptURLProvider
+        )
         #endif
+    }
+
+    static func isEnabledForProductionLikeBuild(
+        bundle: Bundle = .main,
+        appStoreReceiptURL: URL? = nil,
+        appStoreReceiptURLProvider: (Bundle) -> URL? = { $0.appStoreReceiptURL }
+    ) -> Bool {
+        isTestFlightReceipt(
+            bundle: bundle,
+            appStoreReceiptURL: appStoreReceiptURL ?? appStoreReceiptURLProvider(bundle)
+        )
     }
 
     static func isTestFlightReceipt(

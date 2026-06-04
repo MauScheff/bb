@@ -909,7 +909,12 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
     weak var delegate: MediaSessionDelegate?
 
-    nonisolated(unsafe) private(set) var state: MediaConnectionState = .idle
+    private var stateStorage: MediaConnectionState = .idle
+    nonisolated(unsafe) var state: MediaConnectionState {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return stateStorage
+    }
 
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
     private let senderConfiguration: MediaTransportSenderConfiguration
@@ -1016,8 +1021,10 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
     }
 
     private nonisolated func setState(_ newState: MediaConnectionState) {
-        let oldState = state
-        state = newState
+        stateLock.lock()
+        let oldState = stateStorage
+        stateStorage = newState
+        stateLock.unlock()
         guard oldState != newState else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }

@@ -236,6 +236,53 @@ class DeviceAppTests(unittest.TestCase):
 
         self.assertEqual(["safe.log"], device_app.diagnostics_file_relative_paths(payload))
 
+    def test_copy_crash_logs_continues_after_nonzero_partial_copy(self) -> None:
+        args = device_app.parse_args_for_test(["diagnostics", "--device", "dev", "--include-crash-logs"])
+        device = device_app.Device(
+            identifier="devicectl-id",
+            udid="physical-udid",
+            name="Mauricio's iPhone",
+            model="iPhone",
+            os_version="26.4",
+            state="available",
+            transport="usb",
+            serial_number="serial",
+            developer_mode="enabled",
+        )
+        calls: list[tuple[Path, tuple[str, ...]]] = []
+        original = device_app.run_devicectl_json_command
+
+        def fake_run_devicectl_json_command(
+            args: object,
+            output_path: Path,
+            *devicectl_args: str,
+            dry_run: bool = False,
+        ) -> int:
+            calls.append((output_path, devicectl_args))
+            return 7
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                device_app.run_devicectl_json_command = fake_run_devicectl_json_command
+                output_dir = Path(temp_dir)
+                crash_logs_destination = output_dir / "crash-logs"
+
+                device_app.copy_crash_logs(
+                    args,
+                    output_dir=output_dir,
+                    crash_logs_destination=crash_logs_destination,
+                    device=device,
+                )
+            finally:
+                device_app.run_devicectl_json_command = original
+
+            warning = output_dir / "crash-logs-copy-warning.txt"
+            self.assertTrue(crash_logs_destination.exists())
+            self.assertTrue(warning.exists())
+            self.assertIn("exit=7", warning.read_text(encoding="utf-8"))
+            self.assertEqual(output_dir / "crash-logs-copy.json", calls[0][0])
+            self.assertIn("systemCrashLogs", calls[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

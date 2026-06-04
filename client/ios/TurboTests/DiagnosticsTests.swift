@@ -813,6 +813,25 @@ struct DiagnosticsTests {
         )
     }
 
+    @Test func callScreenStatisticsVisibilityUsesBundleReceiptURLByDefault() {
+        #expect(
+            TurboCallScreenStatisticsVisibilityFlag.isEnabledForProductionLikeBuild(
+                appStoreReceiptURL: nil,
+                appStoreReceiptURLProvider: { _ in
+                    URL(fileURLWithPath: "/private/var/mobile/Containers/Data/Application/app/StoreKit/sandboxReceipt")
+                }
+            )
+        )
+        #expect(
+            !TurboCallScreenStatisticsVisibilityFlag.isEnabledForProductionLikeBuild(
+                appStoreReceiptURL: nil,
+                appStoreReceiptURLProvider: { _ in
+                    URL(fileURLWithPath: "/private/var/mobile/Containers/Data/Application/app/StoreKit/receipt")
+                }
+            )
+        )
+    }
+
     @Test func controlCommandTransportDebugOverrideIsIgnoredForProductionLikeBuilds() throws {
         let suiteName = "TurboTests.control-command-transport-production-like.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

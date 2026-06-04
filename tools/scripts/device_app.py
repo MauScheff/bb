@@ -765,6 +765,42 @@ def copy_app_diagnostics(
         raise SystemExit(directory_copy_exit)
 
 
+def copy_crash_logs(
+    args: argparse.Namespace,
+    *,
+    output_dir: Path,
+    crash_logs_destination: Path,
+    device: Device,
+) -> None:
+    if not args.dry_run:
+        crash_logs_destination.mkdir(parents=True, exist_ok=True)
+    returncode = run_devicectl_json_command(
+        args,
+        output_dir / "crash-logs-copy.json",
+        "device",
+        "copy",
+        "from",
+        "--device",
+        device.devicectl_identifier,
+        "--domain-type",
+        "systemCrashLogs",
+        "--source",
+        ".",
+        "--destination",
+        str(crash_logs_destination),
+        dry_run=args.dry_run,
+    )
+    if returncode == 0 or args.dry_run:
+        return
+    (output_dir / "crash-logs-copy-warning.txt").write_text(
+        (
+            "Crash-log copy exited nonzero, but devicectl may have copied partial logs. "
+            f"Continuing diagnostics capture. exit={returncode}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_log_tail(output_dir: Path, tail_bytes: int) -> None:
     if tail_bytes <= 0:
         return
@@ -840,23 +876,11 @@ def extract_diagnostics(args: argparse.Namespace, device: Device, *, connected_m
     )
 
     if args.include_crash_logs:
-        if not args.dry_run:
-            crash_logs_destination.mkdir(parents=True, exist_ok=True)
-        devicectl_json_command(
+        copy_crash_logs(
             args,
-            output_dir / "crash-logs-copy.json",
-            "device",
-            "copy",
-            "from",
-            "--device",
-            device.devicectl_identifier,
-            "--domain-type",
-            "systemCrashLogs",
-            "--source",
-            ".",
-            "--destination",
-            str(crash_logs_destination),
-            dry_run=args.dry_run,
+            output_dir=output_dir,
+            crash_logs_destination=crash_logs_destination,
+            device=device,
         )
 
     if args.include_sysdiagnose:
