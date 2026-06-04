@@ -504,6 +504,14 @@ extension PTTViewModel {
         let applicationState = applicationState ?? currentApplicationState()
         guard isJoined, activeChannelId == contactID else { return }
         guard systemSessionMatches(contactID) else { return }
+        guard !conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) else {
+            diagnostics.record(
+                .media,
+                message: "Skipped foreground media prewarm while leave is in flight",
+                metadata: ["contactId": contactID.uuidString]
+            )
+            return
+        }
         guard !isTransmitting else { return }
         guard applicationState == .active else {
             diagnostics.record(
@@ -573,6 +581,7 @@ extension PTTViewModel {
         guard selectedContactId == contactID else { return false }
         guard isJoined, activeChannelId == contactID else { return false }
         guard systemSessionMatches(contactID) else { return false }
+        guard !conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) else { return false }
         guard !isTransmitting else { return false }
         guard !transmitCoordinator.state.isPressingTalk else { return false }
         guard !isPTTAudioSessionActive else { return false }
@@ -2677,6 +2686,11 @@ extension PTTViewModel {
                 "source": "post-backend-grant",
             ]
         )
+        armPTTLocalTransmitAudioActivation(
+            request: request,
+            channelUUID: channelUUID,
+            source: "system-transmit-handoff"
+        )
         do {
             try pttSystemClient.beginTransmitting(channelUUID: channelUUID)
             recordTransmitStartupTiming(
@@ -2688,6 +2702,10 @@ extension PTTViewModel {
             )
         } catch {
             transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
+            clearPendingLocalPTTAudioActivation(
+                channelUUID: channelUUID,
+                source: "system-transmit-handoff-failed"
+            )
             throw error
         }
     }
@@ -2733,8 +2751,14 @@ extension PTTViewModel {
         source: String
     ) {
         guard directQuicTransmitStartupPolicy == .appleGated else { return }
-        guard !isPTTAudioSessionActive else { return }
         guard let target = activeTransmitTarget(for: channelUUID) else { return }
+        guard !ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "apple-gated-timeout-schedule"
+        ) else {
+            return
+        }
 
         transmitTaskRuntime.replaceCaptureReassertionTask(
             with: Task { @MainActor [weak self] in
@@ -2742,7 +2766,13 @@ extension PTTViewModel {
                 let timeout = self.appleGatedAudioActivationTimeoutNanoseconds
                 try? await Task.sleep(nanoseconds: timeout)
                 guard !Task.isCancelled else { return }
-                guard !self.isPTTAudioSessionActive else { return }
+                guard !self.ensurePTTAudioSessionIsOwnedByLocalTransmit(
+                    channelUUID: channelUUID,
+                    target: target,
+                    stage: "apple-gated-timeout-fired"
+                ) else {
+                    return
+                }
                 await self.abortAppleGatedSystemTransmitAfterMissingAudioActivationIfNeeded(
                     target: target,
                     channelUUID: channelUUID,
@@ -2760,7 +2790,13 @@ extension PTTViewModel {
     ) async -> Bool {
         guard !usesLocalHTTPBackend else { return false }
         guard directQuicTransmitStartupPolicy == .appleGated else { return false }
-        guard !isPTTAudioSessionActive else { return false }
+        guard !ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "apple-gated-timeout-abort"
+        ) else {
+            return false
+        }
         guard currentApplicationState() == .active else { return false }
         guard hasActiveTransmitPressIntent() else { return false }
         guard pttCoordinator.state.systemChannelUUID == channelUUID,
@@ -2839,20 +2875,14 @@ extension PTTViewModel {
         guard shouldBridgePrewarmedMediaRelayDuringSystemTransmit(for: request.contactID) else {
             return false
         }
-        guard isPTTAudioSessionActive else {
-            diagnostics.record(
-                .media,
-                message: "Deferring Fast Relay capture until Apple audio activation",
-                metadata: [
-                    "contactId": request.contactID.uuidString,
-                    "channelId": request.backendChannelID,
-                    "channelUUID": channelUUID.uuidString,
-                    "trigger": trigger,
-                ]
-            )
+        guard let target = activeTransmitTarget(for: channelUUID) else {
             return false
         }
-        guard let target = activeTransmitTarget(for: channelUUID) else {
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "fast-relay-bridge-start"
+        ) else {
             return false
         }
         guard shouldContinueSystemTransmitActivation(
@@ -2956,7 +2986,8 @@ extension PTTViewModel {
                         name: nil,
                         channelUUID: channelUUID,
                         contactID: contactID,
-                        reason: reason
+                        reason: reason,
+                        allowStaleClearReassert: false
                     )
                     await resultBox.resolve(.success(()))
                 } catch {
@@ -2988,7 +3019,8 @@ extension PTTViewModel {
                     name: nil,
                     channelUUID: channelUUID,
                     contactID: contactID,
-                    reason: reason
+                    reason: reason,
+                    allowStaleClearReassert: false
                 )
                 clearResult = .success(())
             } catch {
@@ -3139,6 +3171,10 @@ extension PTTViewModel {
         guard hadPendingBegin || isActiveSystemTransmit else { return }
 
         transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
+        clearPendingLocalPTTAudioActivation(
+            channelUUID: channelUUID,
+            source: "system-transmit-handoff-cancelled:\(reason)"
+        )
         diagnostics.record(
             .pushToTalk,
             message: "Cancelling requested system transmit handoff",
@@ -3159,8 +3195,14 @@ extension PTTViewModel {
         guard !request.usesLocalHTTPBackend else { return }
         guard let channelUUID = request.channelUUID else { return }
         guard pttCoordinator.state.systemChannelUUID == channelUUID else { return }
-        guard isPTTAudioSessionActive else { return }
         guard shouldContinueSystemTransmitActivation(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "deferred-activation-ready"
+        ) else {
+            return
+        }
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
             channelUUID: channelUUID,
             target: target,
             stage: "deferred-activation-ready"
@@ -3200,15 +3242,6 @@ extension PTTViewModel {
         guard shouldBridgePrewarmedDirectMediaDuringSystemTransmit(for: request.contactID) else {
             return false
         }
-        guard isPTTAudioSessionActive else {
-            recordAppleGatedWarmDirectCaptureDeferred(
-                request: request,
-                target: target,
-                trigger: trigger,
-                reason: "waiting-for-apple-audio-session"
-            )
-            return false
-        }
         guard let leaseTarget = activeTransmitTarget(for: channelUUID),
               leaseTarget.contactID == request.contactID,
               leaseTarget.channelID == request.backendChannelID else {
@@ -3225,6 +3258,19 @@ extension PTTViewModel {
             recordFirstTransmitStartupTimingStageIfAbsent(
                 "early-audio-capture-deferred-until-backend-lease",
                 metadata: ["trigger": trigger, "bridge": "prewarmed-direct"]
+            )
+            return false
+        }
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: leaseTarget,
+            stage: "prewarmed-direct-bridge-start"
+        ) else {
+            recordAppleGatedWarmDirectCaptureDeferred(
+                request: request,
+                target: target,
+                trigger: trigger,
+                reason: "waiting-for-local-transmit-audio-epoch"
             )
             return false
         }
@@ -3461,6 +3507,10 @@ extension PTTViewModel {
         transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
         transmitRuntime.markPressEnded()
         transmitRuntime.clearSystemTransmitActivation(channelUUID: channelUUID)
+        clearPendingLocalPTTAudioActivation(
+            channelUUID: channelUUID,
+            source: "peer-transmit-authoritative:\(stage)"
+        )
         clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
         clearTransmitAudioCaptureStartIfInFlight(
             channelUUID: channelUUID,
@@ -3713,6 +3763,102 @@ extension PTTViewModel {
         )
     }
 
+    func startTransmitAudioCaptureWithTransientRetry(
+        channelUUID: UUID,
+        target: TransmitTarget,
+        trigger: String,
+        retryStagePrefix: String,
+        metadata extraMetadata: [String: String] = [:]
+    ) async throws -> Bool {
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "\(retryStagePrefix)-start"
+        ) else {
+            return false
+        }
+        do {
+            try await mediaServices.session()?.startSendingAudio()
+            return true
+        } catch {
+            guard currentApplicationState() == .active,
+                  ensurePTTAudioSessionIsOwnedByLocalTransmit(
+                      channelUUID: channelUUID,
+                      target: target,
+                      stage: "\(retryStagePrefix)-retry-evaluation"
+                  ),
+                  hasActiveTransmitPressIntent(),
+                  shouldContinueSystemTransmitActivation(
+                      channelUUID: channelUUID,
+                      target: target,
+                      stage: "\(retryStagePrefix)-retry-evaluation",
+                      recordCompletedSideEffectInvariant: false
+                  ) else {
+                throw error
+            }
+
+            var metadata = extraMetadata
+            metadata["contactId"] = target.contactID.uuidString
+            metadata["channelId"] = target.channelID
+            metadata["channelUUID"] = channelUUID.uuidString
+            metadata["trigger"] = trigger
+            metadata["error"] = error.localizedDescription
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Retrying transmit audio capture after transient start failure",
+                metadata: metadata
+            )
+            recordTransmitStartupTiming(
+                stage: "\(retryStagePrefix)-retry-requested",
+                contactID: target.contactID,
+                channelUUID: channelUUID,
+                channelID: target.channelID,
+                metadata: extraMetadata
+            )
+
+            await mediaServices.session()?.abortSendingAudio()
+            try? await Task.sleep(nanoseconds: 80_000_000)
+
+            guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+                channelUUID: channelUUID,
+                target: target,
+                stage: "\(retryStagePrefix)-retry-start"
+            ),
+            shouldContinueSystemTransmitActivation(
+                channelUUID: channelUUID,
+                target: target,
+                stage: "\(retryStagePrefix)-retry-start",
+                recordCompletedSideEffectInvariant: false
+            ) else {
+                return false
+            }
+
+            do {
+                try await mediaServices.session()?.startSendingAudio()
+            } catch {
+                var failureMetadata = metadata
+                failureMetadata["retryError"] = error.localizedDescription
+                diagnostics.record(
+                    .media,
+                    level: .error,
+                    message: "Transmit audio capture retry failed",
+                    metadata: failureMetadata
+                )
+                throw error
+            }
+
+            recordTransmitStartupTiming(
+                stage: "\(retryStagePrefix)-retry-completed",
+                contactID: target.contactID,
+                channelUUID: channelUUID,
+                channelID: target.channelID,
+                metadata: extraMetadata
+            )
+            return true
+        }
+    }
+
     func startOrRefreshTransmitAudioCaptureForSystemActivation(
         channelUUID: UUID,
         target: TransmitTarget,
@@ -3721,9 +3867,15 @@ extension PTTViewModel {
         duplicateMessage: String,
         metadata extraMetadata: [String: String] = [:]
     ) async throws -> Bool {
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "audio-capture-entry"
+        ) else {
+            return false
+        }
         let shouldRefreshAfterSystemActivation =
-            isPTTAudioSessionActive
-            && hasPreActivationTransmitAudioCaptureEvidence(channelUUID: channelUUID)
+            hasPreActivationTransmitAudioCaptureEvidence(channelUUID: channelUUID)
         let intent: TransmitAudioCaptureStartIntent = shouldRefreshAfterSystemActivation
             ? .systemActivationRefresh
             : .initial
@@ -3792,7 +3944,19 @@ extension PTTViewModel {
                 metadata: extraMetadata
             )
             do {
-                try await mediaServices.session()?.startSendingAudio()
+                guard try await startTransmitAudioCaptureWithTransientRetry(
+                    channelUUID: channelUUID,
+                    target: target,
+                    trigger: trigger,
+                    retryStagePrefix: "audio-capture-refresh-after-system-activation",
+                    metadata: extraMetadata
+                ) else {
+                    clearTransmitAudioCaptureStartIfInFlight(
+                        channelUUID: channelUUID,
+                        intent: .systemActivationRefresh
+                    )
+                    return false
+                }
             } catch {
                 clearTransmitAudioCaptureStartIfInFlight(
                     channelUUID: channelUUID,
@@ -3843,7 +4007,16 @@ extension PTTViewModel {
             metadata: extraMetadata
         )
         do {
-            try await mediaServices.session()?.startSendingAudio()
+            guard try await startTransmitAudioCaptureWithTransientRetry(
+                channelUUID: channelUUID,
+                target: target,
+                trigger: trigger,
+                retryStagePrefix: "audio-capture-start",
+                metadata: extraMetadata
+            ) else {
+                clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
+                return false
+            }
         } catch {
             clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
             throw error
@@ -3928,6 +4101,264 @@ extension PTTViewModel {
         return false
     }
 
+    private func pttAudioTransmitID(for target: TransmitTarget) -> String {
+        target.transmitID ?? "local-\(target.channelID)"
+    }
+
+    @discardableResult
+    func armPTTAudioSessionActivation(
+        owner: PTTAudioSessionOwner,
+        source: String
+    ) -> PTTAudioSessionOwner {
+        let owner = pttAudioSessionRuntime.expectActivation(owner: owner)
+        diagnostics.record(
+            .pushToTalk,
+            message: "PTT audio session activation armed",
+            metadata: [
+                "source": source,
+                "pttAudioOwner": owner.diagnosticsValue,
+                "pttAudioOwnerChannelUUID": owner.channelUUID?.uuidString ?? "none",
+                "pttAudioOwnerContactId": owner.contactID?.uuidString ?? "none",
+                "pttAudioOwnerChannelId": owner.channelID ?? "none",
+            ]
+        )
+        return owner
+    }
+
+    @discardableResult
+    func armPTTLocalTransmitAudioActivation(
+        request: TransmitRequestContext,
+        channelUUID: UUID,
+        source: String
+    ) -> PTTAudioSessionOwner {
+        armPTTAudioSessionActivation(
+            owner: .pendingLocalTransmit(
+                channelUUID: channelUUID,
+                contactID: request.contactID,
+                channelID: request.backendChannelID
+            ),
+            source: source
+        )
+    }
+
+    @discardableResult
+    func armPTTLocalTransmitAudioActivation(
+        channelUUID: UUID,
+        target: TransmitTarget,
+        source: String
+    ) -> PTTAudioSessionOwner {
+        armPTTAudioSessionActivation(
+            owner: .localTransmit(
+                channelUUID: channelUUID,
+                contactID: target.contactID,
+                channelID: target.channelID,
+                transmitID: pttAudioTransmitID(for: target)
+            ),
+            source: source
+        )
+    }
+
+    func clearPendingLocalPTTAudioActivation(
+        channelUUID: UUID?,
+        source: String
+    ) {
+        guard let clearedOwner = pttAudioSessionRuntime.clearPendingActivationOwner(
+            channelUUID: channelUUID,
+            localTransmitOnly: true
+        ) else {
+            return
+        }
+        diagnostics.record(
+            .pushToTalk,
+            message: "Cleared pending local PTT audio session activation",
+            metadata: [
+                "source": source,
+                "pttAudioOwner": clearedOwner.diagnosticsValue,
+                "pttAudioOwnerChannelUUID": clearedOwner.channelUUID?.uuidString ?? "none",
+                "pttAudioOwnerContactId": clearedOwner.contactID?.uuidString ?? "none",
+                "pttAudioOwnerChannelId": clearedOwner.channelID ?? "none",
+            ]
+        )
+    }
+
+    func notePTTAudioSessionActivatedForCurrentContext(source: String) -> PTTAudioSessionEpoch {
+        let expectedOwner = pttAudioSessionRuntime.pendingActivationOwner
+        let epoch = pttAudioSessionRuntime.activateExpected(
+            fallbackOwner: pttAudioSessionOwnerForCurrentContext()
+        )
+        diagnostics.record(
+            .pushToTalk,
+            message: "PTT audio session epoch activated",
+            metadata: epoch.diagnosticsMetadata.merging(
+                [
+                    "source": source,
+                    "pttAudioExpectedOwner": expectedOwner?.diagnosticsValue ?? "none",
+                    "pttAudioUsedFallbackOwner": String(expectedOwner == nil),
+                ],
+                uniquingKeysWith: { _, new in new }
+            )
+        )
+        return epoch
+    }
+
+    private func pttAudioSessionOwnerForCurrentContext() -> PTTAudioSessionOwner {
+        let activeSystemChannelUUID = pttCoordinator.state.systemChannelUUID
+        if let wake = pttWakeRuntime.pendingIncomingPush {
+            return .wakeReceive(
+                channelUUID: wake.channelUUID,
+                contactID: wake.contactID,
+                channelID: wake.payload.channelId
+            )
+        }
+        if let channelUUID = activeSystemChannelUUID {
+            if let target = activeTransmitTarget(for: channelUUID) {
+                return .localTransmit(
+                    channelUUID: channelUUID,
+                    contactID: target.contactID,
+                    channelID: target.channelID,
+                    transmitID: pttAudioTransmitID(for: target)
+                )
+            }
+            if let pendingRequest = transmitCoordinator.state.pendingRequest,
+               pendingRequest.channelUUID == channelUUID {
+                return .pendingLocalTransmit(
+                    channelUUID: channelUUID,
+                    contactID: pendingRequest.contactID,
+                    channelID: pendingRequest.backendChannelID
+                )
+            }
+            let contactID = contactId(for: channelUUID)
+            let channelID = contactID.flatMap { contactID in
+                contacts.first(where: { $0.id == contactID })?.backendChannelId
+                    ?? channelStateByContactID[contactID]?.channelId
+            }
+            return .remoteReceive(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                channelID: channelID
+            )
+        }
+        return .unattributed(channelUUID: activeSystemChannelUUID)
+    }
+
+    private func activePTTAudioSessionOwnerDescription() -> String {
+        if let activeOwner = pttAudioSessionRuntime.activeEpoch?.owner {
+            return activeOwner.diagnosticsValue
+        }
+        if let pendingOwner = pttAudioSessionRuntime.pendingActivationOwner {
+            return "pending:\(pendingOwner.diagnosticsValue)"
+        }
+        return isPTTAudioSessionActive ? "active-without-epoch" : "inactive"
+    }
+
+    @discardableResult
+    func ensurePTTAudioSessionIsOwnedByLocalTransmit(
+        channelUUID: UUID,
+        target: TransmitTarget,
+        stage: String
+    ) -> Bool {
+        let transmitID = pttAudioTransmitID(for: target)
+        if pttAudioSessionRuntime.hasActiveLocalTransmit(
+            channelUUID: channelUUID,
+            contactID: target.contactID,
+            channelID: target.channelID,
+            transmitID: transmitID
+        ) {
+            return true
+        }
+        if let epoch = pttAudioSessionRuntime.bindPendingLocalTransmit(
+            channelUUID: channelUUID,
+            contactID: target.contactID,
+            channelID: target.channelID,
+            transmitID: transmitID
+        ) {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Bound pending PTT audio session epoch to local transmit",
+                metadata: epoch.diagnosticsMetadata.merging(
+                    ["stage": stage],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
+            return true
+        }
+        if currentApplicationState() == .active,
+           isPTTAudioSessionActive,
+           pttCoordinator.state.systemChannelUUID == channelUUID,
+           pttCoordinator.state.isTransmitting,
+           hasActiveTransmitPressIntent(),
+           let epoch = pttAudioSessionRuntime.bindActiveRemoteReceiveToLocalTransmit(
+                channelUUID: channelUUID,
+                contactID: target.contactID,
+                channelID: target.channelID,
+                transmitID: transmitID
+           ) {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Rebound active remote receive PTT audio session to local transmit",
+                metadata: epoch.diagnosticsMetadata.merging(
+                    ["stage": stage],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
+            clearPendingLocalPTTAudioActivation(
+                channelUUID: channelUUID,
+                source: "remote-receive-to-local-transmit:\(stage)"
+            )
+            return true
+        }
+        diagnostics.record(
+            .media,
+            message: "Deferring system transmit activation until local transmit PTT audio epoch",
+            metadata: [
+                "contactId": target.contactID.uuidString,
+                "channelId": target.channelID,
+                "channelUUID": channelUUID.uuidString,
+                "transmitId": transmitID,
+                "stage": stage,
+                "isPTTAudioSessionActive": String(isPTTAudioSessionActive),
+                "pttAudioOwner": activePTTAudioSessionOwnerDescription(),
+            ]
+        )
+        return false
+    }
+
+    func hasPTTAudioSessionForPendingLocalTransmit(
+        request: TransmitRequestContext,
+        channelUUID: UUID,
+        stage: String
+    ) -> Bool {
+        if pttAudioSessionRuntime.hasActivePendingLocalTransmit(
+            channelUUID: channelUUID,
+            contactID: request.contactID,
+            channelID: request.backendChannelID
+        ) {
+            return true
+        }
+        if let target = activeTransmitTarget(for: channelUUID),
+           target.contactID == request.contactID,
+           target.channelID == request.backendChannelID {
+            return ensurePTTAudioSessionIsOwnedByLocalTransmit(
+                channelUUID: channelUUID,
+                target: target,
+                stage: stage
+            )
+        }
+        diagnostics.record(
+            .media,
+            message: "Deferring pending transmit audio capture until local transmit PTT audio epoch",
+            metadata: [
+                "contactId": request.contactID.uuidString,
+                "channelId": request.backendChannelID,
+                "channelUUID": channelUUID.uuidString,
+                "stage": stage,
+                "isPTTAudioSessionActive": String(isPTTAudioSessionActive),
+                "pttAudioOwner": activePTTAudioSessionOwnerDescription(),
+            ]
+        )
+        return false
+    }
+
     func completeSystemTransmitActivation(channelUUID: UUID) async {
         guard let target = activeTransmitTarget(for: channelUUID) else { return }
         guard shouldContinueSystemTransmitActivation(
@@ -3937,16 +4368,11 @@ extension PTTViewModel {
         ) else {
             return
         }
-        guard isPTTAudioSessionActive else {
-            diagnostics.record(
-                .media,
-                message: "Deferring system transmit activation until Apple audio activation",
-                metadata: [
-                    "contactId": target.contactID.uuidString,
-                    "channelId": target.channelID,
-                    "channelUUID": channelUUID.uuidString,
-                ]
-            )
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: target,
+            stage: "activation-start"
+        ) else {
             return
         }
         guard transmitRuntime.beginSystemTransmitActivationIfNeeded(channelUUID: channelUUID) else {
@@ -4194,9 +4620,15 @@ extension PTTViewModel {
         ) else {
             return
         }
-        guard isPTTAudioSessionActive else { return }
+        guard hasPTTAudioSessionForPendingLocalTransmit(
+            request: request,
+            channelUUID: channelUUID,
+            stage: "pending-capture-start"
+        ) else {
+            return
+        }
         guard mediaSessionContactID == nil || mediaSessionContactID == request.contactID else { return }
-        guard pendingSystemTransmitOutgoingAudioTarget(for: request) != nil else {
+        guard let pendingAudioTarget = pendingSystemTransmitOutgoingAudioTarget(for: request) else {
             diagnostics.record(
                 .media,
                 message: "Deferring early transmit audio capture until backend lease is granted",
@@ -4211,6 +4643,13 @@ extension PTTViewModel {
                 "early-audio-capture-deferred-until-backend-lease",
                 metadata: ["trigger": trigger]
             )
+            return
+        }
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: pendingAudioTarget,
+            stage: "pending-capture-target-ready"
+        ) else {
             return
         }
 
@@ -4231,6 +4670,13 @@ extension PTTViewModel {
         guard shouldContinuePendingSystemTransmitAudioCapture(
             request: request,
             stage: "media-session-start-completed"
+        ) else {
+            return
+        }
+        guard ensurePTTAudioSessionIsOwnedByLocalTransmit(
+            channelUUID: channelUUID,
+            target: pendingAudioTarget,
+            stage: "pending-capture-media-session-start-completed"
         ) else {
             return
         }
@@ -4262,7 +4708,6 @@ extension PTTViewModel {
         do {
             let shouldRefreshAfterSystemActivation =
                 trigger == "audio-session-activated"
-                && isPTTAudioSessionActive
                 && hasPreActivationTransmitAudioCaptureEvidence(channelUUID: channelUUID)
             let intent: TransmitAudioCaptureStartIntent = shouldRefreshAfterSystemActivation
                 ? .systemActivationRefresh
@@ -4324,7 +4769,18 @@ extension PTTViewModel {
                     "audio-capture-refresh-after-system-activation-requested",
                     metadata: ["trigger": trigger]
                 )
-                try await mediaServices.session()?.startSendingAudio()
+                guard try await startTransmitAudioCaptureWithTransientRetry(
+                    channelUUID: channelUUID,
+                    target: pendingAudioTarget,
+                    trigger: trigger,
+                    retryStagePrefix: "early-audio-capture-refresh-after-system-activation"
+                ) else {
+                    clearTransmitAudioCaptureStartIfInFlight(
+                        channelUUID: channelUUID,
+                        intent: .systemActivationRefresh
+                    )
+                    return
+                }
                 guard shouldContinuePendingSystemTransmitAudioCapture(
                     request: request,
                     stage: "audio-capture-refresh-after-system-activation-start-returned",
@@ -4352,7 +4808,15 @@ extension PTTViewModel {
                 "early-audio-capture-start-requested",
                 metadata: ["trigger": trigger]
             )
-            try await mediaServices.session()?.startSendingAudio()
+            guard try await startTransmitAudioCaptureWithTransientRetry(
+                channelUUID: channelUUID,
+                target: pendingAudioTarget,
+                trigger: trigger,
+                retryStagePrefix: "early-audio-capture-start"
+            ) else {
+                clearTransmitAudioCaptureStartIfInFlight(channelUUID: channelUUID, intent: .initial)
+                return
+            }
             guard shouldContinuePendingSystemTransmitAudioCapture(
                 request: request,
                 stage: "audio-capture-start-completed",
@@ -4383,11 +4847,10 @@ extension PTTViewModel {
                     "channelId": request.backendChannelID,
                     "trigger": trigger,
                     "error": error.localizedDescription,
-            ]
-        )
+                ]
+            )
+        }
     }
-
-}
 
     func waitForPendingSystemTransmitOutgoingAudioRouteIfNeeded(
         request: TransmitRequestContext,
@@ -4592,6 +5055,9 @@ extension PTTViewModel {
     }
 
     func handleActivatedAudioSession(_ audioSession: AVAudioSession) async {
+        if isPTTAudioSessionActive, pttAudioSessionRuntime.activeEpoch == nil {
+            _ = notePTTAudioSessionActivatedForCurrentContext(source: "handle-activated-audio-session")
+        }
         applyPreferredAudioOutputRoute(to: audioSession)
         let activeSystemChannelUUID = pttCoordinator.state.systemChannelUUID
         let activeTarget = activeSystemChannelUUID.flatMap(activeTransmitTarget(for:))
@@ -4662,7 +5128,7 @@ extension PTTViewModel {
                mediaSessionContactID == contactID,
                (mediaConnectionState == .connected || mediaConnectionState == .preparing) {
                 pttWakeRuntime.replacePlaybackFallbackTask(for: contactID, with: nil)
-                await mediaServices.session()?.audioRouteDidChange()
+                await mediaServices.session()?.audioRouteDidChange(allowCaptureRefresh: false)
                 recordWakeReceiveTiming(
                     stage: "late-system-audio-activation-preserved-app-managed-playback",
                     contactID: contactID,
@@ -4798,6 +5264,46 @@ extension PTTViewModel {
             }
             captureDiagnosticsState("ptt-wake:audio-activated")
             schedulePostWakeBackendRefresh(for: contactID)
+        }
+
+        if activeTarget == nil,
+           pendingWake == nil,
+           let activeSystemChannelUUID,
+           let receiveContactID = receiveContactIDForActiveSystemChannel,
+           remoteTransmittingContactIDs.contains(receiveContactID),
+           shouldPreserveForegroundAppManagedReceivePlaybackAfterPTTActivation(
+            for: receiveContactID
+           ) {
+            if let channelID =
+                contacts.first(where: { $0.id == receiveContactID })?.backendChannelId
+                ?? channelStateByContactID[receiveContactID]?.channelId {
+                syncEnginePTTAudioActivated(
+                    contactID: receiveContactID,
+                    channelID: channelID,
+                    source: "foreground-app-managed-receive"
+                )
+            }
+            mediaRuntime.replaceForegroundSystemReceivePlaybackFallbackTask(
+                for: receiveContactID,
+                with: nil
+            )
+            await mediaServices.session()?.audioRouteDidChange(allowCaptureRefresh: false)
+            recordDeferredLiveReceiveAudioRouteRefresh(
+                source: "foreground-app-managed-ptt-audio-activation",
+                contactID: receiveContactID,
+                channelUUID: activeSystemChannelUUID
+            )
+            diagnostics.record(
+                .media,
+                message: "Preserved foreground app-managed receive playback after PTT audio activation",
+                metadata: [
+                    "contactId": receiveContactID.uuidString,
+                    "channelUUID": activeSystemChannelUUID.uuidString,
+                    "transportPath": mediaTransportPathState.rawValue,
+                ]
+            )
+            captureDiagnosticsState("foreground-receive:app-managed-preserved-after-ptt-activation")
+            return
         }
 
         if activeTarget == nil,

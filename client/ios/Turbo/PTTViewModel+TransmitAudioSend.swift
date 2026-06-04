@@ -305,12 +305,10 @@ extension PTTViewModel {
         firstAudioPlaybackAckTimeoutTasksByContactID[target.contactID]?.cancel()
         firstAudioPlaybackAckTimeoutTasksByContactID[target.contactID] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-            await MainActor.run {
-                self?.handleFirstAudioPlaybackAckTimeout(
-                    contactID: target.contactID,
-                    ackID: ackID
-                )
-            }
+            await self?.handleFirstAudioPlaybackAckTimeout(
+                contactID: target.contactID,
+                ackID: ackID
+            )
         }
         diagnostics.record(
             .media,
@@ -329,7 +327,7 @@ extension PTTViewModel {
         return true
     }
 
-    func handleFirstAudioPlaybackAckTimeout(contactID: UUID, ackID: String) {
+    func handleFirstAudioPlaybackAckTimeout(contactID: UUID, ackID: String) async {
         guard let expectation = firstAudioPlaybackAckExpectationsByContactID[contactID],
               expectation.ackID == ackID else {
             return
@@ -357,6 +355,58 @@ extension PTTViewModel {
                 "contactId": contactID.uuidString,
                 "channelId": expectation.channelID,
                 "receiverDeviceId": expectation.receiverDeviceID,
+                "transportDigest": expectation.transportDigest,
+                "ackId": expectation.ackID,
+            ]
+        )
+        await demoteMediaRelayAudioAfterMissingFirstPlaybackAckIfNeeded(expectation)
+    }
+
+    func demoteMediaRelayAudioAfterMissingFirstPlaybackAckIfNeeded(
+        _ expectation: FirstAudioPlaybackAckExpectation
+    ) async {
+        let mediaRelayTransports = expectation.deliveredTransports.filter {
+            $0 == "media-relay-packet" || $0 == "media-relay-tcp"
+        }
+        guard !mediaRelayTransports.isEmpty else { return }
+        guard !expectation.senderDeviceID.isEmpty,
+              !expectation.receiverDeviceID.isEmpty else {
+            return
+        }
+        let key = MediaRelayConnectionKey(
+            sessionID: expectation.channelID,
+            localDeviceID: expectation.senderDeviceID,
+            peerDeviceID: expectation.receiverDeviceID
+        )
+        mediaRuntime.suppressMediaRelayAudioSend(for: key)
+        await mediaServices.session()?.resetOutgoingAudioTransport(
+            reason: "missing-first-playback-ack"
+        )
+        if let client = mediaRuntime.existingMediaRelayClient(for: key) {
+            mediaRuntime.clearMediaRelayClient(matching: key, client: client)
+        }
+        if let activeTarget = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget,
+           activeTarget.contactID == expectation.contactID,
+           activeTarget.channelID == expectation.channelID,
+           activeTarget.deviceID == expectation.receiverDeviceID {
+            configureOutgoingAudioRoute(target: activeTarget)
+        } else {
+            mediaServices.session()?.updateSenderConfiguration(
+                MediaTransportPolicy.websocketContinuity.senderConfiguration
+            )
+            mediaServices.session()?.updateOutboundOpusEncodingPolicy(
+                MediaTransportPolicy.websocketContinuity.opusEncodingPolicy()
+            )
+        }
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Demoted media relay audio to WebSocket continuity after missing first playback ACK",
+            metadata: [
+                "contactId": expectation.contactID.uuidString,
+                "channelId": expectation.channelID,
+                "peerDeviceId": expectation.receiverDeviceID,
+                "transports": mediaRelayTransports.joined(separator: ","),
                 "transportDigest": expectation.transportDigest,
                 "ackId": expectation.ackID,
             ]
@@ -687,6 +737,7 @@ extension PTTViewModel {
             localDeviceID: localDeviceID,
             peerDeviceID: peerDeviceID
         )
+        let wasAlreadySuppressed = mediaRuntime.isMediaRelayAudioSendSuppressed(for: key)
         mediaRuntime.suppressMediaRelayAudioSend(for: key)
         diagnostics.record(
             .media,
@@ -698,6 +749,50 @@ extension PTTViewModel {
                 "reason": reason,
             ]
         )
+        guard !wasAlreadySuppressed else { return }
+        demoteActiveMediaRelayAudioSendAfterPeerUnavailableIfNeeded(
+            localDeviceID: localDeviceID,
+            contactID: contactID,
+            channelID: channelID,
+            peerDeviceID: peerDeviceID
+        )
+    }
+
+    private func demoteActiveMediaRelayAudioSendAfterPeerUnavailableIfNeeded(
+        localDeviceID _: String,
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String
+    ) {
+        guard let activeTarget = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget,
+              activeTarget.contactID == contactID,
+              activeTarget.channelID == channelID,
+              activeTarget.deviceID == peerDeviceID else {
+            return
+        }
+        let session = mediaServices.session()
+        session?.updateSenderConfiguration(MediaTransportPolicy.websocketContinuity.senderConfiguration)
+        session?.updateOutboundOpusEncodingPolicy(MediaTransportPolicy.websocketContinuity.opusEncodingPolicy())
+        Task { @MainActor [weak self] in
+            await session?.resetOutgoingAudioTransport(reason: "media-relay-peer-unavailable")
+            guard let self else { return }
+            self.configureOutgoingAudioRoute(target: activeTarget)
+        }
+    }
+
+    func isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: UUID) -> Bool {
+        guard let target = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget,
+              target.contactID == contactID else {
+            return false
+        }
+        let localDeviceID = backendServices?.deviceID ?? backendConfig?.deviceID ?? ""
+        guard !localDeviceID.isEmpty else { return false }
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: localDeviceID,
+            peerDeviceID: target.deviceID
+        )
+        return mediaRuntime.isMediaRelayAudioSendSuppressed(for: key)
     }
 
     func clearMediaRelayAudioSendSuppressionIfPresent(
@@ -720,6 +815,27 @@ extension PTTViewModel {
                 "channelId": target.channelID,
                 "peerDeviceId": target.deviceID,
                 "reason": reason,
+            ]
+        )
+    }
+
+    func clearMediaRelayAudioSendSuppressionAfterFreshPrewarmIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        key: MediaRelayConnectionKey,
+        shouldClear: Bool
+    ) {
+        guard shouldClear else { return }
+        guard mediaRuntime.clearMediaRelayAudioSendSuppression(for: key) else { return }
+        diagnostics.record(
+            .media,
+            message: "Cleared media relay send suppression",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "peerDeviceId": peerDeviceID,
+                "reason": "fresh-prewarm-succeeded",
             ]
         )
     }
@@ -1838,6 +1954,8 @@ extension PTTViewModel {
         }
         mediaServices.replaceSendAudioChunk(sendAudioChunk)
         mediaServices.session()?.updateSendAudioChunk(sendAudioChunk)
+        let senderPolicy = mediaTransportPolicyForOutgoingAudio(for: target.contactID)
+        mediaServices.session()?.updateSenderConfiguration(senderPolicy.senderConfiguration)
         mediaServices.session()?.updateOutboundVoiceMediaPolicy(
             outboundVoiceMediaPayloadFormat(for: target)
         )
@@ -1851,6 +1969,7 @@ extension PTTViewModel {
                 "channelId": target.channelID,
                 "deviceId": target.deviceID,
                 "voiceMediaPolicy": outboundVoiceMediaPayloadFormat(for: target).rawValue,
+                "transportPolicy": senderPolicy.rawValue,
                 "transport": configuredOutgoingAudioTransportLabel(for: target.contactID),
                 "directQuicActive": String(shouldUseDirectQuicTransport(for: target.contactID)),
                 "mediaRelayEnabled": String(TurboMediaRelayDebugOverride.isEnabled()),
@@ -1896,6 +2015,9 @@ extension PTTViewModel {
 
     func configuredOutgoingAudioTransportLabel(for contactID: UUID) -> String {
         if isDirectPathRelayOnlyForced {
+            return "relay-websocket"
+        }
+        if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
             return "relay-websocket"
         }
         if TurboMediaRelayDebugOverride.isForced() {
@@ -1966,6 +2088,7 @@ extension PTTViewModel {
             contactID: target.contactID,
             channelID: target.channelID,
             peerDeviceID: target.deviceID,
+            clearsAudioSendSuppressionOnSuccess: bypassAudioSendSuppression,
             missingConfigMessage: "Media relay skipped because relay config is missing",
             connectingMessage: "Connecting media relay",
             selectedMessage: "Media relay selected",
@@ -2034,6 +2157,7 @@ extension PTTViewModel {
         channelID: String,
         peerDeviceID: String,
         allowConfiguredReceiveWithoutLocalToggle: Bool = false,
+        clearsAudioSendSuppressionOnSuccess: Bool = false,
         missingConfigMessage: String,
         connectingMessage: String,
         selectedMessage: String,
@@ -2095,6 +2219,13 @@ extension PTTViewModel {
         case .existingClient(let client):
             if client.hasFreshPeerUnavailable() {
                 await MainActor.run {
+                    suppressMediaRelayAudioSendUntilNextIdlePrewarm(
+                        localDeviceID: localDeviceId,
+                        contactID: contactID,
+                        channelID: channelID,
+                        peerDeviceID: peerDeviceID,
+                        reason: "peer-unavailable-reuse-blocked"
+                    )
                     clearStaleMediaRelayClient(
                         localDeviceID: localDeviceId,
                         channelID: channelID,
@@ -2117,6 +2248,17 @@ extension PTTViewModel {
                     )
                 }
             }
+            if clearsAudioSendSuppressionOnSuccess {
+                await MainActor.run {
+                    clearMediaRelayAudioSendSuppressionAfterFreshPrewarmIfNeeded(
+                        contactID: contactID,
+                        channelID: channelID,
+                        peerDeviceID: peerDeviceID,
+                        key: key,
+                        shouldClear: true
+                    )
+                }
+            }
             return client
         case .existingAttempt(let attempt):
             let client = await attempt.wait()
@@ -2133,6 +2275,16 @@ extension PTTViewModel {
                         ]
                     )
                 }
+            } else if clearsAudioSendSuppressionOnSuccess {
+                await MainActor.run {
+                    clearMediaRelayAudioSendSuppressionAfterFreshPrewarmIfNeeded(
+                        contactID: contactID,
+                        channelID: channelID,
+                        peerDeviceID: peerDeviceID,
+                        key: key,
+                        shouldClear: true
+                    )
+                }
             }
             return client
         case .newAttempt(let attempt):
@@ -2147,6 +2299,7 @@ extension PTTViewModel {
                 selectedMessage: selectedMessage,
                 failureMessage: failureMessage,
                 cancelledMessage: cancelledMessage,
+                clearsAudioSendSuppressionOnSuccess: clearsAudioSendSuppressionOnSuccess,
                 fromUserIDForIncoming: fromUserIDForIncoming
             )
         }
@@ -2359,6 +2512,7 @@ extension PTTViewModel {
         selectedMessage: String,
         failureMessage: String,
         cancelledMessage: String,
+        clearsAudioSendSuppressionOnSuccess: Bool,
         fromUserIDForIncoming: @escaping @Sendable () async -> String
     ) async -> TurboMediaRelayClient? {
         let client = TurboMediaRelayClient(
@@ -2367,7 +2521,7 @@ extension PTTViewModel {
             localDeviceId: localDeviceID,
             peerDeviceId: peerDeviceID,
             onIncomingAudioPayload: { [weak self] incoming in
-                let receivedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
+                let receiveEpoch = await self?.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
                 let fromUserID = await fromUserIDForIncoming()
                 await self?.handleIncomingAudioPayload(
                     incoming.payload,
@@ -2379,8 +2533,9 @@ extension PTTViewModel {
                         mediaRelayMediaMode: incoming.mediaMode
                     ),
                     transportSequenceNumber: incoming.sequenceNumber,
+                    expectedReceiveEpoch: receiveEpoch,
                     ingressContext: IncomingAudioIngressContext(
-                        receivedAtNanoseconds: receivedAtNanoseconds,
+                        receivedAtNanoseconds: incoming.receivedAtNanoseconds,
                         sequenceNumber: incoming.sequenceNumber,
                         sentAtMilliseconds: incoming.sentAtMilliseconds,
                         source: "media-relay"
@@ -2457,18 +2612,14 @@ extension PTTViewModel {
                     localDeviceID: localDeviceID,
                     peerDeviceID: peerDeviceID
                 )
-                let hadSuppression = mediaRuntime.isMediaRelayAudioSendSuppressed(for: key)
                 let accepted = mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: client)
-                if accepted && hadSuppression {
-                    diagnostics.record(
-                        .media,
-                        message: "Cleared media relay send suppression",
-                        metadata: [
-                            "contactId": contactID.uuidString,
-                            "channelId": channelID,
-                            "peerDeviceId": peerDeviceID,
-                            "reason": "fresh-prewarm-succeeded",
-                        ]
+                if accepted {
+                    clearMediaRelayAudioSendSuppressionAfterFreshPrewarmIfNeeded(
+                        contactID: contactID,
+                        channelID: channelID,
+                        peerDeviceID: peerDeviceID,
+                        key: key,
+                        shouldClear: clearsAudioSendSuppressionOnSuccess
                     )
                 }
                 return accepted
@@ -3632,9 +3783,7 @@ extension PTTViewModel {
         }
 
         if sessionNeedsRecreation {
-            closeMediaSession(
-                preserveDirectQuic: shouldUseDirectQuicTransport(for: contactID)
-            )
+            closeRecreatedMediaSessionPreservingActiveTransport(for: contactID)
         }
 
         guard !media.hasSession() else { return false }
@@ -3699,9 +3848,7 @@ extension PTTViewModel {
         }
 
         if sessionNeedsRecreation {
-            closeMediaSession(
-                preserveDirectQuic: shouldUseDirectQuicTransport(for: contactID)
-            )
+            closeRecreatedMediaSessionPreservingActiveTransport(for: contactID)
         }
 
         if sessionNeedsCreation || sessionNeedsContactSwitch || sessionNeedsRecreation {
@@ -3832,6 +3979,15 @@ extension PTTViewModel {
             )
         }
         mediaServices.reset(shouldDeactivateAudioSession, preserveDirectQuic, preserveMediaRelay)
+    }
+
+    func closeRecreatedMediaSessionPreservingActiveTransport(for contactID: UUID) {
+        let preserveDirectQuic = shouldUseDirectQuicTransport(for: contactID)
+        closeMediaSession(
+            preserveDirectQuic: preserveDirectQuic,
+            preserveMediaRelay: !preserveDirectQuic
+                && shouldPreserveMediaRelayDuringMediaClose(for: contactID)
+        )
     }
 
     func shouldPreserveMediaRelayDuringMediaClose(for contactID: UUID) -> Bool {

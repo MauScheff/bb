@@ -790,10 +790,19 @@ extension PTTViewModel {
                 "reason": reason,
             ]
         )
+        armPTTLocalTransmitAudioActivation(
+            request: request,
+            channelUUID: channelUUID,
+            source: "stale-channel-rejoin-retry"
+        )
         do {
             try pttSystemClient.beginTransmitting(channelUUID: channelUUID)
         } catch {
             transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
+            clearPendingLocalPTTAudioActivation(
+                channelUUID: channelUUID,
+                source: "stale-channel-rejoin-retry-failed"
+            )
             diagnostics.record(
                 .pushToTalk,
                 level: .error,
@@ -1142,6 +1151,20 @@ extension PTTViewModel {
             }
             transmitRuntime.clearPendingSystemTransmitBegin(channelUUID: channelUUID)
             transmitRuntime.noteSystemTransmitBegan()
+            if let callbackTarget {
+                armPTTLocalTransmitAudioActivation(
+                    channelUUID: channelUUID,
+                    target: callbackTarget,
+                    source: "ptt-system-began:\(source)"
+                )
+            } else if let pendingRequest = transmitCoordinator.state.pendingRequest,
+                      pendingRequest.channelUUID == channelUUID {
+                armPTTLocalTransmitAudioActivation(
+                    request: pendingRequest,
+                    channelUUID: channelUUID,
+                    source: "ptt-system-began:\(source)"
+                )
+            }
             systemTransmitBeginRecoveryAttemptsByChannelUUID.removeValue(forKey: channelUUID)
             await pttCoordinator.handle(
                 .didBeginTransmitting(
@@ -1204,12 +1227,18 @@ extension PTTViewModel {
                 channelId: callbackTarget?.channelID
             )
             if isPTTAudioSessionActive, let callbackTarget {
-                syncEnginePTTAudioActivated(
-                    contactID: callbackTarget.contactID,
-                    channelID: callbackTarget.channelID,
-                    source: "system-transmit-began"
-                )
-                await completeSystemTransmitActivation(channelUUID: channelUUID)
+                if ensurePTTAudioSessionIsOwnedByLocalTransmit(
+                    channelUUID: channelUUID,
+                    target: callbackTarget,
+                    stage: "system-transmit-began"
+                ) {
+                    syncEnginePTTAudioActivated(
+                        contactID: callbackTarget.contactID,
+                        channelID: callbackTarget.channelID,
+                        source: "system-transmit-began"
+                    )
+                    await completeSystemTransmitActivation(channelUUID: channelUUID)
+                }
             }
             scheduleAppleGatedAudioActivationTimeoutAfterSystemBeginIfNeeded(
                 channelUUID: channelUUID,
@@ -1540,9 +1569,30 @@ extension PTTViewModel {
                     return
                 }
                 transmitRuntime.noteSystemTransmitBeginRequested(channelUUID: channelUUID)
+                if let target = activeTransmitTarget(for: channelUUID) {
+                    armPTTLocalTransmitAudioActivation(
+                        channelUUID: channelUUID,
+                        target: target,
+                        source: "transmit-begin-retry"
+                    )
+                } else if let contact = contacts.first(where: { $0.id == contactID }),
+                          let backendChannelID = contact.backendChannelId {
+                    armPTTAudioSessionActivation(
+                        owner: .pendingLocalTransmit(
+                            channelUUID: channelUUID,
+                            contactID: contactID,
+                            channelID: backendChannelID
+                        ),
+                        source: "transmit-begin-retry"
+                    )
+                }
                 do {
                     try pttSystemClient.beginTransmitting(channelUUID: channelUUID)
                 } catch {
+                    clearPendingLocalPTTAudioActivation(
+                        channelUUID: channelUUID,
+                        source: "transmit-begin-retry-failed"
+                    )
                     diagnostics.record(
                         .pushToTalk,
                         level: .error,
@@ -1662,21 +1712,25 @@ extension PTTViewModel {
 
     func handleDidActivateAudioSession(_ audioSession: AVAudioSession) {
         isPTTAudioSessionActive = true
+        let audioEpoch = notePTTAudioSessionActivatedForCurrentContext(source: "ptt-callback")
         transmitTaskRuntime.cancelCaptureReassertionTask()
+        var metadata = audioSessionDiagnostics(audioSession)
+        metadata.merge(
+            [
+                "applicationState": String(describing: UIApplication.shared.applicationState),
+                "pendingWakeChannelUUID": pttWakeRuntime.pendingIncomingPush?.channelUUID.uuidString ?? "none",
+                "pendingWakeContactId": pttWakeRuntime.pendingIncomingPush?.contactID.uuidString ?? "none",
+                "pttTransmissionMode": lastReportedPTTTransmissionMode.map(String.init(describing:)) ?? "none",
+                "pttTransmissionModeReason": lastReportedPTTTransmissionModeReason ?? "none",
+                "systemChannelUUID": pttCoordinator.state.systemChannelUUID?.uuidString ?? "none",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        metadata.merge(audioEpoch.diagnosticsMetadata, uniquingKeysWith: { _, new in new })
         diagnostics.record(
             .pushToTalk,
             message: "PTT audio session activated",
-            metadata: audioSessionDiagnostics(audioSession).merging(
-                [
-                    "applicationState": String(describing: UIApplication.shared.applicationState),
-                    "pendingWakeChannelUUID": pttWakeRuntime.pendingIncomingPush?.channelUUID.uuidString ?? "none",
-                    "pendingWakeContactId": pttWakeRuntime.pendingIncomingPush?.contactID.uuidString ?? "none",
-                    "pttTransmissionMode": lastReportedPTTTransmissionMode.map(String.init(describing:)) ?? "none",
-                    "pttTransmissionModeReason": lastReportedPTTTransmissionModeReason ?? "none",
-                    "systemChannelUUID": pttCoordinator.state.systemChannelUUID?.uuidString ?? "none",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
+            metadata: metadata
         )
         Task {
             await handleActivatedAudioSession(audioSession)
@@ -1685,21 +1739,27 @@ extension PTTViewModel {
     }
 
     func handleDidDeactivateAudioSession(_ audioSession: AVAudioSession) {
+        let deactivatedEpoch = pttAudioSessionRuntime.deactivate()
         isPTTAudioSessionActive = false
+        var metadata = audioSessionDiagnostics(audioSession)
+        metadata.merge(
+            [
+                "applicationState": String(describing: UIApplication.shared.applicationState),
+                "pendingWakeChannelUUID": pttWakeRuntime.pendingIncomingPush?.channelUUID.uuidString ?? "none",
+                "pendingWakeContactId": pttWakeRuntime.pendingIncomingPush?.contactID.uuidString ?? "none",
+                "pttTransmissionMode": lastReportedPTTTransmissionMode.map(String.init(describing:)) ?? "none",
+                "pttTransmissionModeReason": lastReportedPTTTransmissionModeReason ?? "none",
+                "systemChannelUUID": pttCoordinator.state.systemChannelUUID?.uuidString ?? "none",
+            ],
+            uniquingKeysWith: { _, new in new }
+        )
+        if let deactivatedEpoch {
+            metadata.merge(deactivatedEpoch.diagnosticsMetadata, uniquingKeysWith: { _, new in new })
+        }
         diagnostics.record(
             .pushToTalk,
             message: "PTT audio session deactivated",
-            metadata: audioSessionDiagnostics(audioSession).merging(
-                [
-                    "applicationState": String(describing: UIApplication.shared.applicationState),
-                    "pendingWakeChannelUUID": pttWakeRuntime.pendingIncomingPush?.channelUUID.uuidString ?? "none",
-                    "pendingWakeContactId": pttWakeRuntime.pendingIncomingPush?.contactID.uuidString ?? "none",
-                    "pttTransmissionMode": lastReportedPTTTransmissionMode.map(String.init(describing:)) ?? "none",
-                    "pttTransmissionModeReason": lastReportedPTTTransmissionModeReason ?? "none",
-                    "systemChannelUUID": pttCoordinator.state.systemChannelUUID?.uuidString ?? "none",
-                ],
-                uniquingKeysWith: { _, new in new }
-            )
+            metadata: metadata
         )
         Task {
             await handleDeactivatedAudioSession(audioSession)

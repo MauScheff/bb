@@ -834,6 +834,12 @@ enum TurboControlCommandTransportPolicy: String, Sendable, Equatable, Codable {
     case httpOnly = "http-only"
 }
 
+enum VoiceMediaCoreMode: String, Sendable, Equatable, Codable {
+    case legacyAdaptive = "legacy-adaptive"
+    case swiftNetEqV1 = "swift-neteq-v1"
+    case shadowLegacyScheduled = "shadow-legacy-scheduled"
+}
+
 nonisolated enum TurboAudioDiagnosticsDebugOverride {
     static let packetMetadataStorageKey = "TurboDebugAudioPacketMetadataDiagnostics"
     static let packetMetadataLaunchArgument = "-TurboDebugAudioPacketMetadataDiagnostics"
@@ -901,6 +907,83 @@ nonisolated enum TurboAudioDiagnosticsDebugOverride {
         default:
             return nil
         }
+    }
+}
+
+nonisolated enum TurboVoiceMediaCoreDebugOverride {
+    static let storageKey = "TurboDebugVoiceMediaCoreMode"
+    static let launchArgument = "-TurboDebugVoiceMediaCoreMode"
+    static let environmentKey = "TURBO_DEBUG_VOICE_MEDIA_CORE_MODE"
+    static var allowsDebugOverridesByDefault: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    static func mode(
+        processInfo: ProcessInfo = .processInfo,
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> VoiceMediaCoreMode {
+        mode(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowDebugOverride: allowDebugOverride
+        )
+    }
+
+    static func mode(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> VoiceMediaCoreMode {
+        guard allowDebugOverride else { return .legacyAdaptive }
+        if let launchValue = launchArgumentValue(launchArgument, in: arguments),
+           let parsed = parseMode(launchValue) {
+            return parsed
+        }
+        if let environmentValue = environment[environmentKey],
+           let parsed = parseMode(environmentValue) {
+            return parsed
+        }
+        if let storedValue = defaults.string(forKey: storageKey),
+           let parsed = parseMode(storedValue) {
+            return parsed
+        }
+        return .legacyAdaptive
+    }
+
+    static func setMode(_ mode: VoiceMediaCoreMode?, defaults: UserDefaults = .standard) {
+        if let mode {
+            defaults.set(mode.rawValue, forKey: storageKey)
+        } else {
+            defaults.removeObject(forKey: storageKey)
+        }
+    }
+
+    private static func parseMode(_ rawValue: String) -> VoiceMediaCoreMode? {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case VoiceMediaCoreMode.legacyAdaptive.rawValue, "legacy":
+            return .legacyAdaptive
+        case VoiceMediaCoreMode.swiftNetEqV1.rawValue, "swift-neteq", "neteq":
+            return .swiftNetEqV1
+        case VoiceMediaCoreMode.shadowLegacyScheduled.rawValue, "shadow":
+            return .shadowLegacyScheduled
+        default:
+            return nil
+        }
+    }
+
+    private static func launchArgumentValue(_ launchArgument: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: launchArgument),
+              arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
     }
 }
 
@@ -3347,6 +3430,39 @@ struct TurboChannelStateResponse: Decodable, Equatable {
             conversationStatusPayload: conversationStatusPayload
         )
     }
+
+    func clearingActiveTransmitProjection(
+        status: ConversationState,
+        canTransmit: Bool
+    ) -> TurboChannelStateResponse {
+        TurboChannelStateResponse(
+            channelId: channelId,
+            selfUserId: selfUserId,
+            peerUserId: peerUserId,
+            peerHandle: peerHandle,
+            selfOnline: selfOnline,
+            peerOnline: peerOnline,
+            selfJoined: membership.hasLocalMembership,
+            peerJoined: membership.hasPeerMembership,
+            peerDeviceConnected: membership.peerDeviceConnected,
+            hasIncomingBeep: hasIncomingBeep,
+            hasOutgoingBeep: hasOutgoingBeep,
+            requestCount: requestCount,
+            activeTransmitterUserId: nil,
+            activeTransmitId: nil,
+            transmitLeaseExpiresAt: nil,
+            stateEpoch: stateEpoch,
+            serverTimestamp: serverTimestamp,
+            status: status.rawValue,
+            canTransmit: canTransmit,
+            membershipPayload: membershipPayload,
+            beepThreadProjectionPayload: beepThreadProjectionPayload,
+            conversationStatusPayload: TurboConversationStatusPayload(
+                kind: status.rawValue,
+                activeTransmitterUserId: nil
+            )
+        )
+    }
 }
 
 struct TurboChannelReadinessResponse: Decodable, Equatable {
@@ -3509,6 +3625,31 @@ struct TurboChannelReadinessResponse: Decodable, Equatable {
             status: statusKind,
             readinessPayload: readinessPayload,
             audioReadinessPayload: audioReadinessPayload.settingRemoteStatus(status),
+            wakeReadinessPayload: wakeReadinessPayload,
+            peerDirectQuicIdentity: peerDirectQuicIdentity,
+            peerMediaEncryptionIdentity: peerMediaEncryptionIdentity
+        )
+    }
+
+    func clearingActiveTransmitProjection(
+        status: TurboChannelReadinessStatus
+    ) -> TurboChannelReadinessResponse {
+        TurboChannelReadinessResponse(
+            channelId: channelId,
+            peerUserId: peerUserId,
+            selfHasActiveDevice: selfHasActiveDevice,
+            peerHasActiveDevice: peerHasActiveDevice,
+            activeTransmitterUserId: nil,
+            activeTransmitId: nil,
+            activeTransmitExpiresAt: nil,
+            stateEpoch: stateEpoch,
+            serverTimestamp: serverTimestamp,
+            status: status.kind,
+            readinessPayload: TurboChannelReadinessPayload(
+                kind: status.kind,
+                activeTransmitterUserId: nil
+            ),
+            audioReadinessPayload: audioReadinessPayload,
             wakeReadinessPayload: wakeReadinessPayload,
             peerDirectQuicIdentity: peerDirectQuicIdentity,
             peerMediaEncryptionIdentity: peerMediaEncryptionIdentity

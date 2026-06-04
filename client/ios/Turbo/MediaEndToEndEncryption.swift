@@ -140,7 +140,22 @@ nonisolated enum MediaEndToEndEncryption {
         sequenceNumber: UInt64,
         context: MediaEncryptionContext
     ) throws -> String {
-        let plaintext = Data(payload.utf8)
+        try sealTransportPayloadData(
+            Data(payload.utf8),
+            using: key,
+            keyID: keyID,
+            sequenceNumber: sequenceNumber,
+            context: context
+        )
+    }
+
+    static func sealTransportPayloadData(
+        _ plaintext: Data,
+        using key: SymmetricKey,
+        keyID: String,
+        sequenceNumber: UInt64,
+        context: MediaEncryptionContext
+    ) throws -> String {
         let sealedBox = try ChaChaPoly.seal(
             plaintext,
             using: key,
@@ -169,6 +184,22 @@ nonisolated enum MediaEndToEndEncryption {
         using key: SymmetricKey,
         context: MediaEncryptionContext
     ) throws -> String {
+        let plaintext = try openTransportPayloadData(
+            encryptedPayload,
+            using: key,
+            context: context
+        )
+        guard let payload = String(data: plaintext, encoding: .utf8) else {
+            throw MediaEndToEndEncryptionError.invalidPacketEncoding
+        }
+        return payload
+    }
+
+    static func openTransportPayloadData(
+        _ encryptedPayload: String,
+        using key: SymmetricKey,
+        context: MediaEncryptionContext
+    ) throws -> Data {
         let packet = try decodePacket(encryptedPayload)
         guard packet.version == MediaEncryptedAudioPacket.currentVersion,
               packet.algorithm == MediaEncryptedAudioPacket.currentAlgorithm else {
@@ -196,11 +227,7 @@ nonisolated enum MediaEndToEndEncryption {
         } catch {
             throw MediaEndToEndEncryptionError.openFailed
         }
-
-        guard let payload = String(data: plaintext, encoding: .utf8) else {
-            throw MediaEndToEndEncryptionError.invalidPacketEncoding
-        }
-        return payload
+        return plaintext
     }
 
     static func decodePacket(_ encryptedPayload: String) throws -> MediaEncryptedAudioPacket {

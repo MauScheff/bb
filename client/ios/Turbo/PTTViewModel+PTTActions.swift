@@ -372,10 +372,33 @@ extension PTTViewModel {
         name: String?,
         channelUUID: UUID,
         contactID: UUID?,
-        reason: String
+        reason: String,
+        allowStaleClearReassert: Bool = true
     ) async throws -> Bool {
+        if name == nil,
+           systemActiveRemoteParticipantNameByChannelUUID[channelUUID] == nil,
+           !isPTTAudioSessionActive {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Skipped active remote participant clear because no active participant was present",
+                metadata: [
+                    "channelUUID": channelUUID.uuidString,
+                    "contactId": contactID?.uuidString ?? "none",
+                    "participant": "none",
+                    "reason": reason,
+                    "pttTransmissionMode": lastReportedPTTTransmissionMode.map(String.init(describing:)) ?? "none",
+                    "pttTransmissionModeReason": lastReportedPTTTransmissionModeReason ?? "none",
+                    "isPTTAudioSessionActive": String(isPTTAudioSessionActive),
+                    "applicationState": String(describing: UIApplication.shared.applicationState),
+                ]
+            )
+            return false
+        }
+
         if let name,
-           systemActiveRemoteParticipantNameByChannelUUID[channelUUID] == name {
+           systemActiveRemoteParticipantNameByChannelUUID[channelUUID] == name,
+           isPTTAudioSessionActive
+                || pttAudioSessionRuntime.pendingActivationOwner?.channelUUID == channelUUID {
             diagnostics.record(
                 .pushToTalk,
                 message: "Skipped duplicate active remote participant set",
@@ -423,9 +446,65 @@ extension PTTViewModel {
                 "applicationState": String(describing: UIApplication.shared.applicationState),
             ]
         )
+        var armedActivationOwner: PTTAudioSessionOwner?
+        if name != nil,
+           !isPTTAudioSessionActive {
+            if let wake = pttWakeRuntime.pendingIncomingPush,
+               wake.channelUUID == channelUUID,
+               contactID == nil || wake.contactID == contactID {
+                armedActivationOwner = armPTTAudioSessionActivation(
+                    owner: .wakeReceive(
+                        channelUUID: wake.channelUUID,
+                        contactID: wake.contactID,
+                        channelID: wake.payload.channelId
+                    ),
+                    source: "active-remote-participant-set:\(reason)"
+                )
+            } else {
+                armedActivationOwner = armPTTAudioSessionActivation(
+                    owner: .remoteReceive(
+                        channelUUID: channelUUID,
+                        contactID: contactID,
+                        channelID: contactID.flatMap { contactID in
+                            contacts.first(where: { $0.id == contactID })?.backendChannelId
+                                ?? channelStateByContactID[contactID]?.channelId
+                        }
+                    ),
+                    source: "active-remote-participant-set:\(reason)"
+                )
+            }
+        }
 
         do {
             try await pttSystemClient.setActiveRemoteParticipant(name: name, channelUUID: channelUUID)
+            if allowStaleClearReassert,
+               name == nil,
+               let contactID,
+               shouldReassertRemoteParticipantAfterClearCompletion(
+                channelUUID: channelUUID,
+                contactID: contactID
+               ),
+               let participantName = systemRemoteParticipantName(for: contactID) {
+                systemActiveRemoteParticipantNameByChannelUUID.removeValue(forKey: channelUUID)
+                diagnostics.record(
+                    .pushToTalk,
+                    message: "Reasserting active remote participant after stale clear completion",
+                    metadata: [
+                        "channelUUID": channelUUID.uuidString,
+                        "contactId": contactID.uuidString,
+                        "participant": participantName,
+                        "reason": reason,
+                        "isPTTAudioSessionActive": String(isPTTAudioSessionActive),
+                    ]
+                )
+                return try await setSystemActiveRemoteParticipant(
+                    name: participantName,
+                    channelUUID: channelUUID,
+                    contactID: contactID,
+                    reason: "\(reason)-stale-clear-reassert",
+                    allowStaleClearReassert: allowStaleClearReassert
+                )
+            }
             if let name {
                 systemActiveRemoteParticipantNameByChannelUUID[channelUUID] = name
             } else {
@@ -480,6 +559,9 @@ extension PTTViewModel {
                 )
                 throw error
             }
+            if let armedActivationOwner {
+                _ = pttAudioSessionRuntime.clearPendingActivationOwner(armedActivationOwner)
+            }
             if let contactID, name != nil {
                 recordWakeReceiveTiming(
                     stage: "active-remote-participant-failed",
@@ -513,6 +595,31 @@ extension PTTViewModel {
             )
             throw error
         }
+    }
+
+    private func systemRemoteParticipantName(for contactID: UUID) -> String? {
+        guard let contact = contacts.first(where: { $0.id == contactID }) else {
+            return nil
+        }
+        return contact.name.isEmpty ? contact.handle : contact.name
+    }
+
+    private func shouldReassertRemoteParticipantAfterClearCompletion(
+        channelUUID: UUID,
+        contactID: UUID
+    ) -> Bool {
+        guard self.channelUUID(for: contactID) == channelUUID else { return false }
+        guard pttCoordinator.state.systemChannelUUID == channelUUID else { return false }
+        guard !pttCoordinator.state.isTransmitting else { return false }
+        if remoteTransmittingContactIDs.contains(contactID) {
+            return true
+        }
+        guard let channelID =
+            contacts.first(where: { $0.id == contactID })?.backendChannelId
+            ?? channelStateByContactID[contactID]?.channelId else {
+            return false
+        }
+        return hasActiveOrPreparedRemoteReceiveEpoch(channelID: channelID)
     }
 
     func performReconciledTeardown(for contactID: UUID) {
@@ -731,10 +838,10 @@ extension PTTViewModel {
             )
         }
         resetTransmitRuntimeOnly()
-        closeMediaSession()
         diagnostics.record(.channel, message: "Disconnect requested", metadata: ["selectedContactId": disconnectContactID?.uuidString ?? "none"])
         captureDiagnosticsState("selected-conversation-disconnect:start")
         if usesLocalHTTPBackend {
+            closeMediaSession()
             Task {
                 if let contact = selectedContact,
                    let backendChannelId = contact.backendChannelId {
@@ -777,6 +884,7 @@ extension PTTViewModel {
 
         guard let activeChannelId,
               let channelUUID = channelUUID(for: activeChannelId) else {
+            closeMediaSession()
             statusMessage = "Disconnected"
             if let disconnectContactID {
                 syncEngineDisconnect(contactID: disconnectContactID, reason: "no-active-channel")
@@ -791,6 +899,7 @@ extension PTTViewModel {
             try? pttSystemClient.stopTransmitting(channelUUID: channelUUID)
         }
         try? pttSystemClient.leaveChannel(channelUUID: channelUUID)
+        closeMediaSession(deactivateAudioSession: false)
         statusMessage = "Disconnecting..."
         captureDiagnosticsState("selected-conversation-disconnect:ptt-leave-requested")
     }

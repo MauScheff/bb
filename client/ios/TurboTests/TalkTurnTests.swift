@@ -475,6 +475,71 @@ struct TalkTurnTests {
         }
     }
 
+    @Test func mediaEndToEndEncryptionSealsAndOpensBinaryTransportPayload() throws {
+        let key = SymmetricKey(size: .bits256)
+        let context = MediaEncryptionContext(
+            channelID: "channel-1",
+            sessionID: "session-1",
+            senderDeviceID: "device-a",
+            receiverDeviceID: "device-b"
+        )
+        let binaryPayload = Data([0x00, 0xFF, 0xFE, 0x01, 0x80])
+
+        let encrypted = try MediaEndToEndEncryption.sealTransportPayloadData(
+            binaryPayload,
+            using: key,
+            keyID: "key-1",
+            sequenceNumber: 7,
+            context: context
+        )
+        #expect(MediaEncryptedAudioPacket.isEncodedPacket(encrypted))
+        #expect(
+            try MediaEndToEndEncryption.openTransportPayloadData(
+                encrypted,
+                using: key,
+                context: context
+            ) == binaryPayload
+        )
+        #expect(throws: MediaEndToEndEncryptionError.invalidPacketEncoding) {
+            _ = try MediaEndToEndEncryption.openTransportPayload(
+                encrypted,
+                using: key,
+                context: context
+            )
+        }
+    }
+
+    @Test func voicePacketV1CanBeSealedAsBinaryMediaPayload() throws {
+        let key = SymmetricKey(size: .bits256)
+        let context = MediaEncryptionContext(
+            channelID: "channel-1",
+            sessionID: "session-1",
+            senderDeviceID: "device-a",
+            receiverDeviceID: "device-b"
+        )
+        let packet = try VoicePacketV1(
+            frameIndex: 42,
+            flags: VoicePacketV1Codec.Flag.inBandFEC.rawValue,
+            opusPayload: Data([0xF8, 0xFF, 0xFE, 0x01, 0x80])
+        )
+        let encodedPacket = VoicePacketV1Codec.encode(packet)
+
+        let encrypted = try MediaEndToEndEncryption.sealTransportPayloadData(
+            encodedPacket,
+            using: key,
+            keyID: "key-1",
+            sequenceNumber: 8,
+            context: context
+        )
+        let openedPacket = try MediaEndToEndEncryption.openTransportPayloadData(
+            encrypted,
+            using: key,
+            context: context
+        )
+
+        #expect(try VoicePacketV1Codec.decode(openedPacket) == packet)
+    }
+
     @Test func mediaEndToEndEncryptionRejectsPacketTampering() throws {
         let key = SymmetricKey(size: .bits256)
         let context = MediaEncryptionContext(
@@ -639,6 +704,61 @@ struct TalkTurnTests {
                 using: peerOpenKey,
                 context: outgoingContext
             ) == "pcm-audio-3"
+        )
+    }
+
+    @Test func outgoingMediaPayloadSealerSealsBinaryPayloadsAndPreservesSequence() async throws {
+        let contactID = UUID()
+        let localPrivateKey = Curve25519.KeyAgreement.PrivateKey()
+        let peerPrivateKey = Curve25519.KeyAgreement.PrivateKey()
+        let localRegistration = MediaEncryptionIdentityRegistrationMetadata(
+            publicKeyBase64: localPrivateKey.publicKey.rawRepresentation.base64EncodedString(),
+            fingerprint: MediaEncryptionIdentityManager.fingerprint(
+                forPublicKey: localPrivateKey.publicKey.rawRepresentation
+            )
+        )
+        let peerRegistration = MediaEncryptionIdentityRegistrationMetadata(
+            publicKeyBase64: peerPrivateKey.publicKey.rawRepresentation.base64EncodedString(),
+            fingerprint: MediaEncryptionIdentityManager.fingerprint(
+                forPublicKey: peerPrivateKey.publicKey.rawRepresentation
+            )
+        )
+        let session = try MediaEncryptionSession(
+            channelID: "channel-1",
+            localDeviceID: "device-a",
+            peerDeviceID: "device-b",
+            localFingerprint: localRegistration.fingerprint,
+            peerFingerprint: peerRegistration.fingerprint,
+            localPrivateKey: localPrivateKey,
+            peerIdentity: peerRegistration
+        )
+        let runtime = MediaRuntimeState()
+        runtime.setMediaEncryptionSession(session, for: contactID)
+        let sealer = OutgoingMediaPayloadSealer(
+            session: session,
+            sequenceCounter: runtime.mediaEncryptionSendSequenceCounter(for: contactID)
+        )
+        let firstPayload = Data([0x00, 0xFF, 0x01])
+        let secondPayload = Data([0x02, 0xFE, 0x03])
+
+        let sealedPayloads = try await Task.detached {
+            try [firstPayload, secondPayload].map { try sealer.seal($0) }
+        }.value
+
+        let packets = try sealedPayloads.map(MediaEndToEndEncryption.decodePacket)
+        #expect(packets.map(\.sequenceNumber) == [0, 1])
+        let outgoingContext = session.context(senderDeviceID: "device-a", receiverDeviceID: "device-b")
+        let peerOpenKey = try MediaEndToEndEncryption.deriveSymmetricKey(
+            localPrivateKey: peerPrivateKey,
+            peerIdentity: localRegistration,
+            context: outgoingContext
+        )
+        #expect(
+            try MediaEndToEndEncryption.openTransportPayloadData(
+                sealedPayloads[1],
+                using: peerOpenKey,
+                context: outgoingContext
+            ) == secondPayload
         )
     }
 
@@ -8046,6 +8166,7 @@ struct TalkTurnTests {
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
+        viewModel.isPTTAudioSessionActive = true
 
         await viewModel.clearSystemRemoteParticipantBeforeLocalTransmit(
             contactID: contactID,
@@ -8958,6 +9079,23 @@ struct TalkTurnTests {
             )
         )
 
+        let preparedState = ReceiveExecutionReducer.reduce(
+            state: ReceiveExecutionSessionState(),
+            event: .remoteActivityDetected(contactID: contactID, source: .transmitPrepareSignal)
+        ).state
+        #expect(
+            !preparedState.shouldBeginRemoteAudioEpoch(
+                contactID: contactID,
+                source: .transmitStartSignal
+            )
+        )
+        #expect(
+            !preparedState.shouldBeginRemoteAudioEpoch(
+                contactID: contactID,
+                source: .transmitPrepareSignal
+            )
+        )
+
         state = ReceiveExecutionReducer.reduce(
             state: state,
             event: .remoteActivityDetected(contactID: contactID, source: .audioChunk)
@@ -9398,6 +9536,33 @@ struct TalkTurnTests {
         #expect(runtime.voiceMediaCapabilityEvidence(for: contactID)?.capabilities.supportsOpusV2 == true)
         let expectedPolicy: VoiceMediaPayloadFormat = OpusVoiceCodec.isAvailable() ? .opusV2 : .legacyPCM
         #expect(runtime.outboundVoiceMediaPayloadFormat(for: contactID) == expectedPolicy)
+    }
+
+    @Test func mediaRuntimeNegotiatesBinaryVoicePacketOnlyWithPeerEvidence() {
+        let contactID = UUID()
+        let runtime = MediaRuntimeState()
+        let binaryCapabilities = VoiceMediaCapabilities(
+            codecs: [VoiceMediaCapabilities.opusCodec],
+            features: [
+                VoiceMediaCapabilities.opusFrameV2Feature,
+                VoiceMediaCapabilities.binaryVoicePacketV1Feature,
+                VoiceMediaCapabilities.plcFeature,
+                VoiceMediaCapabilities.fecFeature,
+            ]
+        )
+
+        #expect(runtime.outboundVoiceMediaPayloadFormat(for: contactID) == VoiceMediaNegotiator.outboundPayloadFormat())
+        _ = runtime.markVoiceMediaCapabilities(
+            binaryCapabilities,
+            for: contactID,
+            peerDeviceID: "peer-device",
+            source: "test"
+        )
+
+        #expect(
+            runtime.outboundVoiceMediaPayloadFormat(for: contactID)
+                == VoiceMediaNegotiator.outboundPayloadFormat(peerCapabilities: binaryCapabilities)
+        )
     }
 
     @MainActor
@@ -10502,6 +10667,164 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func staleRemoteParticipantClearReassertsParticipantForNewReceiveEpoch() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+
+        _ = try await viewModel.setSystemActiveRemoteParticipant(
+            name: "Blake",
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "test-previous-receive"
+        )
+
+        pttClient.activeRemoteParticipantDelayNanoseconds = 100_000_000
+        let clearTask = Task { @MainActor in
+            try await viewModel.setSystemActiveRemoteParticipant(
+                name: nil,
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "backend-sync-remote-inactive"
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: "incoming-relay-websocket-implicit"
+        )
+
+        #expect(try await clearTask.value)
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == [
+            "Blake",
+            nil,
+            "Blake",
+        ])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Reasserting active remote participant after stale clear completion"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func localTransmitRemoteParticipantClearDoesNotReassertStaleReceiveParticipant() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+
+        _ = try await viewModel.setSystemActiveRemoteParticipant(
+            name: "Blake",
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "test-previous-receive"
+        )
+
+        pttClient.activeRemoteParticipantDelayNanoseconds = 100_000_000
+        let clearTask = Task { @MainActor in
+            await viewModel.clearSystemRemoteParticipantBeforeLocalTransmit(
+                contactID: contactID,
+                channelUUID: channelUUID,
+                reason: "before-system-transmit-handoff"
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: "incoming-relay-websocket-implicit"
+        )
+
+        #expect(await clearTask.value)
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == [
+            "Blake",
+            nil,
+        ])
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Reasserting active remote participant after stale clear completion"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Cleared active remote participant before local transmit"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func inactiveRemoteParticipantClearNoOpsWhenAlreadyClear() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.isPTTAudioSessionActive = false
+
+        let applied = try await viewModel.setSystemActiveRemoteParticipant(
+            name: nil,
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "backend-sync-remote-inactive"
+        )
+
+        #expect(!applied)
+        #expect(pttClient.activeRemoteParticipantUpdates.isEmpty)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Skipped active remote participant clear because no active participant was present"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Active remote participant clear failed"
+            )
+        )
+    }
+
+    @MainActor
     @Test func channelRefreshPeerTransmittingArmsReceiverWakeWithoutMarkingRemoteTalking() async throws {
         let pttClient = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
@@ -10674,6 +10997,326 @@ struct TalkTurnTests {
         )
         #expect(
             viewModel.diagnosticsTranscript.contains("remote-audio:draining")
+        )
+    }
+
+    @MainActor
+    @Test func channelRefreshClearsExpiredPeerTransmitLeaseBeforeProjection() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        mediaSession.hasPendingPlaybackResult = true
+        let leaseFormatter = ISO8601DateFormatter()
+        leaseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiredAt = leaseFormatter.string(from: Date(timeIntervalSinceNow: -10))
+
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+
+        let existingChannelState = makeChannelState(
+            status: .receiving,
+            canTransmit: false,
+            channelId: "channel-123",
+            activeTransmitId: "transmit-1",
+            activeTransmitterUserId: "peer-user"
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(contactID: contactID, channelState: existingChannelState)
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    remoteAudioReadiness: .ready,
+                    activeTransmitId: "transmit-1"
+                )
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+
+        let staleChannelState = makeChannelState(
+            status: .receiving,
+            canTransmit: false,
+            channelId: "channel-123",
+            activeTransmitId: "transmit-1",
+            activeTransmitterUserId: "peer-user",
+            transmitLeaseExpiresAt: expiredAt
+        )
+        let staleReadiness = makeChannelReadiness(
+            status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+            remoteAudioReadiness: .ready,
+            activeTransmitId: "transmit-1",
+            activeTransmitExpiresAt: expiredAt
+        )
+
+        let normalized = viewModel.channelProjectionClearingExpiredTransmitLeaseIfNeeded(
+            contactID: contactID,
+            channelState: staleChannelState,
+            readiness: staleReadiness
+        )
+        await viewModel.recoverRemoteTransmitStopFromChannelRefreshIfNeeded(
+            contactID: contactID,
+            existingChannelState: existingChannelState,
+            effectiveChannelState: normalized.channelState
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(contactID: contactID, channelState: normalized.channelState)
+        )
+        if let readiness = normalized.readiness {
+            viewModel.backendSyncCoordinator.send(
+                .channelReadinessUpdated(contactID: contactID, readiness: readiness)
+            )
+        }
+        await viewModel.prepareReceiverForBackendPeerTransmitFromChannelRefreshIfNeeded(
+            contactID: contactID,
+            effectiveChannelState: normalized.channelState,
+            effectiveChannelReadiness: normalized.readiness
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(normalized.channelState.conversationStatus == .ready)
+        #expect(normalized.channelState.activeTransmitId == nil)
+        #expect(normalized.channelState.transmitLeaseExpiresAt == nil)
+        #expect(normalized.readiness?.statusView == .ready)
+        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.pttWakeRuntime.pendingIncomingPush == nil)
+        #expect(viewModel.selectedConversationState(for: contactID).phase == .ready)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Cleared expired backend transmit lease projection"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Recovered missing transmit-stop from channel refresh"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func backendPeerTransmitRefreshWithExpiredLeaseDoesNotRearmReceive() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let leaseFormatter = ISO8601DateFormatter()
+        leaseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiredAt = leaseFormatter.string(from: Date(timeIntervalSinceNow: -10))
+
+        viewModel.applicationStateOverride = .background
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+
+        await viewModel.prepareReceiverForBackendPeerTransmitFromChannelRefreshIfNeeded(
+            contactID: contactID,
+            effectiveChannelState: makeChannelState(
+                status: .receiving,
+                canTransmit: false,
+                channelId: "channel-123",
+                activeTransmitId: "transmit-1",
+                activeTransmitterUserId: "peer-user",
+                transmitLeaseExpiresAt: expiredAt
+            ),
+            effectiveChannelReadiness: makeChannelReadiness(
+                status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                remoteAudioReadiness: .wakeCapable,
+                remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device"),
+                activeTransmitId: "transmit-1",
+                activeTransmitExpiresAt: expiredAt
+            )
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.pttWakeRuntime.pendingIncomingPush == nil)
+        #expect(pttClient.activeRemoteParticipantUpdates.isEmpty)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignored backend peer-transmitting refresh with expired transmit lease"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func remoteAudioSilenceTimeoutDoesNotDeferToExpiredBackendTransmitLease() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let leaseFormatter = ISO8601DateFormatter()
+        leaseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiredAt = leaseFormatter.string(from: Date(timeIntervalSinceNow: -10))
+
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    channelId: "channel-123",
+                    activeTransmitId: "transmit-1",
+                    activeTransmitterUserId: "peer-user",
+                    transmitLeaseExpiresAt: expiredAt
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    remoteAudioReadiness: .ready,
+                    activeTransmitId: "transmit-1",
+                    activeTransmitExpiresAt: expiredAt
+                )
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        viewModel.handleRemoteAudioSilenceTimeout(for: contactID, phase: .drainingAudio)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.selectedConversationState(for: contactID).phase == .ready)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Forced remote receive stop after expired backend transmit lease"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Deferred remote audio silence timeout while peer transmit is authoritative"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func remoteTransmitLeaseExpiryWatchdogClearsStaleReceiveProjection() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let leaseFormatter = ISO8601DateFormatter()
+        leaseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expiresAt = leaseFormatter.string(from: Date(timeIntervalSinceNow: 0.05))
+
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        let channelState = makeChannelState(
+            status: .receiving,
+            canTransmit: false,
+            channelId: "channel-123",
+            activeTransmitId: "transmit-1",
+            activeTransmitterUserId: "peer-user",
+            transmitLeaseExpiresAt: expiresAt
+        )
+        let readiness = makeChannelReadiness(
+            status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+            remoteAudioReadiness: .ready,
+            activeTransmitId: "transmit-1",
+            activeTransmitExpiresAt: expiresAt
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(contactID: contactID, channelState: channelState)
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(contactID: contactID, readiness: readiness)
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        viewModel.scheduleRemoteTransmitLeaseExpiryRepairIfNeeded(
+            contactID: contactID,
+            channelState: channelState,
+            readiness: readiness,
+            graceSeconds: 0
+        )
+        try await Task.sleep(nanoseconds: 600_000_000)
+
+        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.selectedConversationState(for: contactID).phase == .ready)
+        #expect(viewModel.channelStateByContactID[contactID]?.conversationStatus == .ready)
+        #expect(viewModel.channelStateByContactID[contactID]?.activeTransmitId == nil)
+        #expect(viewModel.channelReadinessByContactID[contactID]?.statusView == .ready)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Repaired expired backend transmit lease from local watchdog"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Forced remote receive stop after expired backend transmit lease"
+            )
         )
     }
 
@@ -17493,6 +18136,105 @@ struct TalkTurnTests {
             viewModel.diagnostics.entries.contains {
                 $0.message == "Backend leave requested immediately for explicit disconnect"
             }
+        )
+    }
+
+    @MainActor
+    @Test func explicitDisconnectLeavesPTTBeforeClosingMediaWithoutAudioSessionDeactivation() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let mediaSession = RecordingMediaSession()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+
+        viewModel.performDisconnect()
+        await Task.yield()
+
+        #expect(pttClient.leaveRequests == [channelUUID])
+        #expect(mediaSession.closedDeactivateAudioSessionFlags == [false])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "selected-conversation-disconnect:ptt-leave-requested"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func foregroundMediaPrewarmIsBlockedWhileLeaveIsInFlight() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    channelId: "channel-1"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.conversationActionCoordinator.markExplicitLeave(contactID: contactID)
+
+        await viewModel.prewarmForegroundTalkPathIfNeeded(
+            for: contactID,
+            reason: "test-leave-in-flight",
+            applicationState: .active
+        )
+        await viewModel.prewarmLocalMediaIfNeeded(
+            for: contactID,
+            applicationState: .active
+        )
+
+        #expect(viewModel.mediaSessionContactID == nil)
+        #expect(viewModel.mediaConnectionState == .idle)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Skipped foreground media prewarm while leave is in flight"
+            )
         )
     }
 

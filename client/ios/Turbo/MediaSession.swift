@@ -229,6 +229,8 @@ protocol MediaSession: AnyObject {
     var state: MediaConnectionState { get }
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?)
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration)
+    func resetOutgoingAudioTransport(reason: String) async
     func updateOutboundVoiceMediaPolicy(_ policy: VoiceMediaPayloadFormat)
     func updateOutboundOpusEncodingPolicy(_ policy: OpusVoiceEncodingPolicy)
     func start(
@@ -244,24 +246,75 @@ protocol MediaSession: AnyObject {
         _ payload: String,
         playbackProfile: MediaSessionPlaybackProfile
     ) async -> Bool
+    nonisolated
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?
+    ) async -> Bool
+    nonisolated
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds: UInt64?
+    ) async -> Bool
+    nonisolated
+    func currentRemoteAudioReceiveEpoch() -> UInt64
     func beginRemoteAudioReceiveEpoch()
-    func audioRouteDidChange() async
+    func audioRouteDidChange(allowCaptureRefresh: Bool) async
     func hasPendingPlayback() -> Bool
     func close(deactivateAudioSession: Bool)
 }
 
 extension MediaSession {
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {}
+
+    func resetOutgoingAudioTransport(reason: String) async {}
+
     func updateOutboundVoiceMediaPolicy(_ policy: VoiceMediaPayloadFormat) {}
 
     func updateOutboundOpusEncodingPolicy(_ policy: OpusVoiceEncodingPolicy) {}
 
     func beginRemoteAudioReceiveEpoch() {}
 
+    func audioRouteDidChange() async {
+        await audioRouteDidChange(allowCaptureRefresh: true)
+    }
+
     @discardableResult
     nonisolated
     func receiveRemoteAudioChunk(_ payload: String) async -> Bool {
         await receiveRemoteAudioChunk(payload, playbackProfile: .lowLatency)
     }
+
+    @discardableResult
+    nonisolated
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch _: UInt64?
+    ) async -> Bool {
+        await receiveRemoteAudioChunk(payload, playbackProfile: playbackProfile)
+    }
+
+    @discardableResult
+    nonisolated
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds _: UInt64?
+    ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: expectedReceiveEpoch
+        )
+    }
+
+    nonisolated
+    func currentRemoteAudioReceiveEpoch() -> UInt64 { 0 }
 
     func close() {
         close(deactivateAudioSession: true)
@@ -311,6 +364,10 @@ final class StubRelayMediaSession: MediaSession {
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {}
 
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {}
+
+    func resetOutgoingAudioTransport(reason: String) async {}
+
     func updateOutboundVoiceMediaPolicy(_ policy: VoiceMediaPayloadFormat) {}
 
     func updateOutboundOpusEncodingPolicy(_ policy: OpusVoiceEncodingPolicy) {}
@@ -341,7 +398,7 @@ final class StubRelayMediaSession: MediaSession {
         playbackProfile _: MediaSessionPlaybackProfile
     ) async -> Bool { true }
 
-    func audioRouteDidChange() async {}
+    func audioRouteDidChange(allowCaptureRefresh _: Bool) async {}
 
     func hasPendingPlayback() -> Bool { false }
 

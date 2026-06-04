@@ -91,6 +91,9 @@ extension PTTViewModel {
         let resolvedPhase = phase
             ?? receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.timeoutPhase
             ?? .drainingAudio
+        if repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID) {
+            return
+        }
         synthesizeMissingRemoteTransmitStopFromAudioSilenceTimeoutIfNeeded(
             for: contactID,
             phase: resolvedPhase
@@ -173,7 +176,10 @@ extension PTTViewModel {
         )
     }
 
-    func handleRemotePlaybackDrained(for contactID: UUID) {
+    func handleRemotePlaybackDrained(
+        for contactID: UUID,
+        allowMediaPathPreservation: Bool = true
+    ) {
         guard mediaSessionContactID == contactID else { return }
         guard
             let activityState = receiveExecutionCoordinator
@@ -192,7 +198,8 @@ extension PTTViewModel {
             engineSource: "remote-playback-drained",
             diagnosticsMessage: "Remote playback drained",
             closeMessage: "Closed receive media session after remote playback drained",
-            deferPrewarmMessage: "Deferred interactive audio prewarm after remote playback drained"
+            deferPrewarmMessage: "Deferred interactive audio prewarm after remote playback drained",
+            allowMediaPathPreservation: allowMediaPathPreservation
         )
     }
 
@@ -202,9 +209,11 @@ extension PTTViewModel {
         engineSource: String,
         diagnosticsMessage: String,
         closeMessage: String,
-        deferPrewarmMessage: String
+        deferPrewarmMessage: String,
+        allowMediaPathPreservation: Bool = true
     ) {
         receiveExecutionRuntime.replaceRemoteAudioSilenceTask(for: contactID, with: nil)
+        receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionRuntime.clearPendingPlaybackDrainDeferral(for: contactID)
         syncEngineRemotePlaybackDrained(contactID: contactID, source: engineSource)
         receiveExecutionCoordinator.send(.silenceTimeoutElapsed(contactID: contactID))
@@ -236,7 +245,8 @@ extension PTTViewModel {
         finalizeReceiveMediaSessionIfNeeded(
             for: contactID,
             closeMessage: closeMessage,
-            deferPrewarmMessage: deferPrewarmMessage
+            deferPrewarmMessage: deferPrewarmMessage,
+            allowMediaPathPreservation: allowMediaPathPreservation
         )
         clearSystemRemoteParticipantIfNeededAfterRemoteAudioEnded(for: contactID)
 
@@ -351,6 +361,7 @@ extension PTTViewModel {
             channelSnapshot.status == .receiving
             || channelSnapshot.readinessStatus?.isPeerTransmitting == true
         guard authoritativePeerTransmit else { return false }
+        guard !selectedPeerTransmitLeaseExpired(for: contactID) else { return false }
         if remoteTransmittingContactIDs.contains(contactID) {
             return true
         }

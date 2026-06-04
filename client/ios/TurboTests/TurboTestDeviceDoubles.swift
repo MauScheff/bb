@@ -128,10 +128,13 @@ final class RecordingMediaSession: MediaSession {
     private(set) var startSendingAudioCallCount = 0
     private(set) var stopSendingAudioCallCount = 0
     private(set) var abortSendingAudioCallCount = 0
+    private(set) var resetOutgoingAudioTransportReasons: [String] = []
     private(set) var beginReceiveEpochCallCount = 0
     private(set) var audioRouteDidChangeCallCount = 0
+    private(set) var audioRouteDidChangeAllowCaptureRefreshValues: [Bool] = []
     private(set) var receivedRemoteAudioChunks: [String] = []
     private(set) var receivedPlaybackProfiles: [MediaSessionPlaybackProfile] = []
+    private(set) var senderConfigurationUpdates: [MediaTransportSenderConfiguration] = []
     private(set) var outboundVoiceMediaPolicyUpdates: [VoiceMediaPayloadFormat] = []
     private(set) var outboundOpusEncodingPolicyUpdates: [OpusVoiceEncodingPolicy] = []
     private(set) var sendAudioChunkConfiguredWhenStopSendingAudio: Bool?
@@ -140,11 +143,14 @@ final class RecordingMediaSession: MediaSession {
     private(set) var sendAudioChunkWasClearedAfterAbortSendingAudio = false
     private var currentSendAudioChunk: (@Sendable (String) async throws -> Void)?
     var startSendingAudioDelayNanoseconds: UInt64?
+    var startSendingAudioErrors: [any Error] = []
     var startDelayNanoseconds: UInt64?
     var audioRouteDidChangeDelayNanoseconds: UInt64?
+    var receiveRemoteAudioChunkPreAppendDelayNanoseconds: UInt64?
     var receiveRemoteAudioChunkDelayNanoseconds: UInt64?
     var hasPendingPlaybackResult = false
     var receiveRemoteAudioChunkResult = true
+    private var remoteAudioReceiveEpoch: UInt64 = 0
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {
         currentSendAudioChunk = handler
@@ -154,6 +160,14 @@ final class RecordingMediaSession: MediaSession {
         if handler == nil, abortSendingAudioCallCount > 0 {
             sendAudioChunkWasClearedAfterAbortSendingAudio = true
         }
+    }
+
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {
+        senderConfigurationUpdates.append(configuration)
+    }
+
+    func resetOutgoingAudioTransport(reason: String) async {
+        resetOutgoingAudioTransportReasons.append(reason)
     }
 
     func updateOutboundVoiceMediaPolicy(_ policy: VoiceMediaPayloadFormat) {
@@ -183,6 +197,9 @@ final class RecordingMediaSession: MediaSession {
         if let startSendingAudioDelayNanoseconds {
             try? await Task.sleep(nanoseconds: startSendingAudioDelayNanoseconds)
         }
+        if !startSendingAudioErrors.isEmpty {
+            throw startSendingAudioErrors.removeFirst()
+        }
     }
 
     func stopSendingAudio() async throws {
@@ -196,7 +213,12 @@ final class RecordingMediaSession: MediaSession {
     }
 
     func beginRemoteAudioReceiveEpoch() {
+        remoteAudioReceiveEpoch &+= 1
         beginReceiveEpochCallCount += 1
+    }
+
+    func currentRemoteAudioReceiveEpoch() -> UInt64 {
+        remoteAudioReceiveEpoch
     }
 
     @discardableResult
@@ -204,16 +226,60 @@ final class RecordingMediaSession: MediaSession {
         _ payload: String,
         playbackProfile: MediaSessionPlaybackProfile
     ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?
+    ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: expectedReceiveEpoch,
+            playbackDeadlineNanoseconds: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds: UInt64?
+    ) async -> Bool {
+        if let receiveRemoteAudioChunkPreAppendDelayNanoseconds {
+            try? await Task.sleep(nanoseconds: receiveRemoteAudioChunkPreAppendDelayNanoseconds)
+        }
+        if let expectedReceiveEpoch,
+           expectedReceiveEpoch != remoteAudioReceiveEpoch {
+            return false
+        }
+        if let playbackDeadlineNanoseconds,
+           DispatchTime.now().uptimeNanoseconds >= playbackDeadlineNanoseconds {
+            return false
+        }
         receivedRemoteAudioChunks.append(payload)
         receivedPlaybackProfiles.append(playbackProfile)
         if let receiveRemoteAudioChunkDelayNanoseconds {
             try? await Task.sleep(nanoseconds: receiveRemoteAudioChunkDelayNanoseconds)
         }
+        if let expectedReceiveEpoch,
+           expectedReceiveEpoch != remoteAudioReceiveEpoch {
+            return false
+        }
         return receiveRemoteAudioChunkResult
     }
 
-    func audioRouteDidChange() async {
+    func audioRouteDidChange(allowCaptureRefresh: Bool) async {
         audioRouteDidChangeCallCount += 1
+        audioRouteDidChangeAllowCaptureRefreshValues.append(allowCaptureRefresh)
         if let audioRouteDidChangeDelayNanoseconds {
             try? await Task.sleep(nanoseconds: audioRouteDidChangeDelayNanoseconds)
         }
@@ -265,6 +331,8 @@ final class BlockingPlaybackMediaSession: MediaSession {
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {}
 
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {}
+
     func start(
         activationMode _: MediaSessionActivationMode,
         startupMode _: MediaSessionStartupMode
@@ -314,7 +382,7 @@ final class BlockingPlaybackMediaSession: MediaSession {
 
     func beginRemoteAudioReceiveEpoch() {}
 
-    func audioRouteDidChange() async {}
+    func audioRouteDidChange(allowCaptureRefresh _: Bool) async {}
 
     func hasPendingPlayback() -> Bool { false }
 
@@ -338,6 +406,8 @@ final class DelayedStartMediaSession: MediaSession {
     }
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {}
+
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {}
 
     func start(
         activationMode _: MediaSessionActivationMode,
@@ -370,7 +440,7 @@ final class DelayedStartMediaSession: MediaSession {
         playbackProfile _: MediaSessionPlaybackProfile
     ) async -> Bool { true }
 
-    func audioRouteDidChange() async {}
+    func audioRouteDidChange(allowCaptureRefresh _: Bool) async {}
 
     func hasPendingPlayback() -> Bool { false }
 

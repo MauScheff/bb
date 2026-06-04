@@ -9,6 +9,7 @@ Use `WORKFLOW.md` for ownership/proof rules. Use `ENGINE.md` before changing Con
 Related operational docs:
 
 - [`SWIFT_DEBUGGING.md`](/Users/mau/Development/bb/docs/client/SWIFT_DEBUGGING.md)
+- [`VOICE_MEDIA_CORE.md`](/Users/mau/Development/bb/docs/client/VOICE_MEDIA_CORE.md) for binary voice packet framing, playout engine boundaries, replay, and rollout rules
 - [`TESTING.md`](/Users/mau/Development/bb/TESTING.md) for targeted Swift Testing command syntax and zero-test guardrails
 - [`APP_STATE.md`](/Users/mau/Development/bb/docs/client/APP_STATE.md) for app-visible Conversation projections and happy-path transition examples
 
@@ -37,13 +38,13 @@ Related operational docs:
 
 ## Voice Media Codec State
 
-Current voice-media encoding is app-side. Backend media routes still carry opaque payload strings, and E2EE still wraps the full media payload string before Direct QUIC, Fast Relay, or websocket relay transport. No Unison schema migration is required for the current Opus path.
+Current voice-media encoding is app-side. Backend media routes still carry opaque payload strings, and E2EE still wraps the full media payload string before Direct QUIC, Fast Relay, or websocket relay transport. Binary packet media and the modular playout engine are specified in [`VOICE_MEDIA_CORE.md`](/Users/mau/Development/bb/docs/client/VOICE_MEDIA_CORE.md). No Unison schema migration is required for the current Opus path.
 
 Authoritative Swift seams:
 
 | File | Responsibility |
 | --- | --- |
-| [`Turbo/VoiceMediaCodec.swift`](/Users/mau/Development/bb/client/ios/Turbo/VoiceMediaCodec.swift) | voice codec capability types, Opus v2 envelope codec, 48 kHz frame accumulator, Opus codec seam, PCM sample-rate conversion, adaptive playout buffer |
+| [`Turbo/VoiceMediaCodec.swift`](/Users/mau/Development/bb/client/ios/Turbo/VoiceMediaCodec.swift) | voice codec capability types, Opus v2 envelope codec, binary voice packet codec, 48 kHz frame accumulator, Opus codec seam, PCM sample-rate conversion, playout engine seam, adaptive playout buffer |
 | [`Turbo/PCMWebSocketMediaSession.swift`](/Users/mau/Development/bb/client/ios/Turbo/PCMWebSocketMediaSession.swift) | AVAudio capture/playback, outbound codec policy execution, legacy PCM fallback, receive decode, adaptive playout scheduling, codec diagnostics |
 | [`Turbo/PTTViewModel+VoiceMediaCapabilities.swift`](/Users/mau/Development/bb/client/ios/Turbo/PTTViewModel+VoiceMediaCapabilities.swift) | Friend/Participant codec capability evidence, outbound media policy selection, active Conversation policy updates |
 | [`Turbo/ConversationParticipantTelemetry.swift`](/Users/mau/Development/bb/client/ios/Turbo/ConversationParticipantTelemetry.swift) | Conversation Participant telemetry and receiver-ready capability advertisement |

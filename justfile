@@ -630,6 +630,9 @@ audio-incident-replay corpus="shared/fixtures/audio_incidents/device_audio_smoke
 audio-incident-mutate corpus="shared/fixtures/audio_incidents/device_audio_smoke_corpus.json":
   TURBO_AUDIO_INCIDENT_CORPUS_PATH="{{corpus}}" just swift-test-target audioIncidentCorpusMutatesAcrossPlaybackStateEnvelopes
 
+audio-media-core-replay trace:
+  python3 tools/scripts/audio_media_core_replay.py "{{trace}}"
+
 swift-test-suite:
   python3 tools/scripts/run_swift_test_suite.py
 
@@ -667,8 +670,9 @@ reliability-gate-regressions:
   jq -n --slurpfile trace client/ios/Packages/TurboEngine/Fixtures/trace-replay-smoke.json '{reports:[{structuredDiagnostics:{engineTrace:$trace[0]}}]}' > /tmp/turbo-merged-engine-trace-smoke.json
   just engine-trace-extract /tmp/turbo-merged-engine-trace-smoke.json /tmp/turbo-engine-trace-smoke-extracted.json
   just engine-trace-replay /tmp/turbo-engine-trace-smoke-extracted.json
-  python3 -m py_compile tools/scripts/run_simulator_scenarios.py tools/scripts/run_targeted_swift_tests.py tools/scripts/run_swift_test_suite.py tools/scripts/device_app.py tools/scripts/test_device_app.py tools/scripts/merged_diagnostics.py tools/scripts/reliability_intake.py tools/scripts/check_invariant_registry.py tools/scripts/check_engine_invariant_coverage.py tools/scripts/extract_engine_trace.py tools/scripts/audio_incident_corpus.py tools/scripts/test_audio_incident_corpus.py tools/scripts/convert_production_replay.py tools/scripts/synthetic_conversation_probe.py tools/scripts/slo_dashboard.py tools/scripts/protocol_model_check.py tools/scripts/postdeploy_check.py tools/scripts/physical_device_boundary_manifest.py tools/scripts/physical_device_boundary_proof.py tools/scripts/physical_device_boundary_collect.py tools/scripts/physical_device_boundary_merge.py tools/scripts/physical_device_boundary_finalize.py
+  python3 -m py_compile tools/scripts/run_simulator_scenarios.py tools/scripts/run_targeted_swift_tests.py tools/scripts/run_swift_test_suite.py tools/scripts/device_app.py tools/scripts/test_device_app.py tools/scripts/merged_diagnostics.py tools/scripts/reliability_intake.py tools/scripts/check_invariant_registry.py tools/scripts/check_engine_invariant_coverage.py tools/scripts/extract_engine_trace.py tools/scripts/audio_incident_corpus.py tools/scripts/test_audio_incident_corpus.py tools/scripts/audio_media_core_replay.py tools/scripts/test_audio_media_core_replay.py tools/scripts/convert_production_replay.py tools/scripts/synthetic_conversation_probe.py tools/scripts/slo_dashboard.py tools/scripts/protocol_model_check.py tools/scripts/postdeploy_check.py tools/scripts/physical_device_boundary_manifest.py tools/scripts/physical_device_boundary_proof.py tools/scripts/physical_device_boundary_collect.py tools/scripts/physical_device_boundary_merge.py tools/scripts/physical_device_boundary_finalize.py
   python3 tools/scripts/test_audio_incident_corpus.py
+  python3 tools/scripts/test_audio_media_core_replay.py
   python3 tools/scripts/convert_production_replay.py --merged-diagnostics-json shared/fixtures/production_replay/merged_diagnostics.json --output-dir /tmp/turbo-production-replay-smoke --name fixture_production_replay
   python3 tools/scripts/synthetic_conversation_probe.py --fixture-report shared/fixtures/synthetic_conversation_probe/route_probe_success.json --artifact-dir /tmp/turbo-synthetic-conversation-probe-smoke --iterations 2 --label fixture-smoke
   python3 tools/scripts/slo_dashboard.py --synthetic-conversation /tmp/turbo-synthetic-conversation-probe-smoke/synthetic-conversation-probe.json --output-dir /tmp/turbo-slo-dashboard-smoke --name fixture-slo-dashboard --fail-on-breach

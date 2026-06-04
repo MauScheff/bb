@@ -33,6 +33,258 @@ struct ForegroundSystemReceivePlaybackFallbackState: Equatable {
     var isPlaybackReady: Bool
 }
 
+enum PTTAudioSessionOwner: Equatable {
+    case localTransmit(channelUUID: UUID, contactID: UUID, channelID: String, transmitID: String)
+    case pendingLocalTransmit(channelUUID: UUID, contactID: UUID, channelID: String)
+    case remoteReceive(channelUUID: UUID, contactID: UUID?, channelID: String?)
+    case wakeReceive(channelUUID: UUID, contactID: UUID, channelID: String?)
+    case unattributed(channelUUID: UUID?)
+
+    var diagnosticsValue: String {
+        switch self {
+        case .localTransmit(_, _, _, let transmitID):
+            return "local-transmit:\(transmitID)"
+        case .pendingLocalTransmit:
+            return "pending-local-transmit"
+        case .remoteReceive:
+            return "remote-receive"
+        case .wakeReceive:
+            return "wake-receive"
+        case .unattributed:
+            return "unattributed"
+        }
+    }
+
+    var channelUUID: UUID? {
+        switch self {
+        case .localTransmit(let channelUUID, _, _, _),
+             .pendingLocalTransmit(let channelUUID, _, _),
+             .remoteReceive(let channelUUID, _, _),
+             .wakeReceive(let channelUUID, _, _):
+            return channelUUID
+        case .unattributed(let channelUUID):
+            return channelUUID
+        }
+    }
+
+    var contactID: UUID? {
+        switch self {
+        case .localTransmit(_, let contactID, _, _),
+             .pendingLocalTransmit(_, let contactID, _),
+             .wakeReceive(_, let contactID, _):
+            return contactID
+        case .remoteReceive(_, let contactID, _):
+            return contactID
+        case .unattributed:
+            return nil
+        }
+    }
+
+    var channelID: String? {
+        switch self {
+        case .localTransmit(_, _, let channelID, _),
+             .pendingLocalTransmit(_, _, let channelID):
+            return channelID
+        case .remoteReceive(_, _, let channelID),
+             .wakeReceive(_, _, let channelID):
+            return channelID
+        case .unattributed:
+            return nil
+        }
+    }
+
+    var isLocalTransmitOwner: Bool {
+        switch self {
+        case .localTransmit, .pendingLocalTransmit:
+            return true
+        case .remoteReceive, .wakeReceive, .unattributed:
+            return false
+        }
+    }
+}
+
+struct PTTAudioSessionEpoch: Equatable {
+    let id: UUID
+    var owner: PTTAudioSessionOwner
+    let activatedAt: Date
+
+    var diagnosticsMetadata: [String: String] {
+        [
+            "pttAudioEpochId": id.uuidString,
+            "pttAudioOwner": owner.diagnosticsValue,
+            "pttAudioOwnerChannelUUID": owner.channelUUID?.uuidString ?? "none",
+            "pttAudioOwnerContactId": owner.contactID?.uuidString ?? "none",
+            "pttAudioOwnerChannelId": owner.channelID ?? "none",
+        ]
+    }
+}
+
+struct PTTAudioSessionRuntimeState {
+    private(set) var pendingActivationOwner: PTTAudioSessionOwner?
+    private(set) var activeEpoch: PTTAudioSessionEpoch?
+    private(set) var lastDeactivatedEpoch: PTTAudioSessionEpoch?
+
+    @discardableResult
+    mutating func expectActivation(owner: PTTAudioSessionOwner) -> PTTAudioSessionOwner {
+        pendingActivationOwner = owner
+        return owner
+    }
+
+    mutating func activate(
+        owner: PTTAudioSessionOwner,
+        id: UUID = UUID(),
+        at date: Date = Date()
+    ) -> PTTAudioSessionEpoch {
+        if let activeEpoch, activeEpoch.owner == owner {
+            return activeEpoch
+        }
+        let epoch = PTTAudioSessionEpoch(id: id, owner: owner, activatedAt: date)
+        activeEpoch = epoch
+        return epoch
+    }
+
+    mutating func activateExpected(
+        fallbackOwner: PTTAudioSessionOwner,
+        id: UUID = UUID(),
+        at date: Date = Date()
+    ) -> PTTAudioSessionEpoch {
+        let owner = pendingActivationOwner ?? fallbackOwner
+        pendingActivationOwner = nil
+        return activate(owner: owner, id: id, at: date)
+    }
+
+    mutating func clearPendingActivationOwner(
+        channelUUID: UUID? = nil,
+        localTransmitOnly: Bool = false
+    ) -> PTTAudioSessionOwner? {
+        guard let owner = pendingActivationOwner else { return nil }
+        if let channelUUID, owner.channelUUID != channelUUID {
+            return nil
+        }
+        if localTransmitOnly, !owner.isLocalTransmitOwner {
+            return nil
+        }
+        pendingActivationOwner = nil
+        return owner
+    }
+
+    mutating func clearPendingActivationOwner(
+        _ expectedOwner: PTTAudioSessionOwner
+    ) -> PTTAudioSessionOwner? {
+        guard pendingActivationOwner == expectedOwner else { return nil }
+        pendingActivationOwner = nil
+        return expectedOwner
+    }
+
+    @discardableResult
+    mutating func bindPendingLocalTransmit(
+        channelUUID: UUID,
+        contactID: UUID,
+        channelID: String,
+        transmitID: String
+    ) -> PTTAudioSessionEpoch? {
+        guard var epoch = activeEpoch else { return nil }
+        guard case .pendingLocalTransmit(
+            let pendingChannelUUID,
+            let pendingContactID,
+            let pendingChannelID
+        ) = epoch.owner else {
+            return nil
+        }
+        guard pendingChannelUUID == channelUUID,
+              pendingContactID == contactID,
+              pendingChannelID == channelID else {
+            return nil
+        }
+        epoch.owner = .localTransmit(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            channelID: channelID,
+            transmitID: transmitID
+        )
+        activeEpoch = epoch
+        return epoch
+    }
+
+    @discardableResult
+    mutating func bindActiveRemoteReceiveToLocalTransmit(
+        channelUUID: UUID,
+        contactID: UUID,
+        channelID: String,
+        transmitID: String
+    ) -> PTTAudioSessionEpoch? {
+        guard var epoch = activeEpoch else { return nil }
+        guard case .remoteReceive(
+            let ownerChannelUUID,
+            let ownerContactID,
+            let ownerChannelID
+        ) = epoch.owner else {
+            return nil
+        }
+        guard ownerChannelUUID == channelUUID else { return nil }
+        if let ownerContactID, ownerContactID != contactID {
+            return nil
+        }
+        if let ownerChannelID, ownerChannelID != channelID {
+            return nil
+        }
+        epoch.owner = .localTransmit(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            channelID: channelID,
+            transmitID: transmitID
+        )
+        activeEpoch = epoch
+        return epoch
+    }
+
+    mutating func deactivate() -> PTTAudioSessionEpoch? {
+        let epoch = activeEpoch
+        lastDeactivatedEpoch = epoch
+        activeEpoch = nil
+        return epoch
+    }
+
+    func hasActiveLocalTransmit(
+        channelUUID: UUID,
+        contactID: UUID,
+        channelID: String,
+        transmitID: String
+    ) -> Bool {
+        guard let activeEpoch else { return false }
+        guard case .localTransmit(
+            let ownerChannelUUID,
+            let ownerContactID,
+            let ownerChannelID,
+            let ownerTransmitID
+        ) = activeEpoch.owner else {
+            return false
+        }
+        return ownerChannelUUID == channelUUID
+            && ownerContactID == contactID
+            && ownerChannelID == channelID
+            && ownerTransmitID == transmitID
+    }
+
+    func hasActivePendingLocalTransmit(
+        channelUUID: UUID,
+        contactID: UUID,
+        channelID: String
+    ) -> Bool {
+        guard let activeEpoch else { return false }
+        guard case .pendingLocalTransmit(
+            let ownerChannelUUID,
+            let ownerContactID,
+            let ownerChannelID
+        ) = activeEpoch.owner else {
+            return false
+        }
+        return ownerChannelUUID == channelUUID
+            && ownerContactID == contactID
+            && ownerChannelID == channelID
+    }
+}
+
 final class BackendRuntimeState {
     private static let backendJoinSettlingTTL: TimeInterval = 20
     private static let receiverAudioReadinessDeliveryRecoveryTTL: TimeInterval = 5
@@ -599,8 +851,7 @@ struct TransmitRuntimeState {
         case (.started(let existing), .initial) where existing == channelUUID:
             return .alreadyCompleted
         case (.started(let existing), .systemActivationRefresh) where existing == channelUUID:
-            executionState.audioCaptureStartState = .refreshing(channelUUID: channelUUID)
-            return .begin
+            return .alreadyCompleted
         case (.refreshed(let existing), _) where existing == channelUUID:
             return .alreadyCompleted
         case (.started, .initial):
@@ -862,6 +1113,7 @@ struct IncomingAudioIngressAcceptedPacket: Sendable {
     let localQueueDelayNanoseconds: UInt64
     let frameDurationNanoseconds: UInt64?
     let transportDigest: String
+    let receiveEpoch: UInt64
     let shouldLogPlaintextFallback: Bool
 }
 
@@ -918,10 +1170,16 @@ actor IncomingAudioIngressExecutor {
         let receiveEpoch: UInt64
     }
 
+    private enum PlaybackGatePoison {
+        case expiredLiveBacklog(thresholdNanoseconds: UInt64)
+        case expiredSenderClockAge(thresholdMilliseconds: Int64)
+    }
+
     private var recentPlaintextPayloads: [PlaintextPayloadKey: PlaintextPayloadObservation] = [:]
     private var encryptedReceiveSequenceByKey: [EncryptedReceiveKey: UInt64] = [:]
     private var encryptedRecentReceiveSequencesByKey: [EncryptedReceiveKey: Set<UInt64>] = [:]
     private var playbackGateByKey: [PlaybackGateKey: IncomingAudioPlaybackGateState] = [:]
+    private var poisonedPlaybackGateByKey: [PlaybackGateKey: PlaybackGatePoison] = [:]
 
     func admit(
         _ packet: IncomingAudioIngressPacket,
@@ -953,9 +1211,25 @@ actor IncomingAudioIngressExecutor {
             nowNanoseconds >= ingressReceivedAtNanoseconds
             ? nowNanoseconds - ingressReceivedAtNanoseconds
             : 0
+        let playbackGateKey = PlaybackGateKey(
+            contactID: packet.contactID,
+            receiveEpoch: packet.receiveEpoch
+        )
+        if let poison = poisonedPlaybackGateByKey[playbackGateKey] {
+            return poisonedPlaybackGateRejection(
+                poison,
+                sequenceNumber: effectiveTransportSequenceNumber,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                now: now
+            )
+        }
         let liveBacklogExpirationNanoseconds = policy.liveAudioBacklogExpirationNanoseconds
         if liveBacklogExpirationNanoseconds > 0,
            localQueueDelayNanoseconds >= liveBacklogExpirationNanoseconds {
+            poisonedPlaybackGateByKey[playbackGateKey] = .expiredLiveBacklog(
+                thresholdNanoseconds: liveBacklogExpirationNanoseconds
+            )
             return .rejected(
                 .droppedByPlaybackGate(
                     decision: .drop(
@@ -977,6 +1251,9 @@ actor IncomingAudioIngressExecutor {
             if nowMilliseconds >= senderSentAtMilliseconds {
                 let senderClockAgeMilliseconds = nowMilliseconds - senderSentAtMilliseconds
                 if senderClockAgeMilliseconds >= policy.liveAudioSenderClockExpirationMilliseconds {
+                    poisonedPlaybackGateByKey[playbackGateKey] = .expiredSenderClockAge(
+                        thresholdMilliseconds: policy.liveAudioSenderClockExpirationMilliseconds
+                    )
                     return .rejected(
                         .droppedByPlaybackGate(
                             decision: .drop(
@@ -1113,6 +1390,7 @@ actor IncomingAudioIngressExecutor {
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds,
                 frameDurationNanoseconds: frameDurationNanoseconds,
                 transportDigest: transportDigest,
+                receiveEpoch: packet.receiveEpoch,
                 shouldLogPlaintextFallback: !MediaEncryptedAudioPacket.isEncodedPacket(incomingMediaPayload)
                     && policy.mediaEncryptionRequired
             )
@@ -1124,6 +1402,7 @@ actor IncomingAudioIngressExecutor {
         encryptedReceiveSequenceByKey = encryptedReceiveSequenceByKey.filter { $0.key.contactID != contactID }
         encryptedRecentReceiveSequencesByKey = encryptedRecentReceiveSequencesByKey.filter { $0.key.contactID != contactID }
         playbackGateByKey = playbackGateByKey.filter { $0.key.contactID != contactID }
+        poisonedPlaybackGateByKey = poisonedPlaybackGateByKey.filter { $0.key.contactID != contactID }
     }
 
     func resetAll() {
@@ -1131,6 +1410,53 @@ actor IncomingAudioIngressExecutor {
         encryptedReceiveSequenceByKey = [:]
         encryptedRecentReceiveSequencesByKey = [:]
         playbackGateByKey = [:]
+        poisonedPlaybackGateByKey = [:]
+    }
+
+    private func poisonedPlaybackGateRejection(
+        _ poison: PlaybackGatePoison,
+        sequenceNumber: UInt64?,
+        senderSentAtMilliseconds: Int64?,
+        localQueueDelayNanoseconds: UInt64,
+        now: Date
+    ) -> IncomingAudioIngressAdmission {
+        switch poison {
+        case .expiredLiveBacklog(let thresholdNanoseconds):
+            return .rejected(
+                .droppedByPlaybackGate(
+                    decision: .drop(
+                        .expiredLiveBacklog(
+                            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                            thresholdNanoseconds: thresholdNanoseconds
+                        )
+                    ),
+                    sequenceNumber: sequenceNumber,
+                    transportDigest: "omitted-poisoned-expired-live-backlog",
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds
+                )
+            )
+
+        case .expiredSenderClockAge(let thresholdMilliseconds):
+            let nowMilliseconds = Int64(now.timeIntervalSince1970 * 1_000)
+            let senderClockAgeMilliseconds = senderSentAtMilliseconds.map {
+                max(0, nowMilliseconds - $0)
+            } ?? thresholdMilliseconds
+            return .rejected(
+                .droppedByPlaybackGate(
+                    decision: .drop(
+                        .expiredSenderClockAge(
+                            senderClockAgeMilliseconds: senderClockAgeMilliseconds,
+                            thresholdMilliseconds: thresholdMilliseconds
+                        )
+                    ),
+                    sequenceNumber: sequenceNumber,
+                    transportDigest: "omitted-poisoned-expired-sender-clock-age",
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds
+                )
+            )
+        }
     }
 
     private func acceptPlaintextPayload(
@@ -1689,6 +2015,19 @@ nonisolated final class OutgoingMediaPayloadSealer: @unchecked Sendable {
             context: session.outgoingContext
         )
     }
+
+    func seal(_ payload: Data) throws -> String {
+        guard let session, let sequenceCounter else {
+            return payload.base64EncodedString()
+        }
+        return try MediaEndToEndEncryption.sealTransportPayloadData(
+            payload,
+            using: session.outgoingSymmetricKey,
+            keyID: session.keyID,
+            sequenceNumber: sequenceCounter.next(),
+            context: session.outgoingContext
+        )
+    }
 }
 
 nonisolated final class MediaHotPathEventLimiter: @unchecked Sendable {
@@ -1840,6 +2179,8 @@ final class MediaRuntimeState {
     private static let maximumForegroundSystemReceiveBufferedAudioChunks = 300
     private static let mediaEncryptionReceiveSequenceWindow: UInt64 = 256
     private static let mediaEncryptionRecentReceiveSequenceLimit = 256
+    private static let incomingAudioPlaybackMaxConcurrentHandlers = 4
+    private static let incomingAudioPlaybackMaxPendingHandlers = 96
 
     var session: MediaSession?
     var contactID: UUID?
@@ -1862,6 +2203,10 @@ final class MediaRuntimeState {
     private var firstTalkDirectQuicGraceEntries: [(contactID: UUID, grace: FirstTalkDirectQuicGrace)] = []
     private var firstTalkDirectQuicGraceExpiryTasks: [(contactID: UUID, task: Task<Void, Never>)] = []
     let outgoingAudioSendTargetGate = OutgoingAudioSendTargetGate()
+    let incomingAudioPlaybackQueue = DirectQuicAudioPayloadAsyncQueue(
+        maxConcurrentHandlers: MediaRuntimeState.incomingAudioPlaybackMaxConcurrentHandlers,
+        maxPendingHandlers: MediaRuntimeState.incomingAudioPlaybackMaxPendingHandlers
+    )
     var sendAudioChunk: (@Sendable (String) async throws -> Void)?
     var startupState: MediaSessionStartupState = .idle
     var pendingInteractivePrewarmAfterAudioDeactivationContactID: UUID?
@@ -2123,6 +2468,7 @@ final class MediaRuntimeState {
         let preservedVoiceMediaCapabilities = voiceMediaCapabilitiesByContactID
         interactivePrewarmRecoveryTask?.cancel()
         interactivePrewarmRecoveryTask = nil
+        incomingAudioPlaybackQueue.reset()
         if !preserveDirectQuic {
             directQuicPromotionTimeoutTask?.cancel()
             directQuicPromotionTimeoutTask = nil
@@ -2188,7 +2534,6 @@ final class MediaRuntimeState {
         incomingAudioSequenceByContactID = [:]
         incomingPacketLossEstimateByContactID = [:]
         incomingAudioIngressSummariesByKey = [:]
-        incomingAudioReceiveEpochByContactID = [:]
         voiceMediaCapabilitiesByContactID = preservedVoiceMediaCapabilities
         engineLocalAudioSequenceByContactID = [:]
         engineRemoteAudioSequenceByContactID = [:]
@@ -2616,7 +2961,6 @@ final class MediaRuntimeState {
         }
         mediaRelayClient = client
         mediaRelayConnectionKey = attempt.key
-        suppressedMediaRelayAudioSendKeys.remove(attempt.key)
         attempt.finish(client)
         return true
     }
@@ -2870,6 +3214,7 @@ final class MediaRuntimeState {
     }
 
     func resetMediaEncryptionState() {
+        incomingAudioPlaybackQueue.reset()
         mediaEncryptionSessionsByContactID = [:]
         mediaEncryptionSendSequenceCountersByContactID = [:]
         mediaEncryptionReceiveSequenceByContactID = [:]
@@ -2998,6 +3343,7 @@ final class MediaRuntimeState {
     }
 
     func resetMediaEncryptionReceiveSequence(for contactID: UUID) {
+        incomingAudioPlaybackQueue.reset()
         mediaEncryptionReceiveSequenceByContactID[contactID] = nil
         mediaEncryptionRecentReceiveSequencesByContactID[contactID] = nil
         engineRemoteAudioSequenceByContactID[contactID] = nil
@@ -3335,7 +3681,9 @@ final class MediaRuntimeState {
     }
 
     func outboundVoiceMediaPayloadFormat(for contactID: UUID) -> VoiceMediaPayloadFormat {
-        VoiceMediaNegotiator.outboundPayloadFormat()
+        VoiceMediaNegotiator.outboundPayloadFormat(
+            peerCapabilities: voiceMediaCapabilityEvidence(for: contactID)?.capabilities
+        )
     }
 
     func enqueuePendingEncryptedAudioPayload(

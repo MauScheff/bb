@@ -469,12 +469,18 @@ extension PTTViewModel {
         receivedAtTick: UInt64? = nil,
         durationTicks: UInt64? = nil
     ) {
-        if engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: false) == nil {
+        let startedImplicitReceive =
+            engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: false) == nil
+        if startedImplicitReceive {
             syncEngineRemoteTransmitStarted(
                 contactID: contactID,
                 channelID: channelID,
                 senderDeviceID: fromDeviceID,
                 source: "\(source)-implicit"
+            )
+            reinforceSystemRemoteParticipantForImplicitRemoteAudioReceive(
+                contactID: contactID,
+                source: source
             )
         }
         let transmitID =
@@ -659,6 +665,29 @@ extension PTTViewModel {
         )
     }
 
+    private func reinforceSystemRemoteParticipantForImplicitRemoteAudioReceive(
+        contactID: UUID,
+        source: String
+    ) {
+        let applicationState = currentApplicationState()
+        guard shouldSetSystemRemoteParticipantFromSignalPath(
+            for: contactID,
+            applicationState: applicationState
+        ) else { return }
+        guard !shouldSuppressForegroundDirectQuicRemoteParticipant(
+            for: contactID,
+            applicationState: applicationState
+        ) else { return }
+
+        Task { [weak self] in
+            await self?.updateSystemRemoteParticipant(
+                for: contactID,
+                isActive: true,
+                reason: "\(source)-implicit-audio"
+            )
+        }
+    }
+
     private func enginePeerDeviceID(
         contactID: UUID,
         readiness: TurboChannelReadinessResponse?
@@ -759,6 +788,10 @@ extension PTTViewModel {
             return nil
         }
         return EngineTransmitID(activeTransmitID)
+    }
+
+    func hasActiveOrPreparedRemoteReceiveEpoch(channelID: String) -> Bool {
+        engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: false) != nil
     }
 
     private func engineCurrentRemoteTransmitID(

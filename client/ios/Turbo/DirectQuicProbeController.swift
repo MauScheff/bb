@@ -772,6 +772,7 @@ nonisolated struct TurboMediaRelayIncomingAudioPayload: Equatable, Sendable {
     let mediaMode: TurboMediaRelayMediaMode
     let sequenceNumber: UInt64?
     let sentAtMilliseconds: Int64?
+    let receivedAtNanoseconds: UInt64
 }
 
 nonisolated enum TurboMediaRelayControlKind: String, Codable, Equatable, Sendable {
@@ -1062,6 +1063,9 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
+    static let liveAudioMaxConcurrentIncomingHandlers = 4
+    static let liveAudioMaxPendingIncomingHandlers = 96
+    static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 350_000_000
     private static let maximumReceiveChunkLength = 65_536
     private let config: TurboMediaRelayClientConfig
     private let sessionId: String
@@ -1071,6 +1075,8 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     private let onIncomingControlFrame: (@Sendable (TurboMediaRelayControlFrame) async -> Void)?
     private let onDisconnected: (@Sendable (TurboMediaRelayClient) async -> Void)?
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
+    private let incomingAudioPayloadQueue: DirectQuicAudioPayloadAsyncQueue
+    private let incomingAudioHandlerExpirationNanoseconds: UInt64
     private let queue = DispatchQueue(label: "turbo.media-relay-client")
     private let lock = NSLock()
     private var connection: NWConnection?
@@ -1090,7 +1096,13 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         onIncomingAudioPayload: @escaping @Sendable (TurboMediaRelayIncomingAudioPayload) async -> Void,
         onIncomingControlFrame: (@Sendable (TurboMediaRelayControlFrame) async -> Void)? = nil,
         onDisconnected: (@Sendable (TurboMediaRelayClient) async -> Void)? = nil,
-        reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil
+        reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
+        incomingAudioMaxConcurrentHandlers: Int = TurboMediaRelayClient
+            .liveAudioMaxConcurrentIncomingHandlers,
+        incomingAudioMaxPendingHandlers: Int = TurboMediaRelayClient
+            .liveAudioMaxPendingIncomingHandlers,
+        incomingAudioHandlerExpirationNanoseconds: UInt64 = TurboMediaRelayClient
+            .liveAudioIncomingHandlerExpirationNanoseconds
     ) {
         self.config = config
         self.sessionId = sessionId
@@ -1100,6 +1112,11 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         self.onIncomingControlFrame = onIncomingControlFrame
         self.onDisconnected = onDisconnected
         self.reportEvent = reportEvent
+        self.incomingAudioHandlerExpirationNanoseconds = incomingAudioHandlerExpirationNanoseconds
+        self.incomingAudioPayloadQueue = DirectQuicAudioPayloadAsyncQueue(
+            maxConcurrentHandlers: incomingAudioMaxConcurrentHandlers,
+            maxPendingHandlers: incomingAudioMaxPendingHandlers
+        )
     }
 
     func connect() async throws -> TurboMediaRelayTransport {
@@ -1282,9 +1299,16 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
             self.peerUnavailableSince = nil
             return (connection, datagramConnection)
         }
+        incomingAudioPayloadQueue.reset()
         connections.stream?.cancel()
         connections.datagram?.cancel()
     }
+
+#if DEBUG
+    func injectIncomingAudioPayloadForTesting(_ incomingPayload: TurboMediaRelayIncomingAudioPayload) {
+        enqueueIncomingAudioPayload(incomingPayload)
+    }
+#endif
 
     private func connect(using transport: TurboMediaRelayTransport) async throws -> TurboMediaRelayTransport {
         close()
@@ -1826,6 +1850,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                 return
             }
             if let data, !data.isEmpty {
+                let receivedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
                 let result = self.lock.withLock { () -> Result<[TurboMediaRelayFrame], Error> in
                     self.receiveBuffer.append(data)
                     do {
@@ -1854,16 +1879,15 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                                 continue
                             }
                             self.clearPeerUnavailable()
-                            Task {
-                                await self.onIncomingAudioPayload(
-                                    TurboMediaRelayIncomingAudioPayload(
-                                        payload: payload,
-                                        mediaMode: .tcpOrdered,
-                                        sequenceNumber: sequenceNumber,
-                                        sentAtMilliseconds: sentAtMs
-                                    )
+                            self.enqueueIncomingAudioPayload(
+                                TurboMediaRelayIncomingAudioPayload(
+                                    payload: payload,
+                                    mediaMode: .tcpOrdered,
+                                    sequenceNumber: sequenceNumber,
+                                    sentAtMilliseconds: sentAtMs,
+                                    receivedAtNanoseconds: receivedAtNanoseconds
                                 )
-                            }
+                            )
                         } else if case .control(_, let senderDeviceId, let kind, let payload) = frame {
                             guard senderDeviceId == self.peerDeviceId else {
                                 Task {
@@ -1937,6 +1961,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                 return
             }
             if let data, !data.isEmpty {
+                let receivedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
                 do {
                     let frame = try TurboMediaRelayDatagramCodec.decode(data)
                     switch frame {
@@ -1957,16 +1982,15 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                             break
                         }
                         self.clearPeerUnavailable()
-                        Task {
-                            await self.onIncomingAudioPayload(
-                                TurboMediaRelayIncomingAudioPayload(
-                                    payload: payload,
-                                    mediaMode: .quicDatagram,
-                                    sequenceNumber: sequenceNumber,
-                                    sentAtMilliseconds: sentAtMs
-                                )
+                        self.enqueueIncomingAudioPayload(
+                            TurboMediaRelayIncomingAudioPayload(
+                                payload: payload,
+                                mediaMode: .quicDatagram,
+                                sequenceNumber: sequenceNumber,
+                                sentAtMilliseconds: sentAtMs,
+                                receivedAtNanoseconds: receivedAtNanoseconds
                             )
-                        }
+                        )
                     case .peerUnavailable:
                         self.markPeerUnavailable()
                         Task {
@@ -2004,6 +2028,28 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         }
     }
 
+    private func enqueueIncomingAudioPayload(
+        _ incomingPayload: TurboMediaRelayIncomingAudioPayload
+    ) {
+        let expirationNanoseconds: UInt64?
+        if incomingPayload.mediaMode == .quicDatagram {
+            expirationNanoseconds = Self.saturatingNanosecondDeadline(
+                base: incomingPayload.receivedAtNanoseconds,
+                interval: incomingAudioHandlerExpirationNanoseconds
+            )
+        } else {
+            expirationNanoseconds = nil
+        }
+        incomingAudioPayloadQueue.enqueue(expiringAtNanoseconds: expirationNanoseconds) { [onIncomingAudioPayload] in
+            await onIncomingAudioPayload(incomingPayload)
+        }
+    }
+
+    private static func saturatingNanosecondDeadline(base: UInt64, interval: UInt64) -> UInt64 {
+        let (deadline, overflow) = base.addingReportingOverflow(interval)
+        return overflow ? UInt64.max : deadline
+    }
+
     private func nextSequenceNumber() -> UInt64 {
         lock.withLock {
             sequenceNumber += 1
@@ -2014,6 +2060,19 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     func markPeerUnavailable() {
         lock.withLock {
             peerUnavailableSince = Date()
+        }
+    }
+
+    func resetIncomingAudioPayloadQueue(reason: String) {
+        incomingAudioPayloadQueue.reset()
+        Task {
+            await report(
+                "Reset media relay incoming audio payload queue",
+                metadata: baseMetadata().merging(
+                    ["reason": reason],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
         }
     }
 
@@ -2202,9 +2261,11 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     static let defaultMaxConcurrentHandlers = 1
     static let defaultMaxPendingHandlers = 64
 
-    private struct PendingEntry {
+    private struct PendingEntry: Sendable {
         let id: UUID
         let generation: Int
+        let expirationNanoseconds: UInt64?
+        let onExpired: (@Sendable () async -> Void)?
         let operation: @Sendable () async -> Void
     }
 
@@ -2237,12 +2298,37 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
         tasks.forEach { $0.cancel() }
     }
 
-    func enqueue(_ operation: @escaping @Sendable () async -> Void) {
-        lock.withLock {
+    func enqueue(
+        expiringAtNanoseconds expirationNanoseconds: UInt64? = nil,
+        onExpired: (@Sendable () async -> Void)? = nil,
+        _ operation: @escaping @Sendable () async -> Void
+    ) {
+        let expiredCallbacks = lock.withLock { () -> [@Sendable () async -> Void] in
+            var expiredCallbacks: [@Sendable () async -> Void] = []
+            let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+            guard !Self.isExpired(
+                expirationNanoseconds,
+                nowNanoseconds: nowNanoseconds
+            ) else {
+                if let onExpired {
+                    expiredCallbacks.append(onExpired)
+                }
+                return expiredCallbacks
+            }
+            pending.removeAll { entry in
+                let isExpired = Self.isExpired(entry.expirationNanoseconds, nowNanoseconds: nowNanoseconds)
+                if isExpired,
+                   let onExpired = entry.onExpired {
+                    expiredCallbacks.append(onExpired)
+                }
+                return isExpired
+            }
             pending.append(
                 PendingEntry(
                     id: UUID(),
                     generation: generation,
+                    expirationNanoseconds: expirationNanoseconds,
+                    onExpired: onExpired,
                     operation: operation
                 )
             )
@@ -2250,32 +2336,71 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
             if overflow > 0 {
                 pending.removeFirst(overflow)
             }
+            return expiredCallbacks
         }
+        expiredCallbacks.forEach(runExpirationCallback)
         startAvailableHandlers()
     }
 
     private func startAvailableHandlers() {
         while true {
-            let task = lock.withLock { () -> Task<Void, Never>? in
-                guard running.count < maxConcurrentHandlers,
-                      !pending.isEmpty else {
-                    return nil
-                }
-                let entry = pending.removeFirst()
-                let task = Task.detached(priority: priority) { [weak self] in
-                    defer { self?.finish(entry.id) }
-                    guard let self,
-                          !Task.isCancelled,
-                          self.isCurrentGeneration(entry.generation) else {
-                        return
+            let result = lock.withLock { () -> (task: Task<Void, Never>?, expiredCallbacks: [@Sendable () async -> Void]) in
+                var expiredCallbacks: [@Sendable () async -> Void] = []
+                while running.count < maxConcurrentHandlers,
+                      !pending.isEmpty {
+                    let entry = pending.removeFirst()
+                    let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+                    guard !Self.isExpired(
+                        entry.expirationNanoseconds,
+                        nowNanoseconds: nowNanoseconds
+                    ) else {
+                        if let onExpired = entry.onExpired {
+                            expiredCallbacks.append(onExpired)
+                        }
+                        continue
                     }
-                    await entry.operation()
+                    let task = Task.detached(priority: priority) { [weak self] in
+                        defer { self?.finish(entry.id) }
+                        guard let self,
+                              !Task.isCancelled,
+                              self.isCurrentGeneration(entry.generation)
+                        else {
+                            return
+                        }
+                        guard !Self.isExpired(
+                                entry.expirationNanoseconds,
+                                nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+                              )
+                        else {
+                            if let onExpired = entry.onExpired {
+                                await onExpired()
+                            }
+                            return
+                        }
+                        await entry.operation()
+                    }
+                    running[entry.id] = task
+                    return (task, expiredCallbacks)
                 }
-                running[entry.id] = task
-                return task
+                return (nil, expiredCallbacks)
             }
-            guard task != nil else { return }
+            result.expiredCallbacks.forEach(runExpirationCallback)
+            guard result.task != nil else { return }
         }
+    }
+
+    private func runExpirationCallback(_ callback: @escaping @Sendable () async -> Void) {
+        Task.detached(priority: priority) {
+            await callback()
+        }
+    }
+
+    private static func isExpired(
+        _ expirationNanoseconds: UInt64?,
+        nowNanoseconds: UInt64
+    ) -> Bool {
+        guard let expirationNanoseconds else { return false }
+        return nowNanoseconds >= expirationNanoseconds
     }
 
     private func isCurrentGeneration(_ generation: Int) -> Bool {
@@ -2295,7 +2420,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
-    private static let liveAudioMaxConcurrentIncomingHandlers = 16
+    private static let liveAudioMaxConcurrentIncomingHandlers = 1
     static let liveAudioDatagramWaitsForProcessing = false
     // Apple PTT activation can hold the first transmit/receive path for several
     // seconds. Keep the app-level consent watchdog longer than that activation

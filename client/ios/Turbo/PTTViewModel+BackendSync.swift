@@ -471,6 +471,22 @@ extension PTTViewModel {
             && isPTTAudioSessionActive
     }
 
+    func shouldPreserveForegroundAppManagedReceivePlaybackAfterPTTActivation(
+        for contactID: UUID
+    ) -> Bool {
+        guard currentApplicationState() == .active else { return false }
+        guard directQuicTransmitStartupPolicy == .appleGated else { return false }
+        guard isJoined, activeChannelId == contactID else { return false }
+        guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
+        guard remoteTransmittingContactIDs.contains(contactID) else { return false }
+        guard mediaSessionContactID == contactID else { return false }
+        guard mediaConnectionState == .connected || mediaConnectionState == .preparing else { return false }
+        guard systemSessionMatches(contactID) else { return false }
+        guard !isTransmitting else { return false }
+        guard !pttCoordinator.state.isTransmitting else { return false }
+        return mediaTransportPathState.isFastRelay || shouldUseDirectQuicTransport(for: contactID)
+    }
+
     func shouldDeferBackgroundPlaybackUntilPTTAudioActivation(
         for contactID: UUID,
         applicationState: UIApplication.State
@@ -652,6 +668,7 @@ extension PTTViewModel {
     }
 
     func clearRemoteAudioActivity(for contactID: UUID) {
+        receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
         )
@@ -670,6 +687,7 @@ extension PTTViewModel {
     }
 
     func markRemoteTransmitStoppedPreservingPlaybackDrain(for contactID: UUID) {
+        receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: true)
         )
@@ -691,6 +709,7 @@ extension PTTViewModel {
         contactID: UUID,
         reason: String
     ) {
+        receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
         )
@@ -747,7 +766,8 @@ extension PTTViewModel {
     func finalizeReceiveMediaSessionIfNeeded(
         for contactID: UUID,
         closeMessage: String,
-        deferPrewarmMessage: String
+        deferPrewarmMessage: String,
+        allowMediaPathPreservation: Bool = true
     ) {
         let shouldRestoreInteractivePrewarm =
             isJoined
@@ -757,7 +777,8 @@ extension PTTViewModel {
 
         guard mediaSessionContactID == contactID, !isTransmitting else { return }
 
-        if shouldKeepInteractiveMediaWarmAfterReceiveEnd(
+        if allowMediaPathPreservation,
+           shouldKeepInteractiveMediaWarmAfterReceiveEnd(
             for: contactID,
             closeMessage: closeMessage
         ) {
@@ -781,7 +802,9 @@ extension PTTViewModel {
         let preserveDirectQuic = shouldUseDirectQuicTransport(for: contactID)
         closeMediaSession(
             preserveDirectQuic: preserveDirectQuic,
-            preserveMediaRelay: !preserveDirectQuic && shouldPreserveMediaRelayDuringMediaClose(for: contactID)
+            preserveMediaRelay: allowMediaPathPreservation
+                && !preserveDirectQuic
+                && shouldPreserveMediaRelayDuringMediaClose(for: contactID)
         )
         if backendStatusMessage.hasPrefix("Media ") {
             backendStatusMessage = "Connected"
@@ -864,6 +887,241 @@ extension PTTViewModel {
             existingChannelState?.conversationStatus == .receiving
         guard backendPreviouslyShowedPeerTransmit else { return false }
         return effectiveChannelState.conversationStatus != .receiving
+    }
+
+    func expiredBackendTransmitLease(
+        channelState: TurboChannelStateResponse,
+        readiness: TurboChannelReadinessResponse?,
+        now: Date = Date(),
+        graceSeconds: TimeInterval = 5.0
+    ) -> (expiresAt: String, expiredByMs: Int)? {
+        let backendShowsActiveTransmit =
+            channelState.conversationStatus == .receiving
+            || channelState.conversationStatus == .transmitting
+            || readiness?.statusView.conversationState == .receiving
+            || readiness?.statusView.conversationState == .transmitting
+        guard backendShowsActiveTransmit else { return nil }
+        guard let expiresAt = readiness?.activeTransmitExpiresAt ?? channelState.transmitLeaseExpiresAt,
+              let expiration = parsedBackendInstant(expiresAt) else {
+            return nil
+        }
+        let expiredBy = now.timeIntervalSince(expiration)
+        guard expiredBy > graceSeconds else { return nil }
+        return (expiresAt: expiresAt, expiredByMs: Int(expiredBy * 1_000))
+    }
+
+    func channelProjectionClearingExpiredTransmitLeaseIfNeeded(
+        contactID: UUID,
+        channelState: TurboChannelStateResponse,
+        readiness: TurboChannelReadinessResponse?,
+        now: Date = Date(),
+        graceSeconds: TimeInterval = 5.0
+    ) -> (channelState: TurboChannelStateResponse, readiness: TurboChannelReadinessResponse?) {
+        guard let expiry = expiredBackendTransmitLease(
+            channelState: channelState,
+            readiness: readiness,
+            now: now,
+            graceSeconds: graceSeconds
+        ) else {
+            return (channelState, readiness)
+        }
+
+        let readyAfterExpiry =
+            channelState.membership.hasLocalMembership
+            && channelState.membership.hasPeerMembership
+            && channelState.membership.peerDeviceConnected
+            && (readiness.map { $0.selfHasActiveDevice && $0.peerHasActiveDevice } ?? true)
+        let resolvedConversationStatus: ConversationState = readyAfterExpiry ? .ready : .waitingForPeer
+        let resolvedReadinessStatus: TurboChannelReadinessStatus = readyAfterExpiry ? .ready : .waitingForPeer
+
+        diagnostics.record(
+            .backend,
+            level: .notice,
+            message: "Cleared expired backend transmit lease projection",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelState.channelId,
+                "previousStatus": channelState.statusKind,
+                "previousReadiness": readiness?.statusKind ?? "none",
+                "effectiveStatus": resolvedConversationStatus.rawValue,
+                "effectiveReadiness": resolvedReadinessStatus.kind,
+                "activeTransmitExpiresAt": expiry.expiresAt,
+                "expiredByMs": String(expiry.expiredByMs),
+            ]
+        )
+
+        return (
+            channelState.clearingActiveTransmitProjection(
+                status: resolvedConversationStatus,
+                canTransmit: readyAfterExpiry
+            ),
+            readiness?.clearingActiveTransmitProjection(status: resolvedReadinessStatus)
+        )
+    }
+
+    func selectedPeerTransmitLeaseExpired(for contactID: UUID) -> Bool {
+        guard let channelState = selectedChannelState(for: contactID) else { return false }
+        return expiredBackendTransmitLease(
+            channelState: channelState,
+            readiness: channelReadinessByContactID[contactID]
+        ) != nil
+    }
+
+    func scheduleRemoteTransmitLeaseExpiryRepairIfNeeded(
+        contactID: UUID,
+        channelState: TurboChannelStateResponse,
+        readiness: TurboChannelReadinessResponse?,
+        now: Date = Date(),
+        graceSeconds: TimeInterval = 5.0
+    ) {
+        let backendShowsPeerTransmit =
+            channelState.conversationStatus == .receiving
+            || readiness?.statusView.isPeerTransmitting == true
+        guard backendShowsPeerTransmit else {
+            receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
+            return
+        }
+        guard let expiresAt = readiness?.activeTransmitExpiresAt ?? channelState.transmitLeaseExpiresAt,
+              let expiration = parsedBackendInstant(expiresAt) else {
+            receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
+            return
+        }
+        let delaySeconds = max(0, expiration.timeIntervalSince(now) + graceSeconds + 0.25)
+        let delayNanoseconds = UInt64(delaySeconds * 1_000_000_000)
+        let activeTransmitID = readiness?.activeTransmitId ?? channelState.activeTransmitId
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.repairExpiredRemoteTransmitLeaseIfNeeded(
+                    contactID: contactID,
+                    expectedActiveTransmitID: activeTransmitID,
+                    expectedExpiresAt: expiresAt,
+                    graceSeconds: graceSeconds
+                )
+            }
+        }
+        receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: task)
+    }
+
+    func repairExpiredRemoteTransmitLeaseIfNeeded(
+        contactID: UUID,
+        expectedActiveTransmitID: String?,
+        expectedExpiresAt: String,
+        graceSeconds: TimeInterval = 5.0
+    ) {
+        guard let channelState = selectedChannelState(for: contactID) else {
+            receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
+            return
+        }
+        let readiness = channelReadinessByContactID[contactID]
+        let currentActiveTransmitID = readiness?.activeTransmitId ?? channelState.activeTransmitId
+        if let expectedActiveTransmitID,
+           currentActiveTransmitID != expectedActiveTransmitID {
+            return
+        }
+        let currentExpiresAt = readiness?.activeTransmitExpiresAt ?? channelState.transmitLeaseExpiresAt
+        guard currentExpiresAt == expectedExpiresAt else { return }
+        guard let expiry = expiredBackendTransmitLease(
+            channelState: channelState,
+            readiness: readiness,
+            graceSeconds: graceSeconds
+        ) else {
+            return
+        }
+
+        let normalized = channelProjectionClearingExpiredTransmitLeaseIfNeeded(
+            contactID: contactID,
+            channelState: channelState,
+            readiness: readiness,
+            graceSeconds: graceSeconds
+        )
+        backendSyncCoordinator.send(
+            .channelStateUpdated(contactID: contactID, channelState: normalized.channelState)
+        )
+        if let readiness = normalized.readiness {
+            backendSyncCoordinator.send(
+                .channelReadinessUpdated(contactID: contactID, readiness: readiness)
+            )
+        }
+        forceStopRemoteReceiveAfterExpiredBackendTransmitLease(
+            contactID: contactID,
+            channelID: channelState.channelId,
+            expiresAt: expiry.expiresAt,
+            expiredByMs: expiry.expiredByMs
+        )
+        diagnostics.record(
+            .backend,
+            level: .notice,
+            message: "Repaired expired backend transmit lease from local watchdog",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelState.channelId,
+                "activeTransmitId": currentActiveTransmitID ?? "none",
+                "activeTransmitExpiresAt": expiry.expiresAt,
+                "expiredByMs": String(expiry.expiredByMs),
+            ]
+        )
+    }
+
+    @discardableResult
+    func repairExpiredRemoteTransmitLeaseIfNeeded(contactID: UUID) -> Bool {
+        guard let channelState = selectedChannelState(for: contactID) else { return false }
+        let readiness = channelReadinessByContactID[contactID]
+        guard expiredBackendTransmitLease(
+            channelState: channelState,
+            readiness: readiness
+        ) != nil else {
+            return false
+        }
+        guard let expiresAt = readiness?.activeTransmitExpiresAt ?? channelState.transmitLeaseExpiresAt else {
+            return false
+        }
+        repairExpiredRemoteTransmitLeaseIfNeeded(
+            contactID: contactID,
+            expectedActiveTransmitID: readiness?.activeTransmitId ?? channelState.activeTransmitId,
+            expectedExpiresAt: expiresAt
+        )
+        return true
+    }
+
+    func forceStopRemoteReceiveAfterExpiredBackendTransmitLease(
+        contactID: UUID,
+        channelID: String,
+        expiresAt: String,
+        expiredByMs: Int
+    ) {
+        syncEngineRemoteTransmitStopped(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: "backend-transmit-lease-expiry-watchdog",
+            source: "backend-transmit-lease-expiry-watchdog"
+        )
+        mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        clearRemoteAudioActivity(for: contactID)
+        finalizeReceiveMediaSessionIfNeeded(
+            for: contactID,
+            closeMessage: "Closed receive media session after expired backend transmit lease",
+            deferPrewarmMessage: "Deferred interactive audio prewarm after expired backend transmit lease",
+            allowMediaPathPreservation: false
+        )
+        clearSystemRemoteParticipantIfNeededAfterRemoteAudioEnded(for: contactID)
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Forced remote receive stop after expired backend transmit lease",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "activeTransmitExpiresAt": expiresAt,
+                "expiredByMs": String(expiredByMs),
+            ]
+        )
+        if selectedContactId == contactID {
+            updateStatusForSelectedContact()
+            captureDiagnosticsState("remote-audio:expired-backend-transmit-lease")
+        }
     }
 
     func recoverRemoteTransmitStopFromChannelRefreshIfNeeded(
@@ -949,6 +1207,32 @@ extension PTTViewModel {
             effectiveChannelState.conversationStatus == .receiving
             || effectiveChannelReadiness?.statusView.isPeerTransmitting == true
         guard backendShowsPeerTransmit else { return }
+        guard expiredBackendTransmitLease(
+            channelState: effectiveChannelState,
+            readiness: effectiveChannelReadiness
+        ) == nil else {
+            receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
+            diagnostics.record(
+                .backend,
+                level: .notice,
+                message: "Ignored backend peer-transmitting refresh with expired transmit lease",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": effectiveChannelState.channelId,
+                    "channelStatus": effectiveChannelState.statusKind,
+                    "readinessStatus": effectiveChannelReadiness?.statusKind ?? "none",
+                    "activeTransmitExpiresAt": effectiveChannelReadiness?.activeTransmitExpiresAt
+                        ?? effectiveChannelState.transmitLeaseExpiresAt
+                        ?? "none",
+                ]
+            )
+            return
+        }
+        scheduleRemoteTransmitLeaseExpiryRepairIfNeeded(
+            contactID: contactID,
+            channelState: effectiveChannelState,
+            readiness: effectiveChannelReadiness
+        )
         guard !remoteTransmittingContactIDs.contains(contactID) else { return }
         let applicationState = currentApplicationState()
         guard shouldTreatIncomingSignalAsWakeCandidate(

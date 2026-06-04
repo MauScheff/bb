@@ -539,13 +539,14 @@ extension PTTViewModel {
         )
     }
 
+    @discardableResult
     func recordIncomingAudioContinuityContractIfNeeded(
         contactID: UUID,
         channelID: String,
         incomingAudioTransport: IncomingAudioPayloadTransport,
         fromDeviceID: String = "unknown",
         nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
-    ) {
+    ) -> Bool {
         let thresholdNanoseconds = incomingAudioChunkContinuityGapNanoseconds(
             for: incomingAudioTransport
         )
@@ -557,7 +558,7 @@ extension PTTViewModel {
         guard let gapNanoseconds = observation.gapNanoseconds,
               gapNanoseconds >= thresholdNanoseconds,
               receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase == .receivingAudio else {
-            return
+            return false
         }
         let disposition = mediaRuntime.consumeIncomingAudioContractDiagnosticDisposition(
             for: contactID,
@@ -601,7 +602,7 @@ extension PTTViewModel {
         case .suppressed:
             break
         }
-        resetRemoteReceiveEpochAfterIncomingAudioContinuityGapIfNeeded(
+        let didResetReceiveEpoch = resetRemoteReceiveEpochAfterIncomingAudioContinuityGapIfNeeded(
             contactID: contactID,
             channelID: channelID,
             fromDeviceID: fromDeviceID,
@@ -609,6 +610,15 @@ extension PTTViewModel {
             observation: observation,
             thresholdNanoseconds: thresholdNanoseconds
         )
+        preserveRelayRemoteReceiveAfterIncomingAudioContinuityGapIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            observation: observation,
+            thresholdNanoseconds: thresholdNanoseconds
+        )
+        return didResetReceiveEpoch
     }
 
     private func resetRemoteReceiveEpochAfterIncomingAudioContinuityGapIfNeeded(
@@ -618,11 +628,12 @@ extension PTTViewModel {
         incomingAudioTransport: IncomingAudioPayloadTransport,
         observation: IncomingAudioContinuityObservation,
         thresholdNanoseconds: UInt64
-    ) {
-        guard incomingAudioTransport == .directQuic else { return }
-        guard let gapNanoseconds = observation.gapNanoseconds else { return }
+    ) -> Bool {
+        guard incomingAudioTransport.isUnreliablePacketMedia else { return false }
+        guard let gapNanoseconds = observation.gapNanoseconds else { return false }
 
-        if retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
+        if incomingAudioTransport == .directQuic,
+           retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
             contactID: contactID,
             reason: "incoming-audio-continuity-gap",
             sequenceNumber: nil
@@ -640,16 +651,25 @@ extension PTTViewModel {
                     "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
                 ]
             )
-            return
+            return false
         }
 
         mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
-        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
-            reason: "incoming-audio-continuity-gap"
-        )
+        switch incomingAudioTransport {
+        case .directQuic:
+            mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+                reason: "incoming-audio-continuity-gap"
+            )
+        case .mediaRelayPacket:
+            mediaRuntime.mediaRelayClient?.resetIncomingAudioPayloadQueue(
+                reason: "incoming-audio-continuity-gap"
+            )
+        case .mediaRelayTcp, .relayWebSocket:
+            break
+        }
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         clearFirstAudioPlaybackAckSentState(
             contactID: contactID,
@@ -669,6 +689,34 @@ extension PTTViewModel {
                 "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
             ]
         )
+        return true
+    }
+
+    private func preserveRelayRemoteReceiveAfterIncomingAudioContinuityGapIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        observation: IncomingAudioContinuityObservation,
+        thresholdNanoseconds: UInt64
+    ) {
+        guard !incomingAudioTransport.isUnreliablePacketMedia else { return }
+        guard let gapNanoseconds = observation.gapNanoseconds else { return }
+        guard observation.previousTransport != .directQuic else { return }
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Preserved relay receive epoch after incoming audio continuity gap",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": fromDeviceID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "gapMilliseconds": String(gapNanoseconds / 1_000_000),
+                "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
+                "previousTransport": observation.previousTransport?.diagnosticsValue ?? "none",
+            ]
+        )
     }
 
     func incomingAudioChunkContinuityGapNanoseconds(
@@ -681,6 +729,25 @@ extension PTTViewModel {
             return max(remoteAudioChunkContinuityGapNanoseconds, 700_000_000)
         case .relayWebSocket:
             return max(remoteAudioChunkContinuityGapNanoseconds, 1_000_000_000)
+        }
+    }
+
+    func incomingLiveAudioBacklogExpirationNanoseconds(
+        for incomingAudioTransport: IncomingAudioPayloadTransport
+    ) -> UInt64 {
+        switch incomingAudioTransport {
+        case .directQuic:
+            return min(
+                directQuicIncomingAudioLiveBacklogDropNanoseconds,
+                incomingLiveAudioBacklogExpirationNanoseconds
+            )
+        case .mediaRelayPacket:
+            return min(
+                mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds,
+                incomingLiveAudioBacklogExpirationNanoseconds
+            )
+        case .mediaRelayTcp, .relayWebSocket:
+            return incomingLiveAudioBacklogExpirationNanoseconds
         }
     }
 
@@ -767,6 +834,16 @@ extension PTTViewModel {
             peerDeviceID: fromDeviceID,
             logPreservedSession: false
         )
+        guard !dropIncomingAudioAfterExpiredBackendTransmitLeaseIfNeeded(
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            transportSequenceNumber: transportSequenceNumber,
+            ingressContext: ingressContext
+        ) else {
+            return
+        }
         let ingressAdmission = await incomingAudioIngressExecutor.admit(
             IncomingAudioIngressPacket(
                 payload: payload,
@@ -782,7 +859,9 @@ extension PTTViewModel {
             policy: IncomingAudioIngressConfiguration(
                 mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
                 mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
-                liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds,
+                liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
+                    for: incomingAudioTransport
+                ),
                 liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
                     for: incomingAudioTransport
                 )
@@ -961,6 +1040,24 @@ extension PTTViewModel {
                 sequenceNumber: sequenceNumber,
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds
             )
+            if expiredLiveBacklog != nil {
+                handleExpiredLiveAudioDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    reason: "expired-live-backlog"
+                )
+            }
+            if expiredSenderClockAge != nil {
+                handleExpiredLiveAudioDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    reason: "expired-sender-clock-age"
+                )
+            }
 
             let disposition = mediaRuntime.consumeIncomingAudioDropDiagnosticDisposition(
                 for: contactID,
@@ -987,13 +1084,6 @@ extension PTTViewModel {
                         ),
                         metadata: metadata
                     )
-                    handleExpiredLiveAudioDrop(
-                        contactID: contactID,
-                        channelID: channelID,
-                        fromDeviceID: fromDeviceID,
-                        incomingAudioTransport: incomingAudioTransport,
-                        reason: "expired-live-backlog"
-                    )
                 }
                 if let expiredSenderClockAge {
                     diagnostics.recordContractViolation(
@@ -1013,13 +1103,6 @@ extension PTTViewModel {
                             action: "dropped-expired-sender-clock-age"
                         ),
                         metadata: metadata
-                    )
-                    handleExpiredLiveAudioDrop(
-                        contactID: contactID,
-                        channelID: channelID,
-                        fromDeviceID: fromDeviceID,
-                        incomingAudioTransport: incomingAudioTransport,
-                        reason: "expired-sender-clock-age"
                     )
                 }
                 diagnostics.record(
@@ -1110,7 +1193,7 @@ extension PTTViewModel {
             applicationState: applicationState,
             incomingAudioTransport: incomingAudioTransport
         ) {
-            recordAcceptedIncomingAudioBookkeeping(
+            let effectiveReceiveEpoch = recordAcceptedIncomingAudioBookkeeping(
                 incomingMediaPayload: incomingMediaPayload,
                 audioPayload: audioPayload,
                 channelID: channelID,
@@ -1134,7 +1217,9 @@ extension PTTViewModel {
                 contactID: contactID,
                 incomingAudioTransport: incomingAudioTransport,
                 playbackSequenceNumber: playbackSequenceNumber,
+                receiveEpoch: effectiveReceiveEpoch,
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                receivedAtNanoseconds: receivedAtNanoseconds,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
                 ingressSource: ingressContext?.source ?? "incoming-audio"
             )
@@ -1220,7 +1305,7 @@ extension PTTViewModel {
         ) {
             return
         }
-        recordAcceptedIncomingAudioBookkeeping(
+        let effectiveReceiveEpoch = recordAcceptedIncomingAudioBookkeeping(
             incomingMediaPayload: incomingMediaPayload,
             audioPayload: audioPayload,
             channelID: channelID,
@@ -1294,7 +1379,9 @@ extension PTTViewModel {
                     contactID: contactID,
                     incomingAudioTransport: incomingAudioTransport,
                     playbackSequenceNumber: playbackSequenceNumber,
+                    receiveEpoch: effectiveReceiveEpoch,
                     localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    receivedAtNanoseconds: receivedAtNanoseconds,
                     senderSentAtMilliseconds: senderSentAtMilliseconds,
                     ingressSource: ingressContext?.source ?? "incoming-audio"
                 )
@@ -1341,7 +1428,9 @@ extension PTTViewModel {
                 contactID: contactID,
                 incomingAudioTransport: incomingAudioTransport,
                 playbackSequenceNumber: playbackSequenceNumber,
+                receiveEpoch: effectiveReceiveEpoch,
                 localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                receivedAtNanoseconds: receivedAtNanoseconds,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
                 ingressSource: ingressContext?.source ?? "incoming-audio"
             )
@@ -1376,7 +1465,9 @@ extension PTTViewModel {
         contactID: UUID,
         incomingAudioTransport: IncomingAudioPayloadTransport,
         playbackSequenceNumber: UInt64?,
+        receiveEpoch: UInt64,
         localQueueDelayNanoseconds: UInt64,
+        receivedAtNanoseconds: UInt64,
         senderSentAtMilliseconds: Int64?,
         ingressSource: String
     ) {
@@ -1401,11 +1492,118 @@ extension PTTViewModel {
             return
         }
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        let sessionReceiveEpoch = session.currentRemoteAudioReceiveEpoch()
+        let playbackDeadlineNanoseconds = incomingAudioAsyncPlaybackDeadlineNanoseconds(
+            receivedAtNanoseconds: receivedAtNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            incomingAudioTransport: incomingAudioTransport
+        )
+        mediaRuntime.incomingAudioPlaybackQueue.enqueue(
+            expiringAtNanoseconds: playbackDeadlineNanoseconds,
+            onExpired: { [weak self] in
+                guard let self,
+                      let dropReason = await self.incomingAudioAsyncPlaybackDropReason(
+                        receivedAtNanoseconds: receivedAtNanoseconds,
+                        senderSentAtMilliseconds: senderSentAtMilliseconds,
+                        incomingAudioTransport: incomingAudioTransport
+                      )
+                else { return }
+                await self.recordExpiredAsyncIncomingAudioPlaybackDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    receivedAtNanoseconds: receivedAtNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    dropReason: dropReason,
+                    ingressSource: ingressSource,
+                    stage: "queue-expired"
+                )
+            }
+        ) { [weak self] in
+            guard await self?.isIncomingAudioPlaybackCompletionCurrent(
+                contactID: contactID,
+                expectedReceiveEpoch: receiveEpoch,
+                session: session
+            ) == true else {
+                await self?.recordStaleAsyncIncomingAudioPlaybackDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    expectedReceiveEpoch: receiveEpoch,
+                    ingressSource: ingressSource,
+                    stage: "before-playback"
+                )
+                return
+            }
+            if let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
+                receivedAtNanoseconds: receivedAtNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                incomingAudioTransport: incomingAudioTransport
+            ) {
+                await self?.recordExpiredAsyncIncomingAudioPlaybackDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    receivedAtNanoseconds: receivedAtNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    dropReason: dropReason,
+                    ingressSource: ingressSource,
+                    stage: "before-playback"
+                )
+                return
+            }
             let playbackAccepted = await session.receiveRemoteAudioChunk(
                 audioPayload,
-                playbackProfile: transportPolicy.playbackProfile
+                playbackProfile: transportPolicy.playbackProfile,
+                expectedReceiveEpoch: sessionReceiveEpoch,
+                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds
             )
+            guard await self?.isIncomingAudioPlaybackCompletionCurrent(
+                contactID: contactID,
+                expectedReceiveEpoch: receiveEpoch,
+                session: session
+            ) == true else {
+                await self?.recordStaleAsyncIncomingAudioPlaybackDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    expectedReceiveEpoch: receiveEpoch,
+                    ingressSource: ingressSource,
+                    stage: "after-playback"
+                )
+                return
+            }
+            if let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
+                receivedAtNanoseconds: receivedAtNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                incomingAudioTransport: incomingAudioTransport
+            ) {
+                await self?.recordExpiredAsyncIncomingAudioPlaybackDrop(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    receivedAtNanoseconds: receivedAtNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    dropReason: dropReason,
+                    ingressSource: ingressSource,
+                    stage: "after-playback"
+                )
+                return
+            }
             await self?.completeIncomingAudioPlayback(
                 playbackAccepted: playbackAccepted,
                 incomingMediaPayload: incomingMediaPayload,
@@ -1423,12 +1621,303 @@ extension PTTViewModel {
         }
     }
 
+    private func isIncomingAudioPlaybackCompletionCurrent(
+        contactID: UUID,
+        expectedReceiveEpoch: UInt64,
+        session: MediaSession
+    ) -> Bool {
+        guard mediaServices.session() === session else { return false }
+        guard mediaSessionContactID == contactID else { return false }
+        return mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == expectedReceiveEpoch
+    }
+
+    private func incomingAudioAsyncPlaybackDeadlineNanoseconds(
+        receivedAtNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        incomingAudioTransport: IncomingAudioPayloadTransport
+    ) -> UInt64? {
+        var deadlineNanoseconds: UInt64?
+        let liveBacklogExpirationNanoseconds = incomingLiveAudioBacklogExpirationNanoseconds(
+            for: incomingAudioTransport
+        )
+        if liveBacklogExpirationNanoseconds > 0 {
+            deadlineNanoseconds = saturatingNanosecondDeadline(
+                base: receivedAtNanoseconds,
+                interval: liveBacklogExpirationNanoseconds
+            )
+        }
+
+        guard let senderSentAtMilliseconds else { return deadlineNanoseconds }
+        let senderClockExpirationMilliseconds = incomingLiveAudioSenderClockExpirationMilliseconds(
+            for: incomingAudioTransport
+        )
+        guard senderClockExpirationMilliseconds > 0 else { return deadlineNanoseconds }
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let nowMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        let (senderDeadlineMilliseconds, overflow) = senderSentAtMilliseconds.addingReportingOverflow(
+            senderClockExpirationMilliseconds
+        )
+        guard !overflow else { return deadlineNanoseconds }
+        let senderDeadlineNanoseconds: UInt64
+        if senderDeadlineMilliseconds <= nowMilliseconds {
+            senderDeadlineNanoseconds = nowNanoseconds
+        } else {
+            let remainingMilliseconds = UInt64(senderDeadlineMilliseconds - nowMilliseconds)
+            let (remainingNanoseconds, multipliedOverflow) =
+                remainingMilliseconds.multipliedReportingOverflow(by: 1_000_000)
+            senderDeadlineNanoseconds = multipliedOverflow
+                ? UInt64.max
+                : saturatingNanosecondDeadline(base: nowNanoseconds, interval: remainingNanoseconds)
+        }
+        return deadlineNanoseconds.map { min($0, senderDeadlineNanoseconds) } ?? senderDeadlineNanoseconds
+    }
+
+    private func saturatingNanosecondDeadline(base: UInt64, interval: UInt64) -> UInt64 {
+        let (deadline, overflow) = base.addingReportingOverflow(interval)
+        return overflow ? UInt64.max : deadline
+    }
+
+    private func incomingAudioAsyncPlaybackDropReason(
+        receivedAtNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        incomingAudioTransport: IncomingAudioPayloadTransport
+    ) -> IncomingAudioPlaybackDropReason? {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let localQueueDelayNanoseconds =
+            nowNanoseconds >= receivedAtNanoseconds
+            ? nowNanoseconds - receivedAtNanoseconds
+            : 0
+        let liveBacklogExpirationNanoseconds = incomingLiveAudioBacklogExpirationNanoseconds(
+            for: incomingAudioTransport
+        )
+        if liveBacklogExpirationNanoseconds > 0,
+           localQueueDelayNanoseconds >= liveBacklogExpirationNanoseconds {
+            return .expiredLiveBacklog(
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                thresholdNanoseconds: liveBacklogExpirationNanoseconds
+            )
+        }
+
+        guard let senderSentAtMilliseconds else { return nil }
+        let senderClockExpirationMilliseconds = incomingLiveAudioSenderClockExpirationMilliseconds(
+            for: incomingAudioTransport
+        )
+        guard senderClockExpirationMilliseconds > 0 else { return nil }
+        let senderClockAgeMilliseconds =
+            Int64(Date().timeIntervalSince1970 * 1_000) - senderSentAtMilliseconds
+        guard senderClockAgeMilliseconds >= senderClockExpirationMilliseconds else { return nil }
+        return .expiredSenderClockAge(
+            senderClockAgeMilliseconds: senderClockAgeMilliseconds,
+            thresholdMilliseconds: senderClockExpirationMilliseconds
+        )
+    }
+
+    private func recordExpiredAsyncIncomingAudioPlaybackDrop(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        playbackSequenceNumber: UInt64?,
+        receivedAtNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        dropReason: IncomingAudioPlaybackDropReason,
+        ingressSource: String,
+        stage: String
+    ) {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let localQueueDelayNanoseconds =
+            nowNanoseconds >= receivedAtNanoseconds
+            ? nowNanoseconds - receivedAtNanoseconds
+            : 0
+        let freshnessDecision = incomingAudioPlaybackDropDecisionValue(.drop(dropReason))
+        recordIncomingAudioIngressSummaryIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: playbackSequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            freshnessDecision: freshnessDecision,
+            playbackAccepted: false,
+            source: ingressSource
+        )
+
+        var metadata = [
+            "contactId": contactID.uuidString,
+            "channelId": channelID,
+            "fromDeviceId": fromDeviceID,
+            "incomingTransport": incomingAudioTransport.diagnosticsValue,
+            "sequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
+            "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+            "stage": stage,
+        ]
+        var action: String?
+        switch dropReason {
+        case .expiredLiveBacklog(let expiredLocalQueueDelayNanoseconds, let thresholdNanoseconds):
+            action = "dropped-expired-live-backlog"
+            metadata["reason"] = "expired-live-backlog"
+            metadata["localQueueDelayMs"] = String(expiredLocalQueueDelayNanoseconds / 1_000_000)
+            metadata["thresholdMs"] = String(thresholdNanoseconds / 1_000_000)
+            diagnostics.recordContractViolation(
+                DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                    contactID: contactID,
+                    channelID: channelID,
+                    attemptID: ingressSource,
+                    incomingTransport: incomingAudioTransport.diagnosticsValue,
+                    sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
+                    localQueueDelayMilliseconds: expiredLocalQueueDelayNanoseconds / 1_000_000,
+                    senderClockAgeMilliseconds: senderSentAtMilliseconds.map {
+                        String(Int64(Date().timeIntervalSince1970 * 1_000) - $0)
+                    } ?? "none",
+                    thresholdMilliseconds: thresholdNanoseconds / 1_000_000,
+                    action: "dropped-expired-live-backlog"
+                ),
+                metadata: metadata
+            )
+            handleExpiredLiveAudioDrop(
+                contactID: contactID,
+                channelID: channelID,
+                fromDeviceID: fromDeviceID,
+                incomingAudioTransport: incomingAudioTransport,
+                reason: "expired-live-backlog"
+            )
+
+        case .expiredSenderClockAge(let senderClockAgeMilliseconds, let thresholdMilliseconds):
+            action = "dropped-expired-sender-clock-age"
+            metadata["reason"] = "expired-sender-clock-age"
+            metadata["senderClockAgeMs"] = String(senderClockAgeMilliseconds)
+            metadata["thresholdMs"] = String(thresholdMilliseconds)
+            diagnostics.recordContractViolation(
+                DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                    contactID: contactID,
+                    channelID: channelID,
+                    attemptID: ingressSource,
+                    incomingTransport: incomingAudioTransport.diagnosticsValue,
+                    sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
+                    localQueueDelayMilliseconds: localQueueDelayNanoseconds / 1_000_000,
+                    senderClockAgeMilliseconds: String(senderClockAgeMilliseconds),
+                    thresholdMilliseconds: UInt64(max(0, thresholdMilliseconds)),
+                    action: "dropped-expired-sender-clock-age"
+                ),
+                metadata: metadata
+            )
+            handleExpiredLiveAudioDrop(
+                contactID: contactID,
+                channelID: channelID,
+                fromDeviceID: fromDeviceID,
+                incomingAudioTransport: incomingAudioTransport,
+                reason: "expired-sender-clock-age"
+            )
+
+        case .duplicateOrStaleSequence, .orderedBacklog:
+            break
+        }
+        if let action {
+            metadata["action"] = action
+        }
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Dropped asynchronous incoming audio playback after freshness deadline",
+            metadata: metadata
+        )
+    }
+
+    private func recordStaleAsyncIncomingAudioPlaybackDrop(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        playbackSequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        expectedReceiveEpoch: UInt64,
+        ingressSource: String,
+        stage: String
+    ) {
+        recordIncomingAudioIngressSummaryIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: playbackSequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            freshnessDecision: "dropped-stale-receive-epoch",
+            playbackAccepted: false,
+            source: ingressSource
+        )
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Dropped asynchronous incoming audio playback after receive epoch changed",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": fromDeviceID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "sequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
+                "expectedReceiveEpoch": String(expectedReceiveEpoch),
+                "currentReceiveEpoch": String(mediaRuntime.incomingAudioReceiveEpoch(for: contactID)),
+                "stage": stage,
+            ]
+        )
+    }
+
+    private func dropIncomingAudioAfterExpiredBackendTransmitLeaseIfNeeded(
+        channelID: String,
+        fromDeviceID: String,
+        contactID: UUID,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        transportSequenceNumber: UInt64?,
+        ingressContext: IncomingAudioIngressContext?
+    ) -> Bool {
+        guard selectedPeerTransmitLeaseExpired(for: contactID) else { return false }
+
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let receivedAtNanoseconds = ingressContext?.receivedAtNanoseconds ?? nowNanoseconds
+        let localQueueDelayNanoseconds =
+            nowNanoseconds >= receivedAtNanoseconds
+            ? nowNanoseconds - receivedAtNanoseconds
+            : 0
+        let sequenceNumber = transportSequenceNumber ?? ingressContext?.sequenceNumber
+        recordIncomingAudioIngressSummaryIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: sequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: ingressContext?.sentAtMilliseconds,
+            freshnessDecision: "dropped-expired-backend-transmit-lease",
+            playbackAccepted: false,
+            source: ingressContext?.source ?? "incoming-audio"
+        )
+        let repaired = repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID)
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Dropped incoming audio after expired backend transmit lease",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": fromDeviceID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "sequenceNumber": sequenceNumber.map(String.init) ?? "none",
+                "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                "repairTriggered": String(repaired),
+            ]
+        )
+        return true
+    }
+
     func playBufferedForegroundSystemReceiveAudioChunks(
         _ bufferedAudioChunks: [BufferedForegroundReceiveAudioChunk],
         contactID: UUID
     ) async {
         for bufferedAudioChunk in bufferedAudioChunks {
-            recordAcceptedIncomingAudioBookkeeping(
+            _ = recordAcceptedIncomingAudioBookkeeping(
                 incomingMediaPayload: bufferedAudioChunk.incomingMediaPayload,
                 audioPayload: bufferedAudioChunk.payload,
                 channelID: bufferedAudioChunk.channelID,
@@ -1481,6 +1970,7 @@ extension PTTViewModel {
         return true
     }
 
+    @discardableResult
     private func recordAcceptedIncomingAudioBookkeeping(
         incomingMediaPayload: String,
         audioPayload: String,
@@ -1491,7 +1981,7 @@ extension PTTViewModel {
         playbackSequenceNumber: UInt64?,
         receivedAtNanoseconds: UInt64,
         frameDurationNanoseconds: UInt64?
-    ) {
+    ) -> UInt64 {
         syncEngineRemoteAudioReceived(
             originalPayload: incomingMediaPayload,
             openedPayload: audioPayload,
@@ -1516,7 +2006,7 @@ extension PTTViewModel {
                 sequenceNumber: playbackSequenceNumber
             )
         }
-        recordIncomingAudioContinuityContractIfNeeded(
+        _ = recordIncomingAudioContinuityContractIfNeeded(
             contactID: contactID,
             channelID: channelID,
             incomingAudioTransport: incomingAudioTransport,
@@ -1526,6 +2016,7 @@ extension PTTViewModel {
         if incomingAudioTransport == .directQuic {
             mediaRuntime.clearDirectQuicStalePlaybackDrops(for: contactID)
         }
+        return mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
     }
 
     func incomingLiveAudioSenderClockExpirationMilliseconds(
@@ -1663,21 +2154,6 @@ extension PTTViewModel {
         incomingAudioTransport: IncomingAudioPayloadTransport,
         reason: String
     ) {
-        guard !incomingAudioTransport.isUnreliablePacketMedia else {
-            diagnostics.record(
-                .media,
-                level: .notice,
-                message: "Preserved remote receive after expired packet audio",
-                metadata: [
-                    "contactId": contactID.uuidString,
-                    "channelId": channelID,
-                    "fromDeviceId": fromDeviceID,
-                    "transport": incomingAudioTransport.diagnosticsValue,
-                    "reason": reason,
-                ]
-            )
-            return
-        }
         forceStopRemoteReceiveAfterExpiredLiveAudio(
             contactID: contactID,
             channelID: channelID,
@@ -1692,12 +2168,35 @@ extension PTTViewModel {
         channelID: String,
         fromDeviceID: String,
         incomingAudioTransport: IncomingAudioPayloadTransport,
-        reason: String
+        reason: String,
+        diagnosticsMessage: String = "Forced remote receive stop after expired live audio",
+        additionalMetadata: [String: String] = [:]
     ) {
         guard receiveExecutionCoordinator
             .state
             .remoteActivityByContactID[contactID] != nil
         else { return }
+        mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
+        mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        switch incomingAudioTransport {
+        case .directQuic:
+            mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
+                reason: "expired-live-audio:\(reason)"
+            )
+        case .mediaRelayPacket:
+            mediaRuntime.mediaRelayClient?.resetIncomingAudioPayloadQueue(
+                reason: "expired-live-audio:\(reason)"
+            )
+        case .mediaRelayTcp, .relayWebSocket:
+            break
+        }
+        mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        clearFirstAudioPlaybackAckSentState(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: fromDeviceID
+        )
         syncEngineRemoteTransmitStopped(
             contactID: contactID,
             channelID: channelID,
@@ -1705,18 +2204,23 @@ extension PTTViewModel {
             source: "expired-live-audio:\(reason)"
         )
         markRemoteTransmitStoppedPreservingPlaybackDrain(for: contactID)
-        handleRemotePlaybackDrained(for: contactID)
+        handleRemotePlaybackDrained(
+            for: contactID,
+            allowMediaPathPreservation: false
+        )
+        var metadata = [
+            "contactId": contactID.uuidString,
+            "channelId": channelID,
+            "fromDeviceId": fromDeviceID,
+            "transport": incomingAudioTransport.diagnosticsValue,
+            "reason": reason,
+        ]
+        metadata.merge(additionalMetadata) { _, new in new }
         diagnostics.record(
             .media,
             level: .notice,
-            message: "Forced remote receive stop after expired live audio",
-            metadata: [
-                "contactId": contactID.uuidString,
-                "channelId": channelID,
-                "fromDeviceId": fromDeviceID,
-                "transport": incomingAudioTransport.diagnosticsValue,
-                "reason": reason,
-            ]
+            message: diagnosticsMessage,
+            metadata: metadata
         )
     }
 
@@ -2798,7 +3302,7 @@ extension PTTViewModel {
                     )
                 )
                 || inactiveReadinessMembershipLoss
-            let effectiveChannelState = effectiveChannelStatePreservingConversationMembership(
+            let membershipEffectiveChannelState = effectiveChannelStatePreservingConversationMembership(
                 contactID: contactID,
                 existing: existingChannelState,
                 incoming: channelState,
@@ -2814,11 +3318,6 @@ extension PTTViewModel {
                     ]
                 )
             }
-            await recoverRemoteTransmitStopFromChannelRefreshIfNeeded(
-                contactID: contactID,
-                existingChannelState: existingChannelState,
-                effectiveChannelState: effectiveChannelState
-            )
             let existingDevicePTTSessionWasRoutable =
                 devicePTTEvidenceExists(for: contactID)
             let existingChannelReadiness = channelReadinessByContactID[contactID]
@@ -2835,17 +3334,29 @@ extension PTTViewModel {
             let shouldSuppressWakeCapableAudioReadiness =
                 shouldUseDirectQuicTransport(for: contactID)
                 && directQuicReceiveOrPrepareEvidence
-            let effectiveChannelReadiness: TurboChannelReadinessResponse? = {
-                guard effectiveChannelState.membership != .absent else { return nil }
+            let mergedChannelReadiness: TurboChannelReadinessResponse? = {
+                guard membershipEffectiveChannelState.membership != .absent else { return nil }
                 return mergedChannelReadinessPreservingWakeCapableFallback(
                     existing: existingChannelReadiness,
                     fetched: fetchedChannelReadiness,
-                    peerDeviceConnected: effectiveChannelState.membership.peerDeviceConnected,
-                    peerMembershipPresent: effectiveChannelState.membership.hasPeerMembership,
+                    peerDeviceConnected: membershipEffectiveChannelState.membership.peerDeviceConnected,
+                    peerMembershipPresent: membershipEffectiveChannelState.membership.hasPeerMembership,
                     existingDevicePTTSessionWasRoutable: existingDevicePTTSessionWasRoutable,
                     suppressWakeCapableAudioReadiness: shouldSuppressWakeCapableAudioReadiness
                 )
             }()
+            let expiredTransmitProjection = channelProjectionClearingExpiredTransmitLeaseIfNeeded(
+                contactID: contactID,
+                channelState: membershipEffectiveChannelState,
+                readiness: mergedChannelReadiness
+            )
+            let effectiveChannelState = expiredTransmitProjection.channelState
+            let effectiveChannelReadiness = expiredTransmitProjection.readiness
+            await recoverRemoteTransmitStopFromChannelRefreshIfNeeded(
+                contactID: contactID,
+                existingChannelState: existingChannelState,
+                effectiveChannelState: effectiveChannelState
+            )
             let localDevicePTTEvidenceEstablished =
                 devicePTTEvidenceExists(for: contactID)
             let localDevicePTTEvidenceCleared =
@@ -3027,7 +3538,7 @@ extension PTTViewModel {
                     channelState: effectiveChannelState,
                     readiness: effectiveChannelReadiness
                 )
-                let backendShowsLocalTransmit = backendChannelSnapshot.status == .transmitting
+                let backendShowsLocalTransmit = backendChannelSnapshot.status == ConversationState.transmitting
                 let transmitSnapshot = transmitDomainSnapshot
                 let shouldAcceptBackendLocalTransmit = shouldAcceptBackendLocalTransmitProjection(
                     backendShowsLocalTransmit: backendShowsLocalTransmit,

@@ -215,6 +215,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var transmitRuntime = TransmitRuntimeState()
     var transmitStartupTiming = TransmitStartupTimingState()
     var transmitTaskRuntime = TransmitTaskRuntimeState()
+    var pttAudioSessionRuntime = PTTAudioSessionRuntimeState()
     var pttWakeRuntime = PTTWakeRuntimeState()
     var receiveExecutionRuntime = ReceiveExecutionRuntimeState()
     var mediaRuntime = MediaRuntimeState()
@@ -239,6 +240,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var directQuicIncomingAudioQueueSlowNanoseconds: UInt64 = 120_000_000
     var directQuicIncomingAudioQueueDelayViolationNanoseconds: UInt64 = 240_000_000
     var directQuicIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 800_000_000
+    var mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 350_000_000
     var directQuicIncomingAudioQueueSevereDelayNanoseconds: UInt64 = 1_000_000_000
     var directQuicStalePlaybackDropFallbackThreshold: Int = 3
     var incomingLiveAudioBacklogExpirationNanoseconds: UInt64 = 2_000_000_000
@@ -2204,6 +2206,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
                 return .fastRelayBalanced
             }
             return .directLowLatency
+        }
+        if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
+            return .websocketContinuity
         }
         if mediaTransportPathState == .fastRelay,
            mediaRuntime.receiverPrewarmRequestIsAcknowledged(for: contactID) {

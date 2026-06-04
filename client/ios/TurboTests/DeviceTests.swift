@@ -2462,6 +2462,7 @@ struct DeviceTests {
 
         #expect(mediaSession.closedDeactivateAudioSessionFlags.isEmpty)
         #expect(mediaSession.audioRouteDidChangeCallCount == 1)
+        #expect(mediaSession.audioRouteDidChangeAllowCaptureRefreshValues == [false])
         #expect(viewModel.mediaSessionContactID == contactID)
         #expect(viewModel.mediaConnectionState == .connected)
         #expect(viewModel.pttWakeRuntime.pendingIncomingPush?.activationState == .appManagedFallback)
@@ -2473,6 +2474,99 @@ struct DeviceTests {
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Refreshed app-managed wake playback after late PTT audio activation"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func latePTTAudioActivationPreservesForegroundFastRelayPlayback() async throws {
+        let previousPolicy = UserDefaults.standard.string(
+            forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+        )
+        TurboDirectPathDebugOverride.setTransmitStartupPolicy(.appleGated)
+        defer {
+            if let previousPolicy {
+                UserDefaults.standard.set(
+                    previousPolicy,
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(
+                    forKey: TurboDirectPathDebugOverride.transmitStartupPolicyStorageKey
+                )
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        mediaSession.delegate = viewModel
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    channelId: "channel-123",
+                    activeTransmitId: "transmit-1",
+                    activeTransmitterUserId: "peer-user"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    remoteAudioReadiness: .ready,
+                    activeTransmitId: "transmit-1"
+                )
+            )
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        await viewModel.ensureMediaSession(
+            for: contactID,
+            activationMode: .appManaged,
+            startupMode: .playbackOnly
+        )
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        await viewModel.handleActivatedAudioSession(.sharedInstance())
+
+        #expect(mediaSession.startCallCount == 1)
+        #expect(mediaSession.closedDeactivateAudioSessionFlags.isEmpty)
+        #expect(mediaSession.audioRouteDidChangeCallCount == 1)
+        #expect(mediaSession.audioRouteDidChangeAllowCaptureRefreshValues == [false])
+        #expect(viewModel.mediaSessionContactID == contactID)
+        #expect(viewModel.mediaConnectionState == .connected)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Preserved foreground app-managed receive playback after PTT audio activation"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "No buffered foreground receive audio to flush after PTT activation"
             )
         )
     }

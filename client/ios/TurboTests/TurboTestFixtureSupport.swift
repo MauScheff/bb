@@ -276,6 +276,8 @@ func makeChannelState(
     hasIncomingBeep: Bool = false,
     hasOutgoingBeep: Bool = false,
     activeTransmitId: String? = nil,
+    activeTransmitterUserId: String? = nil,
+    transmitLeaseExpiresAt: String? = nil,
     stateEpoch: String? = nil
 ) -> TurboChannelStateResponse {
     TurboChannelStateResponse(
@@ -291,9 +293,9 @@ func makeChannelState(
         hasIncomingBeep: hasIncomingBeep,
         hasOutgoingBeep: hasOutgoingBeep,
         requestCount: 0,
-        activeTransmitterUserId: nil,
+        activeTransmitterUserId: activeTransmitterUserId,
         activeTransmitId: activeTransmitId,
-        transmitLeaseExpiresAt: nil,
+        transmitLeaseExpiresAt: transmitLeaseExpiresAt,
         stateEpoch: stateEpoch,
         status: status.rawValue,
         canTransmit: canTransmit
@@ -312,6 +314,7 @@ func makeChannelReadiness(
     peerMediaEncryptionIdentity: TurboMediaEncryptionPeerIdentityPayload? = nil,
     peerTargetDeviceId: String? = nil,
     activeTransmitId: String? = nil,
+    activeTransmitExpiresAt: String? = nil,
     stateEpoch: String? = nil
 ) -> TurboChannelReadinessResponse {
     let resolvedLocalAudioReadiness = localAudioReadiness ?? (selfHasActiveDevice ? .ready : .unknown)
@@ -323,7 +326,7 @@ func makeChannelReadiness(
         peerHasActiveDevice: peerHasActiveDevice,
         activeTransmitterUserId: status.activeTransmitterUserId,
         activeTransmitId: activeTransmitId,
-        activeTransmitExpiresAt: nil,
+        activeTransmitExpiresAt: activeTransmitExpiresAt,
         stateEpoch: stateEpoch,
         status: status.kind,
         audioReadinessPayload: TurboChannelAudioReadinessPayload(

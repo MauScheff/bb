@@ -43,10 +43,22 @@ nonisolated private struct PendingRemoteAudioChunk {
     let cushionPolicy: PlaybackCushionPolicy
 }
 
+nonisolated private struct PendingRemoteAudioPayload {
+    let payload: String
+    let playbackProfile: MediaSessionPlaybackProfile
+    let playbackDeadlineNanoseconds: UInt64?
+}
+
 nonisolated private struct DecodedCanonicalPCMChunk {
     let data: Data
     let playbackProfile: MediaSessionPlaybackProfile
     let cushionPolicy: PlaybackCushionPolicy
+}
+
+nonisolated private enum DeferredRemoteAudioPayloadValidation {
+    case invalid
+    case empty
+    case playable
 }
 
 nonisolated private struct DecodedRemoteAudioPayload {
@@ -61,16 +73,16 @@ actor AudioChunkSender {
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
     // Keep sender-side live audio bounded; receiver-side wake buffering happens
     // after transport delivery, so stale outbound chunks are worse than drops.
-    private let maximumPendingPayloads: Int
-    private let maximumPayloadsPerMessage: Int
-    private let payloadBatchCollectionNanoseconds: UInt64
-    private let minimumPayloadDispatchSpacingNanoseconds: UInt64
-    private let maximumInFlightSends: Int
-    private let sendTimeoutNanoseconds: UInt64?
-    private let slowSendDropThresholdNanoseconds: UInt64?
-    private let dropsPendingPayloadsAfterSlowSend: Bool
-    private let retainedNewestPayloadsAfterSlowSend: Int
-    private let stopDrainTimeoutNanoseconds: UInt64?
+    private var maximumPendingPayloads: Int
+    private var maximumPayloadsPerMessage: Int
+    private var payloadBatchCollectionNanoseconds: UInt64
+    private var minimumPayloadDispatchSpacingNanoseconds: UInt64
+    private var maximumInFlightSends: Int
+    private var sendTimeoutNanoseconds: UInt64?
+    private var slowSendDropThresholdNanoseconds: UInt64?
+    private var dropsPendingPayloadsAfterSlowSend: Bool
+    private var retainedNewestPayloadsAfterSlowSend: Int
+    private var stopDrainTimeoutNanoseconds: UInt64?
     private let payloadBatchCollectionPollNanoseconds: UInt64 = 10_000_000
     private let transportAvailabilityPollNanoseconds: UInt64
     private let transportAvailabilityMaxAttempts: Int
@@ -117,28 +129,47 @@ actor AudioChunkSender {
         self.reportFailure = reportFailure
         self.reportRecovery = reportRecovery
         self.reportEvent = reportEvent
-        self.maximumPendingPayloads = maximumPendingPayloads ?? configuration.maximumPendingPayloads
-        self.maximumPayloadsPerMessage = maximumPayloadsPerMessage ?? configuration.maximumPayloadsPerMessage
-        self.payloadBatchCollectionNanoseconds =
-            payloadBatchCollectionNanoseconds ?? configuration.payloadBatchCollectionNanoseconds
-        self.minimumPayloadDispatchSpacingNanoseconds =
-            minimumPayloadDispatchSpacingNanoseconds ?? configuration.minimumPayloadDispatchSpacingNanoseconds
-        self.maximumInFlightSends = max(1, maximumInFlightSends ?? configuration.maximumInFlightSends)
-        self.sendTimeoutNanoseconds = sendTimeoutNanoseconds ?? configuration.sendTimeoutNanoseconds
-        let effectiveDropsPendingPayloadsAfterSlowSend =
-            dropsPendingPayloadsAfterSlowSend ?? configuration.dropsPendingPayloadsAfterSlowSend
-        self.slowSendDropThresholdNanoseconds =
-            configuration.slowSendDropThresholdNanoseconds
-                ?? (effectiveDropsPendingPayloadsAfterSlowSend ? Self.slowTransportSendThresholdNanoseconds : nil)
-        self.dropsPendingPayloadsAfterSlowSend = effectiveDropsPendingPayloadsAfterSlowSend
-        self.retainedNewestPayloadsAfterSlowSend = max(0, configuration.retainedNewestPayloadsAfterSlowSend)
-        self.stopDrainTimeoutNanoseconds = configuration.stopDrainTimeoutNanoseconds
+        self.maximumPendingPayloads = 0
+        self.maximumPayloadsPerMessage = 1
+        self.payloadBatchCollectionNanoseconds = 0
+        self.minimumPayloadDispatchSpacingNanoseconds = 0
+        self.maximumInFlightSends = 1
+        self.sendTimeoutNanoseconds = nil
+        self.slowSendDropThresholdNanoseconds = nil
+        self.dropsPendingPayloadsAfterSlowSend = false
+        self.retainedNewestPayloadsAfterSlowSend = 0
+        self.stopDrainTimeoutNanoseconds = nil
         self.transportAvailabilityPollNanoseconds = transportAvailabilityPollNanoseconds
         self.transportAvailabilityMaxAttempts = transportAvailabilityMaxAttempts
+        let resolvedConfiguration = Self.resolvedConfiguration(
+            configuration,
+            maximumPendingPayloads: maximumPendingPayloads,
+            maximumPayloadsPerMessage: maximumPayloadsPerMessage,
+            payloadBatchCollectionNanoseconds: payloadBatchCollectionNanoseconds,
+            minimumPayloadDispatchSpacingNanoseconds: minimumPayloadDispatchSpacingNanoseconds,
+            maximumInFlightSends: maximumInFlightSends,
+            sendTimeoutNanoseconds: sendTimeoutNanoseconds,
+            dropsPendingPayloadsAfterSlowSend: dropsPendingPayloadsAfterSlowSend
+        )
+        self.maximumPendingPayloads = resolvedConfiguration.maximumPendingPayloads
+        self.maximumPayloadsPerMessage = resolvedConfiguration.maximumPayloadsPerMessage
+        self.payloadBatchCollectionNanoseconds = resolvedConfiguration.payloadBatchCollectionNanoseconds
+        self.minimumPayloadDispatchSpacingNanoseconds =
+            resolvedConfiguration.minimumPayloadDispatchSpacingNanoseconds
+        self.maximumInFlightSends = resolvedConfiguration.maximumInFlightSends
+        self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
+        self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
+        self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
+        self.retainedNewestPayloadsAfterSlowSend = resolvedConfiguration.retainedNewestPayloadsAfterSlowSend
+        self.stopDrainTimeoutNanoseconds = resolvedConfiguration.stopDrainTimeoutNanoseconds
     }
 
     func updateSendChunk(_ handler: (@Sendable (String) async throws -> Void)?) {
         sendChunk = handler
+    }
+
+    func updateConfiguration(_ configuration: MediaTransportSenderConfiguration) {
+        applyConfiguration(configuration)
     }
 
     func enqueue(_ payload: String) async {
@@ -180,6 +211,94 @@ actor AudioChunkSender {
         outboundTransportDropReportBudget = 16
         outboundTransportSlowSendReportBudget = 16
         outboundTransportTaskStartReportBudget = 16
+    }
+
+    private func applyConfiguration(
+        _ configuration: MediaTransportSenderConfiguration,
+        maximumPendingPayloads: Int? = nil,
+        maximumPayloadsPerMessage: Int? = nil,
+        payloadBatchCollectionNanoseconds: UInt64? = nil,
+        minimumPayloadDispatchSpacingNanoseconds: UInt64? = nil,
+        maximumInFlightSends: Int? = nil,
+        sendTimeoutNanoseconds: UInt64? = nil,
+        dropsPendingPayloadsAfterSlowSend: Bool? = nil
+    ) {
+        let resolvedConfiguration = Self.resolvedConfiguration(
+            configuration,
+            maximumPendingPayloads: maximumPendingPayloads,
+            maximumPayloadsPerMessage: maximumPayloadsPerMessage,
+            payloadBatchCollectionNanoseconds: payloadBatchCollectionNanoseconds,
+            minimumPayloadDispatchSpacingNanoseconds: minimumPayloadDispatchSpacingNanoseconds,
+            maximumInFlightSends: maximumInFlightSends,
+            sendTimeoutNanoseconds: sendTimeoutNanoseconds,
+            dropsPendingPayloadsAfterSlowSend: dropsPendingPayloadsAfterSlowSend
+        )
+        self.maximumPendingPayloads = resolvedConfiguration.maximumPendingPayloads
+        self.maximumPayloadsPerMessage = resolvedConfiguration.maximumPayloadsPerMessage
+        self.payloadBatchCollectionNanoseconds = resolvedConfiguration.payloadBatchCollectionNanoseconds
+        self.minimumPayloadDispatchSpacingNanoseconds =
+            resolvedConfiguration.minimumPayloadDispatchSpacingNanoseconds
+        self.maximumInFlightSends = resolvedConfiguration.maximumInFlightSends
+        self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
+        self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
+        self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
+        self.retainedNewestPayloadsAfterSlowSend = resolvedConfiguration.retainedNewestPayloadsAfterSlowSend
+        self.stopDrainTimeoutNanoseconds = resolvedConfiguration.stopDrainTimeoutNanoseconds
+        trimPendingPayloadsToCurrentConfigurationIfNeeded()
+        if self.maximumPayloadsPerMessage <= 1 {
+            flushPendingImmediately = true
+        }
+    }
+
+    nonisolated private static func resolvedConfiguration(
+        _ configuration: MediaTransportSenderConfiguration,
+        maximumPendingPayloads: Int? = nil,
+        maximumPayloadsPerMessage: Int? = nil,
+        payloadBatchCollectionNanoseconds: UInt64? = nil,
+        minimumPayloadDispatchSpacingNanoseconds: UInt64? = nil,
+        maximumInFlightSends: Int? = nil,
+        sendTimeoutNanoseconds: UInt64? = nil,
+        dropsPendingPayloadsAfterSlowSend: Bool? = nil
+    ) -> MediaTransportSenderConfiguration {
+        let effectiveDropsPendingPayloadsAfterSlowSend =
+            dropsPendingPayloadsAfterSlowSend ?? configuration.dropsPendingPayloadsAfterSlowSend
+        return MediaTransportSenderConfiguration(
+            maximumPendingPayloads: maximumPendingPayloads ?? configuration.maximumPendingPayloads,
+            maximumPayloadsPerMessage: max(
+                1,
+                maximumPayloadsPerMessage ?? configuration.maximumPayloadsPerMessage
+            ),
+            payloadBatchCollectionNanoseconds:
+                payloadBatchCollectionNanoseconds ?? configuration.payloadBatchCollectionNanoseconds,
+            minimumPayloadDispatchSpacingNanoseconds:
+                minimumPayloadDispatchSpacingNanoseconds
+                    ?? configuration.minimumPayloadDispatchSpacingNanoseconds,
+            maximumInFlightSends: max(1, maximumInFlightSends ?? configuration.maximumInFlightSends),
+            sendTimeoutNanoseconds: sendTimeoutNanoseconds ?? configuration.sendTimeoutNanoseconds,
+            slowSendDropThresholdNanoseconds:
+                configuration.slowSendDropThresholdNanoseconds
+                    ?? (effectiveDropsPendingPayloadsAfterSlowSend
+                        ? Self.slowTransportSendThresholdNanoseconds
+                        : nil),
+            dropsPendingPayloadsAfterSlowSend: effectiveDropsPendingPayloadsAfterSlowSend,
+            retainedNewestPayloadsAfterSlowSend: max(
+                0,
+                configuration.retainedNewestPayloadsAfterSlowSend
+            ),
+            stopDrainTimeoutNanoseconds: configuration.stopDrainTimeoutNanoseconds
+        )
+    }
+
+    private func trimPendingPayloadsToCurrentConfigurationIfNeeded() {
+        guard pendingPayloads.count > maximumPendingPayloads else { return }
+        let droppedPayloadCount = pendingPayloads.count - maximumPendingPayloads
+        pendingPayloads.removeFirst(droppedPayloadCount)
+        reportTransportDropIfNeeded(
+            droppedPayloadCount: droppedPayloadCount,
+            pendingPayloadCount: pendingPayloads.count,
+            invariantID: "media.outbound_audio_transport_policy_update_drop",
+            reason: "outbound-transport-policy-update"
+        )
     }
 
     @discardableResult
@@ -919,7 +1038,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
     }
 
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
-    private let senderConfiguration: MediaTransportSenderConfiguration
+    private let senderConfigurationLock = NSLock()
+    private var senderConfiguration: MediaTransportSenderConfiguration
     private lazy var audioChunkSender =
         AudioChunkSender(
             sendChunk: initialSendAudioChunk,
@@ -947,7 +1067,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                 guard let self else { return }
                 await self.report(message, metadata: metadata)
             },
-            configuration: senderConfiguration
+            configuration: senderConfigurationSnapshot()
         )
     private let captureEngine = AVAudioEngine()
     private let playbackEngine = AVAudioEngine()
@@ -966,15 +1086,18 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
     private var outboundVoiceMediaPolicy: VoiceMediaPayloadFormat
     private var outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy
     private let opusCodec: OpusVoiceCodec?
-    private let playoutBuffer = AdaptiveVoicePlayoutBuffer()
+    private let voiceMediaCoreMode: VoiceMediaCoreMode
+    private var playoutEngine: VoicePlayoutEngine
     private var isPlaybackReady = false
     private var isCaptureReady = false
     private var captureSendState: CaptureSendState = .idle
     private var captureSendCancellationGeneration: UInt64 = 0
     private var inputTapInstalled = false
     private var pendingPlaybackBuffers: [AVAudioPCMBuffer] = []
+    private var pendingRemoteAudioPayloads: [PendingRemoteAudioPayload] = []
     private var pendingRemoteAudioChunks: [PendingRemoteAudioChunk] = []
     private var scheduledPlaybackBufferCount = 0
+    private var remoteAudioReceiveEpoch: UInt64 = 0
     private var opusPlayoutReportBudget = 8
     private var opusPlayoutInvariantBudget = 4
     private var playbackStartTask: Task<Void, Never>?
@@ -985,6 +1108,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
     private let maximumPendingPlaybackBuffers = 24
     private let maximumPendingRemoteAudioChunks = 24
     private var playbackBufferReportBudget = 8
+    private var playbackLockBusyReportBudget = 3
     private let initialSendAudioChunk: (@Sendable (String) async throws -> Void)?
     private var currentSendAudioChunk: (@Sendable (String) async throws -> Void)?
     private var capturedBufferReportBudget = 3
@@ -1000,7 +1124,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
         senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
         outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .legacyPCM,
-        outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback
+        outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
+        voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.mode()
     ) {
         self.initialSendAudioChunk = sendAudioChunk
         self.currentSendAudioChunk = sendAudioChunk
@@ -1008,6 +1133,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         self.senderConfiguration = senderConfiguration
         self.outboundVoiceMediaPolicy = outboundVoiceMediaPolicy
         self.outboundOpusEncodingPolicy = outboundOpusEncodingPolicy
+        self.voiceMediaCoreMode = voiceMediaCoreMode
+        self.playoutEngine = VoicePlayoutEngineFactory.make(mode: voiceMediaCoreMode)
         self.opusCodec = try? OpusVoiceCodec(
             encodingPolicy: outboundOpusEncodingPolicy
         )
@@ -1045,6 +1172,38 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                 metadata: ["configured": String(handler != nil)]
             )
         }
+    }
+
+    func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {
+        let previousConfiguration = senderConfigurationSnapshot()
+        setSenderConfiguration(configuration)
+        Task {
+            await audioChunkSender.updateConfiguration(configuration)
+        }
+        guard previousConfiguration != configuration else { return }
+        Task {
+            await report(
+                "Updated media session sender configuration",
+                metadata: [
+                    "maximumPayloadsPerMessage": String(configuration.maximumPayloadsPerMessage),
+                    "maximumInFlightSends": String(configuration.maximumInFlightSends),
+                    "minimumDispatchSpacingMs": String(
+                        configuration.minimumPayloadDispatchSpacingNanoseconds / 1_000_000
+                    ),
+                    "sendTimeoutMs": configuration.sendTimeoutNanoseconds
+                        .map { String($0 / 1_000_000) } ?? "none",
+                    "dropsPendingPayloadsAfterSlowSend": String(configuration.dropsPendingPayloadsAfterSlowSend),
+                ]
+            )
+        }
+    }
+
+    func resetOutgoingAudioTransport(reason: String) async {
+        await audioChunkSender.reset()
+        await report(
+            "Reset outgoing audio transport",
+            metadata: ["reason": reason]
+        )
     }
 
     func updateOutboundVoiceMediaPolicy(_ policy: VoiceMediaPayloadFormat) {
@@ -1160,7 +1319,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         )
         try withReceivePlaybackLock {
             isPlaybackReady = true
-            try drainPendingRemoteAudioChunksIfReady()
+            try drainPendingRemoteAudioIfReady()
         }
 
         let requiresCapture = startupMode == .interactive
@@ -1189,12 +1348,59 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         return try body()
     }
 
+    private nonisolated func tryWithReceivePlaybackLock<T>(_ body: () throws -> T) rethrows -> T? {
+        guard receivePlaybackLock.try() else { return nil }
+        defer { receivePlaybackLock.unlock() }
+        return try body()
+    }
+
+#if DEBUG
+    func lockReceivePlaybackForTesting() {
+        receivePlaybackLock.lock()
+    }
+
+    func unlockReceivePlaybackForTesting() {
+        receivePlaybackLock.unlock()
+    }
+
+    func markAudioCaptureReadyAndSendingForTesting() {
+        withReceivePlaybackLock {
+            isPlaybackReady = true
+        }
+        isCaptureReady = true
+        setSendingAudio(true)
+    }
+#endif
+
+    private nonisolated func senderConfigurationSnapshot() -> MediaTransportSenderConfiguration {
+        senderConfigurationLock.lock()
+        defer { senderConfigurationLock.unlock() }
+        return senderConfiguration
+    }
+
+    private nonisolated func setSenderConfiguration(
+        _ configuration: MediaTransportSenderConfiguration
+    ) {
+        senderConfigurationLock.lock()
+        senderConfiguration = configuration
+        senderConfigurationLock.unlock()
+    }
+
     func startSendingAudio() async throws {
         let cancellationGeneration = currentCaptureSendCancellationGeneration()
         if !isPlaybackReady || !isCaptureReady {
             try await start(activationMode: .appManaged, startupMode: .interactive)
         }
         resetCaptureReportingBudgets()
+        await audioChunkSender.updateConfiguration(senderConfigurationSnapshot())
+        await audioChunkSender.updateSendChunk(currentSendAudioChunk)
+        if isSendingAudio() {
+            await report(
+                "Joined existing audio capture media epoch",
+                metadata: ["reason": "already-sending"]
+            )
+            return
+        }
         let captureStartPlan = CaptureTransmitStartPlan.forCurrentCapturePath(
             isCaptureReady: isCaptureReady,
             engineIsRunning: captureEngine.isRunning,
@@ -1204,7 +1410,6 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         if captureStartPlan.shouldRefreshRoute {
             try refreshCapturePathForCurrentRoute()
         }
-        await audioChunkSender.updateSendChunk(currentSendAudioChunk)
         await report(
             "Starting audio capture with transport state",
             metadata: ["configured": String(currentSendAudioChunk != nil)]
@@ -1232,7 +1437,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             finishCaptureStopGraceIfNeeded(expectedDeadlineNanoseconds: stopGraceDeadline)
         }
         await audioChunkSender.finishDraining(
-            timeoutNanoseconds: senderConfiguration.stopDrainTimeoutNanoseconds
+            timeoutNanoseconds: senderConfigurationSnapshot().stopDrainTimeoutNanoseconds
         )
     }
 
@@ -1247,6 +1452,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
     func beginRemoteAudioReceiveEpoch() {
         withReceivePlaybackLock {
+            remoteAudioReceiveEpoch &+= 1
             playbackStartTask?.cancel()
             playbackStartTask = nil
             playbackCushionTask?.cancel()
@@ -1254,11 +1460,16 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             playbackNodeStartupReassertionTask?.cancel()
             playbackNodeStartupReassertionTask = nil
             pendingPlaybackBuffers.removeAll(keepingCapacity: false)
+            pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
             pendingRemoteAudioChunks.removeAll(keepingCapacity: false)
             resetScheduledPlaybackBufferCount()
-            playoutBuffer.reset()
+            playoutEngine.reset(
+                epoch: VoiceReceiveEpochID(rawValue: remoteAudioReceiveEpoch),
+                nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
             resetOpusPlayoutReportBudgets()
             resetPlaybackBufferReportBudget()
+            resetPlaybackLockBusyReportBudget()
             playerNode.stop()
             playerNode.reset()
         }
@@ -1267,12 +1478,45 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         }
     }
 
+    nonisolated func currentRemoteAudioReceiveEpoch() -> UInt64 {
+        withReceivePlaybackLock { remoteAudioReceiveEpoch }
+    }
+
     @discardableResult
     func receiveRemoteAudioChunk(
         _ payload: String,
         playbackProfile: MediaSessionPlaybackProfile
     ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?
+    ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: expectedReceiveEpoch,
+            playbackDeadlineNanoseconds: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds: UInt64?
+    ) async -> Bool {
         var decodedPayload = true
+        var queuedPendingPayloadCount: Int?
         var queuedPendingChunkCount: Int?
         var playbackFailure: String?
         var recoveryQueuedChunkCount: Int?
@@ -1280,6 +1524,36 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         var acceptedForPlayback = false
         do {
             try withReceivePlaybackLock {
+                if let expectedReceiveEpoch,
+                   expectedReceiveEpoch != remoteAudioReceiveEpoch {
+                    return
+                }
+                if let playbackDeadlineNanoseconds,
+                   DispatchTime.now().uptimeNanoseconds >= playbackDeadlineNanoseconds {
+                    return
+                }
+                if !isPlaybackReady {
+                    switch validateRemoteAudioPayloadForDeferredDecode(
+                        payload,
+                        playbackProfile: playbackProfile
+                    ) {
+                    case .invalid:
+                        decodedPayload = false
+                    case .empty:
+                        acceptedForPlayback = false
+                    case .playable:
+                        enqueuePendingRemoteAudioPayload(
+                            PendingRemoteAudioPayload(
+                                payload: payload,
+                                playbackProfile: playbackProfile,
+                                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds
+                            )
+                        )
+                        queuedPendingPayloadCount = pendingRemoteAudioPayloadCount()
+                        acceptedForPlayback = true
+                    }
+                    return
+                }
                 guard let decodedResult = decodedCanonicalPCMChunks(
                     from: payload,
                     playbackProfile: playbackProfile
@@ -1347,6 +1621,11 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                     "pendingChunkCount": String(queuedPendingChunkCount),
                 ]
             )
+        } else if let queuedPendingPayloadCount {
+            await report(
+                "Queued remote audio payload until playback ready",
+                metadata: ["pendingPayloadCount": String(queuedPendingPayloadCount)]
+            )
         } else if let queuedPendingChunkCount {
             await report(
                 "Queued remote audio chunk until playback ready",
@@ -1371,6 +1650,55 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             }
         }
         return acceptedForPlayback
+    }
+
+    private nonisolated func validateRemoteAudioPayloadForDeferredDecode(
+        _ payload: String,
+        playbackProfile _: MediaSessionPlaybackProfile
+    ) -> DeferredRemoteAudioPayloadValidation {
+        guard let frames = VoiceAudioFramePayloadCodec.decodeTransportFrames(payload) else {
+            return .invalid
+        }
+        var hasPlayableFrame = false
+        for frame in frames {
+            switch frame {
+            case .legacyPCM(let data):
+                if !data.isEmpty {
+                    hasPlayableFrame = true
+                }
+            case .opus(let opusFrame):
+                guard opusCodec != nil else {
+                    reportCodecNegotiationMismatch(
+                        frame: opusFrame,
+                        reason: "opus-codec-unavailable"
+                    )
+                    return .invalid
+                }
+                hasPlayableFrame = true
+            case .binaryOpusV1(let packet):
+                guard opusCodec != nil else {
+                    reportCodecNegotiationMismatch(
+                        frame: packet.opusFramePayload,
+                        reason: "opus-codec-unavailable"
+                    )
+                    return .invalid
+                }
+                hasPlayableFrame = true
+            }
+        }
+        return hasPlayableFrame ? .playable : .empty
+    }
+
+    private nonisolated func voicePacket(from opusFrame: VoiceOpusFramePayload) throws -> VoicePacketV1 {
+        var flags: UInt16 = 0
+        if opusFrame.features.contains(VoiceMediaCapabilities.fecFeature) {
+            flags |= VoicePacketV1Codec.Flag.inBandFEC.rawValue
+        }
+        return try VoicePacketV1(
+            frameIndex: opusFrame.frameIndex,
+            flags: flags,
+            opusPayload: opusFrame.packet
+        )
     }
 
     private nonisolated func decodedCanonicalPCMChunks(
@@ -1409,8 +1737,10 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                     return nil
                 }
                 do {
-                    let result = try playoutBuffer.insert(
-                        frame: opusFrame,
+                    let packet = try voicePacket(from: opusFrame)
+                    let result = try playoutEngine.insert(
+                        packet: packet,
+                        epoch: VoiceReceiveEpochID(rawValue: remoteAudioReceiveEpoch),
                         playbackProfile: playbackProfile,
                         decode: { frame in try opusCodec.decode(frame.packet) },
                         decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
@@ -1446,6 +1776,47 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                         )
                     }
                     return nil
+                }
+            case .binaryOpusV1(let packet):
+                let opusFrame = packet.opusFramePayload
+                guard let opusCodec else {
+                    reportCodecNegotiationMismatch(
+                        frame: opusFrame,
+                        reason: "opus-codec-unavailable"
+                    )
+                    continue
+                }
+                do {
+                    let result = try playoutEngine.insert(
+                        packet: packet,
+                        epoch: VoiceReceiveEpochID(rawValue: remoteAudioReceiveEpoch),
+                        playbackProfile: playbackProfile,
+                        decode: { frame in try opusCodec.decode(frame.packet) },
+                        decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
+                        plc: { opusCodec.decodePLC() }
+                    )
+                    reportOpusPlayoutResultIfNeeded(
+                        result,
+                        frame: opusFrame,
+                        playbackProfile: playbackProfile
+                    )
+                    if result.duplicateDropCount == 0 && result.lateDropCount == 0 {
+                        acceptedForPlayback = true
+                    }
+                    chunks.append(
+                        contentsOf: result.framesToPlay.map { frame in
+                            DecodedCanonicalPCMChunk(
+                                data: frame.pcmData,
+                                playbackProfile: playbackProfile,
+                                cushionPolicy: .alreadyCushioned
+                            )
+                        }
+                    )
+                } catch {
+                    reportCodecNegotiationMismatch(
+                        frame: opusFrame,
+                        reason: "binary-opus-v1-decode-failed"
+                    )
                 }
             }
         }
@@ -1551,7 +1922,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         }
     }
 
-    func audioRouteDidChange() async {
+    func audioRouteDidChange(allowCaptureRefresh: Bool) async {
         guard isPlaybackReady || isCaptureReady else { return }
         do {
             playbackConverter = nil
@@ -1560,12 +1931,18 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                 try startPlaybackEngineIfNeeded()
                 reassertPlaybackNodeAfterRouteChangeIfNeeded()
             }
-            if isCaptureReady {
+            if allowCaptureRefresh, isCaptureReady {
                 try refreshCapturePathForCurrentRoute()
             }
             await report(
                 "Media session refreshed for audio route change",
-                metadata: audioSessionMetadata(AVAudioSession.sharedInstance())
+                metadata: audioSessionMetadata(AVAudioSession.sharedInstance()).merging(
+                    [
+                        "allowCaptureRefresh": String(allowCaptureRefresh),
+                        "captureReady": String(isCaptureReady),
+                    ],
+                    uniquingKeysWith: { _, new in new }
+                )
             )
         } catch {
             await report(
@@ -1576,11 +1953,23 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
     }
 
     func hasPendingPlayback() -> Bool {
-        withReceivePlaybackLock {
-            !pendingRemoteAudioChunks.isEmpty
+        if let pendingPlayback = tryWithReceivePlaybackLock({
+            !pendingRemoteAudioPayloads.isEmpty
+                || !pendingRemoteAudioChunks.isEmpty
                 || !pendingPlaybackBuffers.isEmpty
                 || scheduledPlaybackBufferCountSnapshot() > 0
+        }) {
+            return pendingPlayback
         }
+        if consumePlaybackLockBusyReportBudget() {
+            Task {
+                await report(
+                    "Receive playback lock busy while checking pending playback",
+                    metadata: ["action": "assume-pending"]
+                )
+            }
+        }
+        return true
     }
 
     func close(deactivateAudioSession: Bool) {
@@ -1604,9 +1993,10 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         pendingPlaybackBuffers.removeAll(keepingCapacity: false)
         pendingRemoteAudioChunks.removeAll(keepingCapacity: false)
         resetOutboundFrameAccumulator()
-        playoutBuffer.reset()
+        playoutEngine = VoicePlayoutEngineFactory.make(mode: voiceMediaCoreMode)
         resetOpusPlayoutReportBudgets()
         resetPlaybackBufferReportBudget()
+        resetPlaybackLockBusyReportBudget()
         resetScheduledPlaybackBufferCount()
 
         if inputTapInstalled {
@@ -1730,6 +2120,13 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         stateLock.lock()
         defer { stateLock.unlock() }
         return captureSendCancellationGeneration == expectedCancellationGeneration
+    }
+
+    private func isSendingAudio() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard case .sending = captureSendState else { return false }
+        return true
     }
 
     private func noteCaptureSendCancellationLocked() {
@@ -2046,7 +2443,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         defer { mediaEncodingLock.unlock() }
 
         switch outboundVoiceMediaPolicy {
-        case .opusV2:
+        case .opusV2, .binaryOpusV1:
             guard let opusCodec else {
                 return legacyPCMPayloads(fromCanonicalPCMData: bytes)
             }
@@ -2213,11 +2610,26 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         stateLock.unlock()
     }
 
+    private func consumePlaybackLockBusyReportBudget() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard playbackLockBusyReportBudget > 0 else { return false }
+        playbackLockBusyReportBudget -= 1
+        return true
+    }
+
+    private func resetPlaybackLockBusyReportBudget() {
+        stateLock.lock()
+        playbackLockBusyReportBudget = 3
+        stateLock.unlock()
+    }
+
     private func markScheduledPlaybackBufferCompleted() {
         stateLock.lock()
         scheduledPlaybackBufferCount = max(0, scheduledPlaybackBufferCount - 1)
         let didDrainPendingPlayback = scheduledPlaybackBufferCount == 0
             && pendingPlaybackBuffers.isEmpty
+            && pendingRemoteAudioPayloads.isEmpty
             && pendingRemoteAudioChunks.isEmpty
         stateLock.unlock()
         guard didDrainPendingPlayback else { return }
@@ -2330,6 +2742,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         playbackNodeStartupReassertionTask?.cancel()
         playbackNodeStartupReassertionTask = nil
         pendingPlaybackBuffers.removeAll(keepingCapacity: false)
+        pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
         pendingRemoteAudioChunks.removeAll(keepingCapacity: false)
         resetScheduledPlaybackBufferCount()
         playoutBuffer.reset()
@@ -2347,6 +2760,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         playbackNodeStartupReassertionTask?.cancel()
         playbackNodeStartupReassertionTask = nil
         pendingPlaybackBuffers.removeAll(keepingCapacity: false)
+        pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
         resetScheduledPlaybackBufferCount()
         playerNode.stop()
         playerNode.reset()
@@ -2427,7 +2841,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         try startPlaybackEngineIfNeeded()
         try withReceivePlaybackLock {
             isPlaybackReady = true
-            try drainPendingRemoteAudioChunksIfReady()
+            try drainPendingRemoteAudioIfReady()
         }
         setState(.connected)
     }
@@ -2446,6 +2860,21 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
     private func pendingPlaybackBufferCount() -> Int {
         pendingPlaybackBuffers.count
+    }
+
+    private nonisolated func enqueuePendingRemoteAudioPayload(
+        _ payload: PendingRemoteAudioPayload
+    ) {
+        pendingRemoteAudioPayloads.append(payload)
+        if pendingRemoteAudioPayloads.count > maximumPendingRemoteAudioChunks {
+            pendingRemoteAudioPayloads.removeFirst(
+                pendingRemoteAudioPayloads.count - maximumPendingRemoteAudioChunks
+            )
+        }
+    }
+
+    private nonisolated func pendingRemoteAudioPayloadCount() -> Int {
+        pendingRemoteAudioPayloads.count
     }
 
     private nonisolated func enqueuePendingRemoteAudioChunk(
@@ -2467,6 +2896,55 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
     private nonisolated func pendingRemoteAudioChunkCount() -> Int {
         pendingRemoteAudioChunks.count
+    }
+
+    private func drainPendingRemoteAudioIfReady() throws {
+        try drainPendingRemoteAudioPayloadsIfReady()
+        try drainPendingRemoteAudioChunksIfReady()
+    }
+
+    private func drainPendingRemoteAudioPayloadsIfReady() throws {
+        guard isPlaybackReady else { return }
+        guard !pendingRemoteAudioPayloads.isEmpty else { return }
+        let payloads = pendingRemoteAudioPayloads
+        pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
+        for payload in payloads {
+            if let playbackDeadlineNanoseconds = payload.playbackDeadlineNanoseconds,
+               DispatchTime.now().uptimeNanoseconds >= playbackDeadlineNanoseconds {
+                Task {
+                    await report(
+                        "Dropped pending remote audio payload after playback deadline",
+                        metadata: [
+                            "playbackProfile": String(describing: payload.playbackProfile),
+                            "reason": "playback-deadline-elapsed",
+                        ]
+                    )
+                }
+                continue
+            }
+            guard let decodedResult = decodedCanonicalPCMChunks(
+                from: payload.payload,
+                playbackProfile: payload.playbackProfile
+            ) else {
+                Task {
+                    await report(
+                        "Dropped pending remote audio payload after decode failed",
+                        metadata: [
+                            "playbackProfile": String(describing: payload.playbackProfile),
+                            "reason": "decode-failed",
+                        ]
+                    )
+                }
+                continue
+            }
+            for chunk in decodedResult.chunks {
+                try schedulePlayback(
+                    for: chunk.data,
+                    playbackProfile: chunk.playbackProfile,
+                    cushionPolicy: chunk.cushionPolicy
+                )
+            }
+        }
     }
 
     private func drainPendingRemoteAudioChunksIfReady() throws {
