@@ -677,9 +677,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
-        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
-            reason: "remote-transmit-stopped"
-        )
+        resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
@@ -696,9 +694,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
-        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
-            reason: "remote-transmit-stopped"
-        )
+        resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:draining")
@@ -719,9 +715,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
-        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
-            reason: "local-transmit-start"
-        )
+        resetIncomingPacketAudioPayloadQueues(reason: "local-transmit-start")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         diagnostics.record(
             .media,
@@ -1386,6 +1380,7 @@ extension PTTViewModel {
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        resetIncomingPacketAudioPayloadQueues(reason: "remote-receive-epoch-start")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         clearFirstAudioPlaybackAckSentState(
             contactID: contactID,
@@ -1406,6 +1401,11 @@ extension PTTViewModel {
             ]
         )
         return true
+    }
+
+    func resetIncomingPacketAudioPayloadQueues(reason: String) {
+        mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(reason: reason)
+        mediaRuntime.mediaRelayClient?.resetIncomingAudioPayloadQueue(reason: reason)
     }
 
     func isExpectedBackendSyncCancellation(_ error: Error) -> Bool {

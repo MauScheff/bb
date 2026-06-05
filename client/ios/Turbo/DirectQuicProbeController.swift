@@ -2031,9 +2031,44 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     private func enqueueIncomingAudioPayload(
         _ incomingPayload: TurboMediaRelayIncomingAudioPayload
     ) {
-        incomingAudioPayloadQueue.enqueue { [onIncomingAudioPayload] in
+        let expirationNanoseconds = Self.liveAudioHandlerExpirationDeadline(
+            receivedAtNanoseconds: incomingPayload.receivedAtNanoseconds,
+            intervalNanoseconds: incomingAudioHandlerExpirationNanoseconds
+        )
+        incomingAudioPayloadQueue.enqueue(
+            expiringAtNanoseconds: expirationNanoseconds,
+            onExpired: { [weak self] in
+                guard let self else { return }
+                let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+                let localQueueDelayNanoseconds =
+                    nowNanoseconds >= incomingPayload.receivedAtNanoseconds
+                    ? nowNanoseconds - incomingPayload.receivedAtNanoseconds
+                    : 0
+                await self.report(
+                    "Dropped expired media relay incoming audio payload before app handler",
+                    metadata: self.baseMetadata().merging(
+                        [
+                            "mediaMode": incomingPayload.mediaMode.rawValue,
+                            "sequenceNumber": incomingPayload.sequenceNumber.map(String.init) ?? "none",
+                            "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                            "thresholdMs": String(self.incomingAudioHandlerExpirationNanoseconds / 1_000_000),
+                        ],
+                        uniquingKeysWith: { _, new in new }
+                    )
+                )
+            }
+        ) { [onIncomingAudioPayload] in
             await onIncomingAudioPayload(incomingPayload)
         }
+    }
+
+    private static func liveAudioHandlerExpirationDeadline(
+        receivedAtNanoseconds: UInt64,
+        intervalNanoseconds: UInt64
+    ) -> UInt64? {
+        guard intervalNanoseconds > 0 else { return nil }
+        let (deadline, overflow) = receivedAtNanoseconds.addingReportingOverflow(intervalNanoseconds)
+        return overflow ? UInt64.max : deadline
     }
 
     private func nextSequenceNumber() -> UInt64 {

@@ -837,6 +837,19 @@ extension PTTViewModel {
         ingressContext: IncomingAudioIngressContext? = nil
     ) async {
         let applicationState = currentApplicationState()
+        guard !dropIncomingAudioAfterCancelledTransportDeliveryIfNeeded(
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: transportSequenceNumber ?? ingressContext?.sequenceNumber,
+            receivedAtNanoseconds: ingressContext?.receivedAtNanoseconds,
+            senderSentAtMilliseconds: ingressContext?.sentAtMilliseconds,
+            source: ingressContext?.source ?? "incoming-audio",
+            stage: "before-admission"
+        ) else {
+            return
+        }
         configureMediaEncryptionSessionIfPossible(
             contactID: contactID,
             channelID: channelID,
@@ -1148,6 +1161,19 @@ extension PTTViewModel {
         let senderSentAtMilliseconds = admittedPacket.senderSentAtMilliseconds
         let localQueueDelayNanoseconds = admittedPacket.localQueueDelayNanoseconds
         let frameDurationNanoseconds = admittedPacket.frameDurationNanoseconds
+        guard !dropIncomingAudioAfterCancelledTransportDeliveryIfNeeded(
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: playbackSequenceNumber,
+            receivedAtNanoseconds: admittedPacket.ingressReceivedAtNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            source: ingressContext?.source ?? "incoming-audio",
+            stage: "after-admission"
+        ) else {
+            return
+        }
         if let expectedReceiveEpoch,
            mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != expectedReceiveEpoch {
             recordIncomingAudioIngressSummaryIfNeeded(
@@ -1924,6 +1950,55 @@ extension PTTViewModel {
                 "sequenceNumber": sequenceNumber.map(String.init) ?? "none",
                 "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
                 "repairTriggered": String(repaired),
+            ]
+        )
+        return true
+    }
+
+    private func dropIncomingAudioAfterCancelledTransportDeliveryIfNeeded(
+        channelID: String,
+        fromDeviceID: String,
+        contactID: UUID,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        sequenceNumber: UInt64?,
+        receivedAtNanoseconds: UInt64?,
+        senderSentAtMilliseconds: Int64?,
+        source: String,
+        stage: String
+    ) -> Bool {
+        guard Task.isCancelled else { return false }
+
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let effectiveReceivedAtNanoseconds = receivedAtNanoseconds ?? nowNanoseconds
+        let localQueueDelayNanoseconds =
+            nowNanoseconds >= effectiveReceivedAtNanoseconds
+            ? nowNanoseconds - effectiveReceivedAtNanoseconds
+            : 0
+        recordIncomingAudioIngressSummaryIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: sequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            freshnessDecision: "dropped-cancelled-delivery",
+            playbackAccepted: false,
+            source: source
+        )
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Dropped incoming audio after transport delivery was cancelled",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": fromDeviceID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "sequenceNumber": sequenceNumber.map(String.init) ?? "none",
+                "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                "source": source,
+                "stage": stage,
             ]
         )
         return true

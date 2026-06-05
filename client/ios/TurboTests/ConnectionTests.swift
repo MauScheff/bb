@@ -20922,6 +20922,112 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func mediaRelayIncomingAudioQueueResetCancelsMainActorPendingPacketsAtReceiveEpochStart() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 0)
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready, remoteAudioReadiness: .ready)
+            )
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: "channel-123",
+            localDeviceId: "local-device",
+            peerDeviceId: "peer-device",
+            onIncomingAudioPayload: { [weak viewModel] incomingPayload in
+                await viewModel?.handleIncomingAudioPayload(
+                    incomingPayload.payload,
+                    channelID: "channel-123",
+                    fromUserID: "peer-user",
+                    fromDeviceID: "peer-device",
+                    contactID: contactID,
+                    incomingAudioTransport: .mediaRelayPacket,
+                    transportSequenceNumber: incomingPayload.sequenceNumber,
+                    ingressContext: IncomingAudioIngressContext(
+                        receivedAtNanoseconds: incomingPayload.receivedAtNanoseconds,
+                        sequenceNumber: incomingPayload.sequenceNumber,
+                        sentAtMilliseconds: incomingPayload.sentAtMilliseconds,
+                        source: "media-relay-packet"
+                    )
+                )
+            },
+            incomingAudioMaxConcurrentHandlers: 4,
+            incomingAudioMaxPendingHandlers: 96
+        )
+        viewModel.mediaRuntime.replaceMediaRelayClient(with: relayClient)
+        defer { relayClient.close() }
+
+        for sequenceNumber in 0..<120 {
+            relayClient.injectIncomingAudioPayloadForTesting(
+                TurboMediaRelayIncomingAudioPayload(
+                    payload: "stale-\(sequenceNumber)",
+                    mediaMode: .quicDatagram,
+                    sequenceNumber: UInt64(sequenceNumber),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                    receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
+                )
+            )
+        }
+
+        let mainActorBlockDeadline = DispatchTime.now().uptimeNanoseconds + 150_000_000
+        while DispatchTime.now().uptimeNanoseconds < mainActorBlockDeadline {}
+        let didBeginNextEpoch = viewModel.beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: .transmitPrepareSignal,
+            controlTransport: "media-relay"
+        )
+        #expect(didBeginNextEpoch)
+        viewModel.markRemoteAudioActivity(for: contactID, source: .transmitPrepareSignal)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+
+        relayClient.injectIncomingAudioPayloadForTesting(
+            TurboMediaRelayIncomingAudioPayload(
+                payload: "fresh",
+                mediaMode: .quicDatagram,
+                sequenceNumber: 1_000,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh"])
+    }
+
+    @MainActor
     @Test func directQuicAudioAfterRemoteTransmitStopIsDroppedUntilNextReceiveEpoch() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
