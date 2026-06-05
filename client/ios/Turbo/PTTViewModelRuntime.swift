@@ -1232,6 +1232,988 @@ enum IncomingAudioIngressAdmission: Sendable {
     case rejected(IncomingAudioIngressRejection)
 }
 
+nonisolated struct LiveAudioReceivePacket: Sendable {
+    let payload: String
+    let channelID: String
+    let fromUserID: String
+    let fromDeviceID: String
+    let contactID: UUID
+    let transport: IncomingAudioPayloadTransport
+    let transportSequenceNumber: UInt64?
+    let ingressContext: IncomingAudioIngressContext
+}
+
+nonisolated struct LiveAudioReceiveContext: @unchecked Sendable {
+    let contactID: UUID
+    let channelID: String
+    let fromDeviceID: String
+    let transport: IncomingAudioPayloadTransport
+    let receiveEpoch: UInt64
+    let session: any MediaSession
+    let sessionReceiveEpoch: UInt64
+    let ingressPolicy: IncomingAudioIngressConfiguration
+    let playbackProfile: MediaSessionPlaybackProfile
+    let playbackDeadlineNanoseconds: UInt64?
+    let ingressExecutor: IncomingAudioIngressExecutor
+}
+
+private extension IncomingAudioPayloadTransport {
+    nonisolated var liveReceiveAuthorityRank: Int {
+        switch self {
+        case .relayWebSocket:
+            return 0
+        case .mediaRelayTcp:
+            return 1
+        case .mediaRelayPacket:
+            return 2
+        case .directQuic:
+            return 3
+        }
+    }
+
+    nonisolated var usesPacketPrePlaybackReadinessGrace: Bool {
+        isUnreliablePacketMedia
+    }
+}
+
+nonisolated struct LiveAudioReceiveDiagnosticSummary: Equatable, Sendable {
+    let contactID: UUID
+    let channelID: String
+    let fromDeviceID: String
+    let transport: IncomingAudioPayloadTransport
+    let receiveEpoch: UInt64
+    let sampleCount: Int
+    let acceptedCount: Int
+    let droppedCount: Int
+    let playbackAcceptedCount: Int
+    let playbackRejectedCount: Int
+    let maxLocalQueueDelayNanoseconds: UInt64
+    let lastSequenceNumber: UInt64?
+    let lastFreshnessDecision: String
+    let lastPlaybackDecision: String
+}
+
+nonisolated struct LiveAudioReceiveDropDiagnostic: Sendable {
+    let contactID: UUID
+    let channelID: String
+    let fromDeviceID: String
+    let transport: IncomingAudioPayloadTransport
+    let receiveEpoch: UInt64
+    let sequenceNumber: UInt64?
+    let localQueueDelayNanoseconds: UInt64
+    let senderSentAtMilliseconds: Int64?
+    let freshnessDecision: String
+    let reason: String
+    let thresholdNanoseconds: UInt64?
+    let shouldRecordContract: Bool
+    let shouldRecordSuppression: Bool
+}
+
+nonisolated struct LiveAudioReceivePlaybackReadinessDiagnostic: Sendable {
+    let contactID: UUID
+    let channelID: String
+    let fromDeviceID: String
+    let transport: IncomingAudioPayloadTransport
+    let receiveEpoch: UInt64
+    let readiness: MediaSessionReceivePlaybackReadiness
+    let pendingPacketCount: Int
+    let maxPendingAgeNanoseconds: UInt64
+    let action: String
+}
+
+actor LiveMediaDiagnosticsSink {
+    private struct SummaryKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let fromDeviceID: String
+        let transport: IncomingAudioPayloadTransport
+        let receiveEpoch: UInt64
+    }
+
+    private struct SummaryState {
+        var sampleCount = 0
+        var samplesSinceLastReport = 0
+        var acceptedCount = 0
+        var droppedCount = 0
+        var playbackAcceptedCount = 0
+        var playbackRejectedCount = 0
+        var maxLocalQueueDelayNanoseconds: UInt64 = 0
+        var lastSequenceNumber: UInt64?
+        var lastFreshnessDecision = "none"
+        var lastPlaybackDecision = "none"
+    }
+
+    private var summaries: [SummaryKey: SummaryState] = [:]
+    private let reportEverySamples: Int
+
+    init(reportEverySamples: Int = 64) {
+        self.reportEverySamples = max(1, reportEverySamples)
+    }
+
+    func reset(contactID: UUID) {
+        summaries = summaries.filter { $0.key.contactID != contactID }
+    }
+
+    func resetAll() {
+        summaries = [:]
+    }
+
+    func observe(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        transport: IncomingAudioPayloadTransport,
+        receiveEpoch: UInt64,
+        sequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64,
+        freshnessDecision: String,
+        playbackAccepted: Bool?
+    ) -> LiveAudioReceiveDiagnosticSummary? {
+        let key = SummaryKey(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            transport: transport,
+            receiveEpoch: receiveEpoch
+        )
+        var state = summaries[key] ?? SummaryState()
+        let previousFreshnessDecision = state.lastFreshnessDecision
+        let previousPlaybackDecision = state.lastPlaybackDecision
+        state.sampleCount += 1
+        state.samplesSinceLastReport += 1
+        state.lastSequenceNumber = sequenceNumber
+        state.maxLocalQueueDelayNanoseconds = max(
+            state.maxLocalQueueDelayNanoseconds,
+            localQueueDelayNanoseconds
+        )
+        state.lastFreshnessDecision = freshnessDecision
+        switch playbackAccepted {
+        case .some(true):
+            state.acceptedCount += 1
+            state.playbackAcceptedCount += 1
+            state.lastPlaybackDecision = "accepted"
+        case .some(false):
+            state.acceptedCount += 1
+            state.playbackRejectedCount += 1
+            state.lastPlaybackDecision = "rejected"
+        case .none:
+            state.droppedCount += 1
+            state.playbackRejectedCount += 1
+            state.lastPlaybackDecision = "rejected"
+        }
+        let decisionChanged =
+            previousFreshnessDecision != state.lastFreshnessDecision
+            || previousPlaybackDecision != state.lastPlaybackDecision
+        let shouldReport =
+            state.sampleCount == 1
+            || decisionChanged
+            || state.samplesSinceLastReport >= reportEverySamples
+        guard shouldReport else {
+            summaries[key] = state
+            return nil
+        }
+        state.samplesSinceLastReport = 0
+        summaries[key] = state
+        return LiveAudioReceiveDiagnosticSummary(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            transport: transport,
+            receiveEpoch: receiveEpoch,
+            sampleCount: state.sampleCount,
+            acceptedCount: state.acceptedCount,
+            droppedCount: state.droppedCount,
+            playbackAcceptedCount: state.playbackAcceptedCount,
+            playbackRejectedCount: state.playbackRejectedCount,
+            maxLocalQueueDelayNanoseconds: state.maxLocalQueueDelayNanoseconds,
+            lastSequenceNumber: state.lastSequenceNumber,
+            lastFreshnessDecision: state.lastFreshnessDecision,
+            lastPlaybackDecision: state.lastPlaybackDecision
+        )
+    }
+}
+
+actor LiveAudioReceiveExecutor {
+    private struct ContextKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let fromDeviceID: String
+        let transport: IncomingAudioPayloadTransport
+    }
+
+    private struct ReceiveAuthorityKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let fromDeviceID: String
+        let receiveEpoch: UInt64
+    }
+
+    private struct ReceiveAuthorityState {
+        var transport: IncomingAudioPayloadTransport
+    }
+
+    private struct PendingPlaybackKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let fromDeviceID: String
+        let transport: IncomingAudioPayloadTransport
+        let receiveEpoch: UInt64
+    }
+
+    private struct PendingPlaybackPacket {
+        let admittedPacket: IncomingAudioIngressAcceptedPacket
+        let packet: LiveAudioReceivePacket
+        let context: LiveAudioReceiveContext
+        let diagnosticsSink: LiveMediaDiagnosticsSink
+        let onFirstPlaybackAccepted: @Sendable (IncomingAudioIngressAcceptedPacket) async -> Void
+        let onDiagnosticSummary: @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void
+        let onDropDiagnostic: @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void
+        let onPlaybackReadinessDiagnostic:
+            @Sendable (LiveAudioReceivePlaybackReadinessDiagnostic) async -> Void
+    }
+
+    private enum ReceiveAuthorityDecision {
+        case authoritative
+        case standby(authoritativeTransport: IncomingAudioPayloadTransport)
+    }
+
+    private static let maximumPendingPlaybackPacketsPerKey = 96
+    private static let playbackReadinessPollNanoseconds: UInt64 = 20_000_000
+    private static let packetPrePlaybackReadinessGraceNanoseconds: UInt64 = 2_000_000_000
+
+    private var contextsByKey: [ContextKey: LiveAudioReceiveContext] = [:]
+    private var playbackExecutorsByKey: [ContextKey: LiveAudioPlaybackExecutor] = [:]
+    private var postAdmissionExecutorsByKey: [ReceiveAuthorityKey: LiveAudioReceivePostAdmissionExecutor] = [:]
+    private var receiveAuthorityByKey: [ReceiveAuthorityKey: ReceiveAuthorityState] = [:]
+    private var pendingPlaybackPacketsByKey: [PendingPlaybackKey: [PendingPlaybackPacket]] = [:]
+    private var pendingPlaybackReadinessTasksByKey: [PendingPlaybackKey: Task<Void, Never>] = [:]
+
+    func reset(contactID: UUID) {
+        contextsByKey = contextsByKey.filter { $0.key.contactID != contactID }
+        playbackExecutorsByKey = playbackExecutorsByKey.filter { $0.key.contactID != contactID }
+        postAdmissionExecutorsByKey = postAdmissionExecutorsByKey.filter { $0.key.contactID != contactID }
+        receiveAuthorityByKey = receiveAuthorityByKey.filter { $0.key.contactID != contactID }
+        pendingPlaybackPacketsByKey = pendingPlaybackPacketsByKey.filter {
+            $0.key.contactID != contactID
+        }
+        let tasksToCancel = pendingPlaybackReadinessTasksByKey.filter {
+            $0.key.contactID == contactID
+        }
+        pendingPlaybackReadinessTasksByKey = pendingPlaybackReadinessTasksByKey.filter {
+            $0.key.contactID != contactID
+        }
+        tasksToCancel.values.forEach { $0.cancel() }
+    }
+
+    func resetAll() {
+        contextsByKey = [:]
+        playbackExecutorsByKey = [:]
+        postAdmissionExecutorsByKey = [:]
+        receiveAuthorityByKey = [:]
+        pendingPlaybackPacketsByKey = [:]
+        pendingPlaybackReadinessTasksByKey.values.forEach { $0.cancel() }
+        pendingPlaybackReadinessTasksByKey = [:]
+    }
+
+    func receive(
+        _ packet: LiveAudioReceivePacket,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        makeContext: @Sendable () async -> LiveAudioReceiveContext?,
+        fallbackToMainActorReceive: @Sendable () async -> Void,
+        onFirstPlaybackAccepted: @escaping @Sendable (IncomingAudioIngressAcceptedPacket) async -> Void,
+        onDiagnosticSummary: @escaping @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
+        onDropDiagnostic: @escaping @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void,
+        onPlaybackReadinessDiagnostic: @escaping @Sendable (
+            LiveAudioReceivePlaybackReadinessDiagnostic
+        ) async -> Void = { _ in }
+    ) async {
+        guard let context = await currentContext(for: packet, makeContext: makeContext) else {
+            await fallbackToMainActorReceive()
+            return
+        }
+        let admission = await context.ingressExecutor.admit(
+            IncomingAudioIngressPacket(
+                payload: packet.payload,
+                channelID: packet.channelID,
+                fromDeviceID: packet.fromDeviceID,
+                contactID: packet.contactID,
+                incomingAudioTransport: packet.transport,
+                transportSequenceNumber: packet.transportSequenceNumber,
+                ingressContext: packet.ingressContext,
+                receiveEpoch: context.receiveEpoch
+            ),
+            policy: context.ingressPolicy
+        )
+        switch admission {
+        case .accepted(let admittedPacket):
+            switch receiveAuthorityDecision(for: packet, context: context) {
+            case .authoritative:
+                scheduleAcceptedPacketPlayback(
+                    admittedPacket,
+                    packet: packet,
+                    context: context,
+                    diagnosticsSink: diagnosticsSink,
+                    onFirstPlaybackAccepted: onFirstPlaybackAccepted,
+                    onDiagnosticSummary: onDiagnosticSummary,
+                    onDropDiagnostic: onDropDiagnostic,
+                    onPlaybackReadinessDiagnostic: onPlaybackReadinessDiagnostic
+                )
+
+            case .standby(let authoritativeTransport):
+                scheduleDropDiagnostic(
+                    decision: .drop(
+                        .standbyContinuity(authoritativeTransport: authoritativeTransport)
+                    ),
+                    sequenceNumber: admittedPacket.sequenceNumber,
+                    senderSentAtMilliseconds: admittedPacket.senderSentAtMilliseconds,
+                    localQueueDelayNanoseconds: admittedPacket.localQueueDelayNanoseconds,
+                    packet: packet,
+                    context: context,
+                    diagnosticsSink: diagnosticsSink,
+                    onDiagnosticSummary: onDiagnosticSummary,
+                    onDropDiagnostic: onDropDiagnostic
+                )
+            }
+
+        case .rejected(.duplicatePlaintext(let previousTransport, _)):
+            scheduleDropDiagnostic(
+                decision: .drop(
+                    .duplicatePlaintextStandby(previousTransport: previousTransport)
+                ),
+                sequenceNumber: packet.transportSequenceNumber ?? packet.ingressContext.sequenceNumber,
+                senderSentAtMilliseconds: packet.ingressContext.sentAtMilliseconds,
+                localQueueDelayNanoseconds: Self.localQueueDelayNanoseconds(
+                    since: packet.ingressContext.receivedAtNanoseconds
+                ),
+                packet: packet,
+                context: context,
+                diagnosticsSink: diagnosticsSink,
+                onDiagnosticSummary: onDiagnosticSummary,
+                onDropDiagnostic: onDropDiagnostic
+            )
+
+        case .deferredEncrypted, .rejected(.encryptedOpenFailed), .rejected(.duplicateEncrypted),
+             .rejected(.replayedEncrypted):
+            await fallbackToMainActorReceive()
+
+        case .rejected(
+            .droppedByPlaybackGate(
+                let decision,
+                let sequenceNumber,
+                _,
+                let senderSentAtMilliseconds,
+                let localQueueDelayNanoseconds
+            )
+        ):
+            scheduleDropDiagnostic(
+                decision: decision,
+                sequenceNumber: sequenceNumber,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                packet: packet,
+                context: context,
+                diagnosticsSink: diagnosticsSink,
+                onDiagnosticSummary: onDiagnosticSummary,
+                onDropDiagnostic: onDropDiagnostic
+            )
+        }
+    }
+
+    private static func localQueueDelayNanoseconds(since receivedAtNanoseconds: UInt64) -> UInt64 {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        return nowNanoseconds >= receivedAtNanoseconds
+            ? nowNanoseconds - receivedAtNanoseconds
+            : 0
+    }
+
+    private func receiveAuthorityKey(
+        for packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext
+    ) -> ReceiveAuthorityKey {
+        ReceiveAuthorityKey(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            receiveEpoch: context.receiveEpoch
+        )
+    }
+
+    private func pendingPlaybackKey(
+        for packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext
+    ) -> PendingPlaybackKey {
+        PendingPlaybackKey(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            transport: packet.transport,
+            receiveEpoch: context.receiveEpoch
+        )
+    }
+
+    private func receiveAuthorityDecision(
+        for packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext
+    ) -> ReceiveAuthorityDecision {
+        let key = receiveAuthorityKey(for: packet, context: context)
+        guard let existing = receiveAuthorityByKey[key] else {
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(transport: packet.transport)
+            return .authoritative
+        }
+        guard existing.transport != packet.transport else {
+            return .authoritative
+        }
+        if packet.transport.liveReceiveAuthorityRank > existing.transport.liveReceiveAuthorityRank {
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(transport: packet.transport)
+            return .authoritative
+        }
+        return .standby(authoritativeTransport: existing.transport)
+    }
+
+    private func contextKey(for packet: LiveAudioReceivePacket) -> ContextKey {
+        ContextKey(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            transport: packet.transport
+        )
+    }
+
+    private func currentContext(
+        for packet: LiveAudioReceivePacket,
+        makeContext: @Sendable () async -> LiveAudioReceiveContext?
+    ) async -> LiveAudioReceiveContext? {
+        let key = contextKey(for: packet)
+        if let context = contextsByKey[key],
+           context.session.currentRemoteAudioReceiveEpoch() == context.sessionReceiveEpoch,
+           await context.session.state.canReuseLiveAudioReceiveContext {
+            return context
+        }
+        contextsByKey[key] = nil
+        guard let context = await makeContext() else { return nil }
+        contextsByKey[key] = context
+        return context
+    }
+
+    private func playbackExecutor(for key: ContextKey) -> LiveAudioPlaybackExecutor {
+        if let playbackExecutor = playbackExecutorsByKey[key] {
+            return playbackExecutor
+        }
+        let playbackExecutor = LiveAudioPlaybackExecutor()
+        playbackExecutorsByKey[key] = playbackExecutor
+        return playbackExecutor
+    }
+
+    private func postAdmissionExecutor(for key: ReceiveAuthorityKey) -> LiveAudioReceivePostAdmissionExecutor {
+        if let postAdmissionExecutor = postAdmissionExecutorsByKey[key] {
+            return postAdmissionExecutor
+        }
+        let postAdmissionExecutor = LiveAudioReceivePostAdmissionExecutor()
+        postAdmissionExecutorsByKey[key] = postAdmissionExecutor
+        return postAdmissionExecutor
+    }
+
+    private func scheduleAcceptedPacketPlayback(
+        _ admittedPacket: IncomingAudioIngressAcceptedPacket,
+        packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        onFirstPlaybackAccepted: @escaping @Sendable (IncomingAudioIngressAcceptedPacket) async -> Void,
+        onDiagnosticSummary: @escaping @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
+        onDropDiagnostic: @escaping @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void,
+        onPlaybackReadinessDiagnostic: @escaping @Sendable (
+            LiveAudioReceivePlaybackReadinessDiagnostic
+        ) async -> Void
+    ) {
+        let pendingKey = pendingPlaybackKey(for: packet, context: context)
+        let pendingPacket = PendingPlaybackPacket(
+            admittedPacket: admittedPacket,
+            packet: packet,
+            context: context,
+            diagnosticsSink: diagnosticsSink,
+            onFirstPlaybackAccepted: onFirstPlaybackAccepted,
+            onDiagnosticSummary: onDiagnosticSummary,
+            onDropDiagnostic: onDropDiagnostic,
+            onPlaybackReadinessDiagnostic: onPlaybackReadinessDiagnostic
+        )
+        guard context.session.receivePlaybackReadiness.isReady,
+              pendingPlaybackPacketsByKey[pendingKey]?.isEmpty != false else {
+            enqueuePendingPlaybackPacket(pendingPacket, key: pendingKey)
+            flushPendingPlaybackIfReady(for: pendingKey)
+            return
+        }
+        schedulePlayback(
+            pendingPacket,
+            playbackExecutorKey: contextKey(for: packet),
+            receiveAuthorityKey: receiveAuthorityKey(for: packet, context: context)
+        )
+    }
+
+    private func enqueuePendingPlaybackPacket(
+        _ pendingPacket: PendingPlaybackPacket,
+        key: PendingPlaybackKey
+    ) {
+        var pendingPackets = pendingPlaybackPacketsByKey[key] ?? []
+        pendingPackets.append(pendingPacket)
+        if pendingPackets.count > Self.maximumPendingPlaybackPacketsPerKey {
+            pendingPackets.removeFirst(
+                pendingPackets.count - Self.maximumPendingPlaybackPacketsPerKey
+            )
+        }
+        pendingPlaybackPacketsByKey[key] = pendingPackets
+        emitPlaybackReadinessDiagnostic(
+            key: key,
+            pendingPackets: pendingPackets,
+            readiness: pendingPacket.context.session.receivePlaybackReadiness,
+            action: "held-until-playback-ready",
+            onPlaybackReadinessDiagnostic: pendingPacket.onPlaybackReadinessDiagnostic
+        )
+        schedulePlaybackReadinessMonitorIfNeeded(for: key)
+    }
+
+    private func schedulePlaybackReadinessMonitorIfNeeded(for key: PendingPlaybackKey) {
+        guard pendingPlaybackReadinessTasksByKey[key] == nil else { return }
+        pendingPlaybackReadinessTasksByKey[key] = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.playbackReadinessPollNanoseconds)
+                guard !Task.isCancelled else { return }
+                let shouldContinue = await self?.flushPendingPlaybackIfReady(for: key) ?? false
+                if !shouldContinue { return }
+            }
+        }
+    }
+
+    @discardableResult
+    private func flushPendingPlaybackIfReady(for key: PendingPlaybackKey) -> Bool {
+        guard var pendingPackets = pendingPlaybackPacketsByKey[key],
+              let firstPendingPacket = pendingPackets.first else {
+            pendingPlaybackReadinessTasksByKey[key]?.cancel()
+            pendingPlaybackReadinessTasksByKey[key] = nil
+            return false
+        }
+        let readiness = firstPendingPacket.context.session.receivePlaybackReadiness
+        pendingPackets = dropExpiredPendingPlaybackPackets(
+            pendingPackets,
+            heldForPlaybackReadiness: true
+        )
+        guard !pendingPackets.isEmpty else {
+            pendingPlaybackPacketsByKey[key] = nil
+            pendingPlaybackReadinessTasksByKey[key]?.cancel()
+            pendingPlaybackReadinessTasksByKey[key] = nil
+            return false
+        }
+        pendingPlaybackPacketsByKey[key] = pendingPackets
+        guard readiness.isReady else {
+            emitPlaybackReadinessDiagnostic(
+                key: key,
+                pendingPackets: pendingPackets,
+                readiness: readiness,
+                action: "waiting-for-playback-ready",
+                onPlaybackReadinessDiagnostic: pendingPackets[0].onPlaybackReadinessDiagnostic
+            )
+            return true
+        }
+        pendingPlaybackPacketsByKey[key] = nil
+        pendingPlaybackReadinessTasksByKey[key]?.cancel()
+        pendingPlaybackReadinessTasksByKey[key] = nil
+        emitPlaybackReadinessDiagnostic(
+            key: key,
+            pendingPackets: pendingPackets,
+            readiness: readiness,
+            action: "flushed-after-playback-ready",
+            onPlaybackReadinessDiagnostic: pendingPackets[0].onPlaybackReadinessDiagnostic
+        )
+        for pendingPacket in pendingPackets {
+            schedulePlayback(
+                pendingPacket,
+                playbackExecutorKey: contextKey(for: pendingPacket.packet),
+                receiveAuthorityKey: receiveAuthorityKey(
+                    for: pendingPacket.packet,
+                    context: pendingPacket.context
+                )
+            )
+        }
+        return false
+    }
+
+    private func dropExpiredPendingPlaybackPackets(
+        _ pendingPackets: [PendingPlaybackPacket],
+        heldForPlaybackReadiness: Bool
+    ) -> [PendingPlaybackPacket] {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let nowMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        var freshPackets: [PendingPlaybackPacket] = []
+        for pendingPacket in pendingPackets {
+            if let decision = expiredPendingPlaybackDecision(
+                pendingPacket,
+                nowNanoseconds: nowNanoseconds,
+                nowMilliseconds: nowMilliseconds,
+                heldForPlaybackReadiness: heldForPlaybackReadiness
+            ) {
+                scheduleDropDiagnostic(
+                    decision: decision,
+                    sequenceNumber: pendingPacket.admittedPacket.sequenceNumber,
+                    senderSentAtMilliseconds: pendingPacket.admittedPacket.senderSentAtMilliseconds,
+                    localQueueDelayNanoseconds: pendingLocalQueueDelayNanoseconds(
+                        pendingPacket,
+                        nowNanoseconds: nowNanoseconds
+                    ),
+                    packet: pendingPacket.packet,
+                    context: pendingPacket.context,
+                    diagnosticsSink: pendingPacket.diagnosticsSink,
+                    onDiagnosticSummary: pendingPacket.onDiagnosticSummary,
+                    onDropDiagnostic: pendingPacket.onDropDiagnostic
+                )
+            } else {
+                freshPackets.append(pendingPacket)
+            }
+        }
+        return freshPackets
+    }
+
+    private func expiredPendingPlaybackDecision(
+        _ pendingPacket: PendingPlaybackPacket,
+        nowNanoseconds: UInt64,
+        nowMilliseconds: Int64,
+        heldForPlaybackReadiness: Bool
+    ) -> IncomingAudioPlaybackDecision? {
+        let localQueueDelayNanoseconds = pendingLocalQueueDelayNanoseconds(
+            pendingPacket,
+            nowNanoseconds: nowNanoseconds
+        )
+        let liveBacklogExpirationNanoseconds = pendingPlaybackExpirationNanoseconds(
+            for: pendingPacket,
+            heldForPlaybackReadiness: heldForPlaybackReadiness
+        )
+        if liveBacklogExpirationNanoseconds > 0,
+           localQueueDelayNanoseconds >= liveBacklogExpirationNanoseconds {
+            return .drop(
+                .expiredLiveBacklog(
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    thresholdNanoseconds: liveBacklogExpirationNanoseconds
+                )
+            )
+        }
+        let senderClockExpirationMilliseconds = pendingPlaybackSenderClockExpirationMilliseconds(
+            for: pendingPacket,
+            heldForPlaybackReadiness: heldForPlaybackReadiness
+        )
+        if senderClockExpirationMilliseconds > 0,
+           let senderSentAtMilliseconds = pendingPacket.admittedPacket.senderSentAtMilliseconds,
+           nowMilliseconds >= senderSentAtMilliseconds {
+            let senderClockAgeMilliseconds = nowMilliseconds - senderSentAtMilliseconds
+            if senderClockAgeMilliseconds >= senderClockExpirationMilliseconds {
+                return .drop(
+                    .expiredSenderClockAge(
+                        senderClockAgeMilliseconds: senderClockAgeMilliseconds,
+                        thresholdMilliseconds: senderClockExpirationMilliseconds
+                    )
+                )
+            }
+        }
+        return nil
+    }
+
+    private func pendingPlaybackExpirationNanoseconds(
+        for pendingPacket: PendingPlaybackPacket,
+        heldForPlaybackReadiness: Bool
+    ) -> UInt64 {
+        let configured = pendingPacket.context.ingressPolicy.liveAudioBacklogExpirationNanoseconds
+        guard heldForPlaybackReadiness,
+              pendingPacket.packet.transport.usesPacketPrePlaybackReadinessGrace else {
+            return configured
+        }
+        return max(configured, Self.packetPrePlaybackReadinessGraceNanoseconds)
+    }
+
+    private func pendingPlaybackSenderClockExpirationMilliseconds(
+        for pendingPacket: PendingPlaybackPacket,
+        heldForPlaybackReadiness: Bool
+    ) -> Int64 {
+        let configured = pendingPacket.context.ingressPolicy.liveAudioSenderClockExpirationMilliseconds
+        guard heldForPlaybackReadiness,
+              pendingPacket.packet.transport.usesPacketPrePlaybackReadinessGrace else {
+            return configured
+        }
+        let graceMilliseconds = Int64(Self.packetPrePlaybackReadinessGraceNanoseconds / 1_000_000)
+        return max(configured, graceMilliseconds)
+    }
+
+    private func pendingLocalQueueDelayNanoseconds(
+        _ pendingPacket: PendingPlaybackPacket,
+        nowNanoseconds: UInt64
+    ) -> UInt64 {
+        nowNanoseconds >= pendingPacket.admittedPacket.ingressReceivedAtNanoseconds
+            ? nowNanoseconds - pendingPacket.admittedPacket.ingressReceivedAtNanoseconds
+            : 0
+    }
+
+    private func emitPlaybackReadinessDiagnostic(
+        key: PendingPlaybackKey,
+        pendingPackets: [PendingPlaybackPacket],
+        readiness: MediaSessionReceivePlaybackReadiness,
+        action: String,
+        onPlaybackReadinessDiagnostic: @escaping @Sendable (
+            LiveAudioReceivePlaybackReadinessDiagnostic
+        ) async -> Void
+    ) {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let maxPendingAgeNanoseconds = pendingPackets.map {
+            pendingLocalQueueDelayNanoseconds($0, nowNanoseconds: nowNanoseconds)
+        }.max() ?? 0
+        Task {
+            await onPlaybackReadinessDiagnostic(
+                LiveAudioReceivePlaybackReadinessDiagnostic(
+                    contactID: key.contactID,
+                    channelID: key.channelID,
+                    fromDeviceID: key.fromDeviceID,
+                    transport: key.transport,
+                    receiveEpoch: key.receiveEpoch,
+                    readiness: readiness,
+                    pendingPacketCount: pendingPackets.count,
+                    maxPendingAgeNanoseconds: maxPendingAgeNanoseconds,
+                    action: action
+                )
+            )
+        }
+    }
+
+    private func schedulePlayback(
+        _ pendingPacket: PendingPlaybackPacket,
+        playbackExecutorKey key: ContextKey,
+        receiveAuthorityKey: ReceiveAuthorityKey
+    ) {
+        let playbackExecutor = playbackExecutor(for: key)
+        let postAdmissionExecutor = postAdmissionExecutor(for: receiveAuthorityKey)
+        Task {
+            let playbackAccepted = await playbackExecutor.play(
+                pendingPacket.admittedPacket,
+                context: pendingPacket.context
+            )
+            await postAdmissionExecutor.recordAcceptedPacketPlayback(
+                pendingPacket.admittedPacket,
+                packet: pendingPacket.packet,
+                context: pendingPacket.context,
+                playbackAccepted: playbackAccepted,
+                diagnosticsSink: pendingPacket.diagnosticsSink,
+                onFirstPlaybackAccepted: pendingPacket.onFirstPlaybackAccepted,
+                onDiagnosticSummary: pendingPacket.onDiagnosticSummary,
+            )
+        }
+    }
+
+    private func scheduleDropDiagnostic(
+        decision: IncomingAudioPlaybackDecision,
+        sequenceNumber: UInt64?,
+        senderSentAtMilliseconds: Int64?,
+        localQueueDelayNanoseconds: UInt64,
+        packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        onDiagnosticSummary: @escaping @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
+        onDropDiagnostic: @escaping @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void
+    ) {
+        let postAdmissionExecutor = postAdmissionExecutor(
+            for: receiveAuthorityKey(for: packet, context: context)
+        )
+        Task {
+            await postAdmissionExecutor.recordDrop(
+                decision: decision,
+                sequenceNumber: sequenceNumber,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                packet: packet,
+                context: context,
+                diagnosticsSink: diagnosticsSink,
+                onDiagnosticSummary: onDiagnosticSummary,
+                onDropDiagnostic: onDropDiagnostic
+            )
+        }
+    }
+}
+
+private actor LiveAudioReceivePostAdmissionExecutor {
+        private struct FirstPlaybackAckKey: Hashable {
+            let contactID: UUID
+            let channelID: String
+            let fromDeviceID: String
+            let receiveEpoch: UInt64
+        }
+
+    private struct DropReportKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let fromDeviceID: String
+        let transport: IncomingAudioPayloadTransport
+        let receiveEpoch: UInt64
+        let reason: String
+    }
+
+    private var firstPlaybackAckKeys: Set<FirstPlaybackAckKey> = []
+    private var dropReportCountsByKey: [DropReportKey: Int] = [:]
+
+    func recordAcceptedPacketPlayback(
+        _ admittedPacket: IncomingAudioIngressAcceptedPacket,
+        packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext,
+        playbackAccepted: Bool,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        onFirstPlaybackAccepted: @Sendable (IncomingAudioIngressAcceptedPacket) async -> Void,
+        onDiagnosticSummary: @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void
+    ) async {
+        if playbackAccepted {
+            let ackKey = FirstPlaybackAckKey(
+                contactID: packet.contactID,
+                channelID: packet.channelID,
+                fromDeviceID: packet.fromDeviceID,
+                receiveEpoch: context.receiveEpoch
+            )
+            if !firstPlaybackAckKeys.contains(ackKey) {
+                firstPlaybackAckKeys.insert(ackKey)
+                await onFirstPlaybackAccepted(admittedPacket)
+            }
+        }
+        if let summary = await diagnosticsSink.observe(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            transport: packet.transport,
+            receiveEpoch: context.receiveEpoch,
+            sequenceNumber: admittedPacket.sequenceNumber,
+            localQueueDelayNanoseconds: admittedPacket.localQueueDelayNanoseconds,
+            freshnessDecision: "accepted",
+            playbackAccepted: playbackAccepted
+        ) {
+            await onDiagnosticSummary(summary)
+        }
+    }
+
+    func recordDrop(
+        decision: IncomingAudioPlaybackDecision,
+        sequenceNumber: UInt64?,
+        senderSentAtMilliseconds: Int64?,
+        localQueueDelayNanoseconds: UInt64,
+        packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        onDiagnosticSummary: @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
+        onDropDiagnostic: @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void
+    ) async {
+        let freshnessDecision = liveAudioReceiveFreshnessDecisionValue(decision)
+        if let summary = await diagnosticsSink.observe(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            transport: packet.transport,
+            receiveEpoch: context.receiveEpoch,
+            sequenceNumber: sequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            freshnessDecision: freshnessDecision,
+            playbackAccepted: nil
+        ) {
+            await onDiagnosticSummary(summary)
+        }
+        let dropReason = liveAudioReceiveDropReasonValue(decision)
+        let dropReportKey = DropReportKey(
+            contactID: packet.contactID,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            transport: packet.transport,
+            receiveEpoch: context.receiveEpoch,
+            reason: dropReason.reason
+        )
+        let nextCount = (dropReportCountsByKey[dropReportKey] ?? 0) + 1
+        dropReportCountsByKey[dropReportKey] = nextCount
+        guard nextCount <= 2 || nextCount == 3 else { return }
+        await onDropDiagnostic(
+            LiveAudioReceiveDropDiagnostic(
+                contactID: packet.contactID,
+                channelID: packet.channelID,
+                fromDeviceID: packet.fromDeviceID,
+                transport: packet.transport,
+                receiveEpoch: context.receiveEpoch,
+                sequenceNumber: sequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                freshnessDecision: freshnessDecision,
+                reason: dropReason.reason,
+                thresholdNanoseconds: dropReason.thresholdNanoseconds,
+                shouldRecordContract: nextCount <= 2 && dropReason.isQueueDelayContract,
+                shouldRecordSuppression: nextCount == 3
+            )
+        )
+    }
+}
+
+private actor LiveAudioPlaybackExecutor {
+    func play(
+        _ admittedPacket: IncomingAudioIngressAcceptedPacket,
+        context: LiveAudioReceiveContext
+    ) async -> Bool {
+        await context.session.receiveRemoteAudioChunk(
+            admittedPacket.audioPayload,
+            playbackProfile: context.playbackProfile,
+            expectedReceiveEpoch: context.sessionReceiveEpoch,
+            playbackDeadlineNanoseconds: context.playbackDeadlineNanoseconds
+        )
+    }
+}
+
+extension MediaConnectionState {
+    var canReuseLiveAudioReceiveContext: Bool {
+        switch self {
+        case .preparing, .connected:
+            return true
+        case .idle, .failed, .closed:
+            return false
+        }
+    }
+}
+
+nonisolated private func liveAudioReceiveFreshnessDecisionValue(
+    _ decision: IncomingAudioPlaybackDecision
+) -> String {
+    guard !decision.shouldPlay else { return "accepted" }
+    switch decision.dropReason {
+    case .duplicateOrStaleSequence:
+        return "dropped-duplicate-or-stale-sequence"
+    case .orderedBacklog:
+        return "dropped-ordered-backlog"
+    case .expiredLiveBacklog:
+        return "dropped-expired-live-backlog"
+    case .expiredSenderClockAge:
+        return "dropped-expired-sender-clock-age"
+    case .duplicatePlaintextStandby:
+        return "dropped-duplicate-plaintext-standby"
+    case .standbyContinuity:
+        return "dropped-standby-continuity"
+    case nil:
+        return "dropped-unknown"
+    }
+}
+
+nonisolated private func liveAudioReceiveDropReasonValue(
+    _ decision: IncomingAudioPlaybackDecision
+) -> (reason: String, thresholdNanoseconds: UInt64?, isQueueDelayContract: Bool) {
+    switch decision.dropReason {
+    case .duplicateOrStaleSequence:
+        return ("duplicate-or-stale-sequence", nil, false)
+    case .orderedBacklog:
+        return ("ordered-backlog", nil, false)
+    case .expiredLiveBacklog(_, let thresholdNanoseconds):
+        return ("expired-live-backlog", thresholdNanoseconds, true)
+    case .expiredSenderClockAge(_, let thresholdMilliseconds):
+        let thresholdNanoseconds = UInt64(max(0, thresholdMilliseconds)) * 1_000_000
+        return ("expired-sender-clock-age", thresholdNanoseconds, true)
+    case .duplicatePlaintextStandby:
+        return ("duplicate-plaintext-standby", nil, false)
+    case .standbyContinuity:
+        return ("standby-continuity", nil, false)
+    case nil:
+        return ("unknown", nil, false)
+    }
+}
+
 actor IncomingAudioIngressExecutor {
     private static let mediaEncryptionReceiveSequenceWindow: UInt64 = 256
     private static let mediaEncryptionRecentReceiveSequenceLimit = 256
@@ -1923,6 +2905,8 @@ enum IncomingAudioPlaybackDropReason: Equatable, Sendable {
         senderClockAgeMilliseconds: Int64,
         thresholdMilliseconds: Int64
     )
+    case duplicatePlaintextStandby(previousTransport: IncomingAudioPayloadTransport)
+    case standbyContinuity(authoritativeTransport: IncomingAudioPayloadTransport)
 }
 
 struct IncomingAudioPlaybackDecision: Equatable, Sendable {
@@ -3642,6 +4626,7 @@ final class MediaRuntimeState {
     func clearIncomingAudioSequence(for contactID: UUID) {
         incomingAudioSequenceByContactID[contactID] = nil
         incomingPacketLossEstimateByContactID[contactID] = nil
+        incomingAudioPlaybackGateByContactID[contactID] = nil
     }
 
     func observedPacketLossPercent(for contactID: UUID) -> Int {
@@ -3756,7 +4741,7 @@ final class MediaRuntimeState {
         guard sequenceNumber < previousSequenceNumber else { return false }
         switch ordering {
         case .orderedReliable:
-            return sequenceNumber == 1 || previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
+            return false
         case .unorderedPacket:
             return previousSequenceNumber - sequenceNumber > Self.mediaEncryptionReceiveSequenceWindow
         }

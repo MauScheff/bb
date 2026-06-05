@@ -1049,6 +1049,24 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         return stateStorage
     }
 
+    nonisolated var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
+        if withReceivePlaybackLock({ isPlaybackReady }) {
+            return .ready
+        }
+        switch state {
+        case .idle:
+            return .notReady(reason: .idle)
+        case .preparing, .connected:
+            return playbackRecoveryTask == nil
+                ? .notReady(reason: .preparing)
+                : .notReady(reason: .recovering)
+        case .failed:
+            return .notReady(reason: .failed)
+        case .closed:
+            return .notReady(reason: .closed)
+        }
+    }
+
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
     private let senderConfigurationLock = NSLock()
     private var senderConfiguration: MediaTransportSenderConfiguration
@@ -2012,6 +2030,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         playbackRecoveryTask?.cancel()
         playbackRecoveryTask = nil
         pendingPlaybackBuffers.removeAll(keepingCapacity: false)
+        pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
         pendingRemoteAudioChunks.removeAll(keepingCapacity: false)
         resetOutboundFrameAccumulator()
         playoutEngine = VoicePlayoutEngineFactory.make(mode: voiceMediaCoreMode)

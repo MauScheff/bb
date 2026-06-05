@@ -481,6 +481,7 @@ extension PTTViewModel {
         guard remoteTransmittingContactIDs.contains(contactID) else { return false }
         guard mediaSessionContactID == contactID else { return false }
         guard mediaConnectionState == .connected || mediaConnectionState == .preparing else { return false }
+        guard mediaRuntime.hasReadyForegroundSystemReceivePlaybackFallback(for: contactID) else { return false }
         guard systemSessionMatches(contactID) else { return false }
         guard !isTransmitting else { return false }
         guard !pttCoordinator.state.isTransmitting else { return false }
@@ -569,7 +570,7 @@ extension PTTViewModel {
             for: contactID,
             applicationState: applicationState,
             incomingAudioTransport: incomingAudioTransport
-        ) ? 0 : nil
+        ) ? appleGatedAudioActivationTimeoutNanoseconds : nil
         scheduleForegroundSystemReceivePlaybackFallback(
             for: contactID,
             channelID: channelID,
@@ -676,6 +677,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
         resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
@@ -696,6 +698,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
         resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:draining")
@@ -720,6 +723,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
         resetIncomingPacketAudioPayloadQueues(reason: "local-transmit-start")
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "local-transmit-start")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         diagnostics.record(
             .media,
@@ -1096,6 +1100,7 @@ extension PTTViewModel {
             source: "backend-transmit-lease-expiry-watchdog"
         )
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "backend-transmit-lease-expiry")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         clearRemoteAudioActivity(for: contactID)
         finalizeReceiveMediaSessionIfNeeded(
@@ -1385,6 +1390,7 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         resetIncomingPacketAudioPayloadQueues(reason: "remote-receive-epoch-start")
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-receive-epoch-start")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         Task { [voiceTurnRuntime] in
             await voiceTurnRuntime.beginReceive(
@@ -1418,6 +1424,18 @@ extension PTTViewModel {
     func resetIncomingPacketAudioPayloadQueues(reason: String) {
         mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(reason: reason)
         mediaRuntime.mediaRelayClient?.resetIncomingAudioPayloadQueue(reason: reason)
+    }
+
+    func resetLiveAudioReceiveRuntime(for contactID: UUID, reason _: String) {
+        Task { [
+            incomingAudioIngressExecutor,
+            liveAudioReceiveExecutor,
+            liveMediaDiagnosticsSink,
+        ] in
+            await incomingAudioIngressExecutor.reset(contactID: contactID)
+            await liveAudioReceiveExecutor.reset(contactID: contactID)
+            await liveMediaDiagnosticsSink.reset(contactID: contactID)
+        }
     }
 
     func isExpectedBackendSyncCancellation(_ error: Error) -> Bool {

@@ -2497,7 +2497,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
-    private static let liveAudioMaxConcurrentIncomingHandlers = 1
+    private static let liveAudioMaxConcurrentIncomingHandlers = 4
     static let liveAudioDatagramWaitsForProcessing = false
     private static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     // Apple PTT activation can hold the first transmit/receive path for several

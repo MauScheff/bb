@@ -150,7 +150,25 @@ final class RecordingMediaSession: MediaSession {
     var receiveRemoteAudioChunkDelayNanoseconds: UInt64?
     var hasPendingPlaybackResult = false
     var receiveRemoteAudioChunkResult = true
+    var receivePlaybackReadinessOverride: MediaSessionReceivePlaybackReadiness?
     private var remoteAudioReceiveEpoch: UInt64 = 0
+
+    var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
+        receivePlaybackReadinessOverride ?? {
+            switch state {
+            case .connected:
+                return .ready
+            case .preparing:
+                return .notReady(reason: .preparing)
+            case .idle:
+                return .notReady(reason: .idle)
+            case .failed:
+                return .notReady(reason: .failed)
+            case .closed:
+                return .notReady(reason: .closed)
+            }
+        }()
+    }
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {
         currentSendAudioChunk = handler
@@ -314,8 +332,13 @@ final class BlockingPlaybackMediaSession: MediaSession {
     private let blockingNanoseconds: UInt64
     private var chunks: [String] = []
     private var threadIsMain: [Bool] = []
+    var receivePlaybackReadinessOverride: MediaSessionReceivePlaybackReadiness?
 
     private(set) var state: MediaConnectionState = .connected
+
+    var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
+        receivePlaybackReadinessOverride ?? .ready
+    }
 
     init(blockingNanoseconds: UInt64) {
         self.blockingNanoseconds = blockingNanoseconds

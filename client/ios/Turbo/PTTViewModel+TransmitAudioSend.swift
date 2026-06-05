@@ -2535,9 +2535,8 @@ extension PTTViewModel {
             localDeviceId: localDeviceID,
             peerDeviceId: peerDeviceID,
             onIncomingAudioPayload: { [weak self] incoming in
-                let receiveEpoch = await self?.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
                 let fromUserID = await fromUserIDForIncoming()
-                await self?.handleIncomingAudioPayload(
+                await self?.handleIncomingLiveAudioPayload(
                     incoming.payload,
                     channelID: channelID,
                     fromUserID: fromUserID,
@@ -2547,7 +2546,7 @@ extension PTTViewModel {
                         mediaRelayMediaMode: incoming.mediaMode
                     ),
                     transportSequenceNumber: incoming.sequenceNumber,
-                    expectedReceiveEpoch: receiveEpoch,
+                    expectedReceiveEpoch: nil,
                     ingressContext: IncomingAudioIngressContext(
                         receivedAtNanoseconds: incoming.receivedAtNanoseconds,
                         sequenceNumber: incoming.sequenceNumber,
@@ -2789,23 +2788,20 @@ extension PTTViewModel {
 
             guard report.shouldRepairStaleReceive else { return }
             let repaired = repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID)
-            if !repaired,
-               receiveExecutionCoordinator.state.remoteActivityByContactID[contactID] != nil,
-               localQueueDelayNanoseconds >= thresholdNanoseconds {
-                forceStopRemoteReceiveAfterExpiredLiveAudio(
-                    contactID: contactID,
-                    channelID: channelID,
-                    fromDeviceID: peerDeviceID,
-                    incomingAudioTransport: .mediaRelayPacket,
-                    reason: "expired-before-app-handler",
-                    diagnosticsMessage: "Forced remote receive stop after expired media relay app-handler backlog",
-                    additionalMetadata: [
-                        "sequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
-                        "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
-                        "thresholdMs": String(thresholdNanoseconds / 1_000_000),
-                    ]
-                )
-            }
+            guard !repaired else { return }
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped expired media relay packet before app handler without stopping remote receive",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": peerDeviceID,
+                    "sequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
+                    "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                    "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+                ]
+            )
         }
     }
 

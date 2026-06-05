@@ -511,6 +511,12 @@ struct AudioFuzzTests {
                     iteration: index,
                     inputSummary: inputSummary
                 )
+                try Self.replayReceiveQueueIncidents(
+                    incident.receiveQueueIncidents,
+                    seed: Self.audioIncidentCorpusSeed,
+                    iteration: index,
+                    inputSummary: inputSummary
+                )
                 try await Self.replayOutboundTransportIncidents(
                     incident.outboundTransportIncidents,
                     seed: Self.audioIncidentCorpusSeed,
@@ -598,6 +604,7 @@ private extension AudioFuzzTests {
         let packetDeliveries: [CorpusPacketDelivery]
         let voiceFrameDeliveries: [CorpusVoiceFrameDelivery]
         let schedulerOperations: [CorpusSchedulerOperation]
+        let receiveQueueIncidents: [CorpusReceiveQueueIncident]
         let outboundTransportIncidents: [CorpusOutboundTransportIncident]
 
         enum CodingKeys: String, CodingKey {
@@ -605,6 +612,7 @@ private extension AudioFuzzTests {
             case packetDeliveries
             case voiceFrameDeliveries
             case schedulerOperations
+            case receiveQueueIncidents
             case outboundTransportIncidents
         }
 
@@ -622,6 +630,10 @@ private extension AudioFuzzTests {
             schedulerOperations = try container.decodeIfPresent(
                 [CorpusSchedulerOperation].self,
                 forKey: .schedulerOperations
+            ) ?? []
+            receiveQueueIncidents = try container.decodeIfPresent(
+                [CorpusReceiveQueueIncident].self,
+                forKey: .receiveQueueIncidents
             ) ?? []
             outboundTransportIncidents = try container.decodeIfPresent(
                 [CorpusOutboundTransportIncident].self,
@@ -650,6 +662,18 @@ private extension AudioFuzzTests {
         let count: Int?
     }
 
+    struct CorpusReceiveQueueIncident: Decodable {
+        let action: String?
+        let reason: String?
+        let sequenceNumber: UInt64?
+        let transport: String?
+        let localQueueDelayMs: UInt64?
+        let senderClockAgeMs: Int64?
+        let thresholdMs: UInt64?
+        let receiveEpoch: UInt64?
+        let stage: String?
+    }
+
     struct CorpusOutboundTransportIncident: Decodable {
         let type: String
         let reason: String?
@@ -659,6 +683,26 @@ private extension AudioFuzzTests {
         let payloadLength: Int?
         let pendingPayloadCount: Int?
         let transportDigest: String?
+    }
+
+    struct ReceiveQueueFreshnessModel {
+        let receiveEpoch: UInt64
+        let sequenceNumber: UInt64
+        let localQueueDelayMilliseconds: UInt64
+        let senderClockAgeMilliseconds: Int64
+        let thresholdMilliseconds: UInt64
+
+        var shouldAccept: Bool {
+            localQueueDelayMilliseconds < thresholdMilliseconds
+                && UInt64(max(0, senderClockAgeMilliseconds)) < thresholdMilliseconds
+        }
+
+        var summary: String {
+            """
+            epoch=\(receiveEpoch) sequence=\(sequenceNumber) localQueueDelayMs=\(localQueueDelayMilliseconds) \
+            senderClockAgeMs=\(senderClockAgeMilliseconds) thresholdMs=\(thresholdMilliseconds) shouldAccept=\(shouldAccept)
+            """
+        }
     }
 
     actor AudioTransportIncidentRecorder {
@@ -1653,6 +1697,84 @@ private extension AudioFuzzTests {
         )
     }
 
+    static func replayReceiveQueueIncidents(
+        _ incidents: [CorpusReceiveQueueIncident],
+        seed: UInt64,
+        iteration: Int,
+        inputSummary: String
+    ) throws {
+        guard !incidents.isEmpty else { return }
+        for (incidentIndex, incident) in incidents.enumerated() {
+            let thresholdMilliseconds = max(1, incident.thresholdMs ?? 650)
+            let localQueueDelayMilliseconds = incident.localQueueDelayMs ?? 0
+            let senderClockAgeMilliseconds = incident.senderClockAgeMs ?? 0
+            let action = incident.action ?? ""
+            let reason = incident.reason ?? ""
+            let sequenceNumber = incident.sequenceNumber ?? UInt64(incidentIndex)
+            let receiveEpoch = incident.receiveEpoch ?? 0
+            let summary = """
+            \(inputSummary):receiveQueue[\(incidentIndex)] action=\(action) reason=\(reason) \
+            transport=\(incident.transport ?? "unknown") epoch=\(receiveEpoch) sequence=\(sequenceNumber) \
+            localQueueDelayMs=\(localQueueDelayMilliseconds) senderClockAgeMs=\(senderClockAgeMilliseconds) \
+            thresholdMs=\(thresholdMilliseconds)
+            """
+
+            if action == "dropped-expired-live-backlog" || reason == "expired-live-backlog" {
+                try requireProperty(
+                    localQueueDelayMilliseconds >= thresholdMilliseconds,
+                    seed: seed,
+                    iteration: iteration,
+                    inputSummary: summary,
+                    expectedInvariant: "expired live backlog drops only after the configured receive queue deadline",
+                    observed: summary
+                )
+            }
+
+            if action == "dropped-expired-sender-clock-age" || reason == "expired-sender-clock-age" {
+                try requireProperty(
+                    UInt64(max(0, senderClockAgeMilliseconds)) >= thresholdMilliseconds,
+                    seed: seed,
+                    iteration: iteration,
+                    inputSummary: summary,
+                    expectedInvariant: "expired sender-clock audio drops only after the configured sender clock deadline",
+                    observed: summary
+                )
+            }
+
+            let freshNextTurn = ReceiveQueueFreshnessModel(
+                receiveEpoch: receiveEpoch + 1,
+                sequenceNumber: sequenceNumber + 1,
+                localQueueDelayMilliseconds: min(thresholdMilliseconds / 2, 320),
+                senderClockAgeMilliseconds: min(Int64(thresholdMilliseconds / 2), 320),
+                thresholdMilliseconds: thresholdMilliseconds
+            )
+            try requireProperty(
+                freshNextTurn.shouldAccept,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: summary,
+                expectedInvariant: "a stale receive queue incident cannot poison the next fresh turn",
+                observed: freshNextTurn.summary
+            )
+
+            let rapidPreviousTail = ReceiveQueueFreshnessModel(
+                receiveEpoch: receiveEpoch,
+                sequenceNumber: sequenceNumber > 0 ? sequenceNumber - 1 : sequenceNumber,
+                localQueueDelayMilliseconds: thresholdMilliseconds + 1,
+                senderClockAgeMilliseconds: Int64(thresholdMilliseconds + 1),
+                thresholdMilliseconds: thresholdMilliseconds
+            )
+            try requireProperty(
+                !rapidPreviousTail.shouldAccept,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: summary,
+                expectedInvariant: "stale previous-tail audio remains bounded during rapid turns",
+                observed: rapidPreviousTail.summary
+            )
+        }
+    }
+
     static func replayOutboundTransportIncidents(
         _ incidents: [CorpusOutboundTransportIncident],
         seed: UInt64,
@@ -1874,6 +1996,15 @@ private extension AudioFuzzTests {
             iteration: iteration,
             inputSummary: inputSummary
         )
+        try replayReceiveQueueIncidents(
+            receiveQueueIncidents(
+                incident.receiveQueueIncidents,
+                applying: envelope
+            ),
+            seed: seed,
+            iteration: iteration,
+            inputSummary: inputSummary
+        )
         try await replayOutboundTransportIncidents(
             incident.outboundTransportIncidents,
             seed: seed,
@@ -1901,6 +2032,80 @@ private extension AudioFuzzTests {
         applying envelope: AudioIncidentReplayEnvelope
     ) -> [CorpusSchedulerOperation] {
         schedulerPrefix(for: envelope) + operations
+    }
+
+    static func receiveQueueIncidents(
+        _ incidents: [CorpusReceiveQueueIncident],
+        applying envelope: AudioIncidentReplayEnvelope
+    ) -> [CorpusReceiveQueueIncident] {
+        incidents.map { incident in
+            CorpusReceiveQueueIncident(
+                action: incident.action,
+                reason: incident.reason,
+                sequenceNumber: incident.sequenceNumber,
+                transport: envelope.transportOverride ?? incident.transport,
+                localQueueDelayMs: adjustedQueueDelayMilliseconds(
+                    incident.localQueueDelayMs,
+                    applying: envelope
+                ),
+                senderClockAgeMs: adjustedSenderClockAgeMilliseconds(
+                    incident.senderClockAgeMs,
+                    applying: envelope
+                ),
+                thresholdMs: incident.thresholdMs,
+                receiveEpoch: adjustedReceiveEpoch(incident.receiveEpoch, applying: envelope),
+                stage: incident.stage
+            )
+        }
+    }
+
+    static func adjustedQueueDelayMilliseconds(
+        _ milliseconds: UInt64?,
+        applying envelope: AudioIncidentReplayEnvelope
+    ) -> UInt64? {
+        guard let milliseconds else { return nil }
+        switch envelope {
+        case .coldLateIO:
+            return milliseconds + 900
+        case .cushionTimeout:
+            return milliseconds + 200
+        case .observed, .directOnly, .fastRelayPacketOnly, .relayWebSocketOnly,
+                .lowLatencyPlayout, .wakeContinuityPlayout, .alreadyPlayingReceive,
+                .routeReassertion:
+            return milliseconds
+        }
+    }
+
+    static func adjustedSenderClockAgeMilliseconds(
+        _ milliseconds: Int64?,
+        applying envelope: AudioIncidentReplayEnvelope
+    ) -> Int64? {
+        guard let milliseconds else { return nil }
+        switch envelope {
+        case .coldLateIO:
+            return milliseconds + 900
+        case .cushionTimeout:
+            return milliseconds + 200
+        case .observed, .directOnly, .fastRelayPacketOnly, .relayWebSocketOnly,
+                .lowLatencyPlayout, .wakeContinuityPlayout, .alreadyPlayingReceive,
+                .routeReassertion:
+            return milliseconds
+        }
+    }
+
+    static func adjustedReceiveEpoch(
+        _ receiveEpoch: UInt64?,
+        applying envelope: AudioIncidentReplayEnvelope
+    ) -> UInt64? {
+        guard let receiveEpoch else { return nil }
+        switch envelope {
+        case .routeReassertion:
+            return receiveEpoch + 1
+        case .observed, .directOnly, .fastRelayPacketOnly, .relayWebSocketOnly,
+                .lowLatencyPlayout, .wakeContinuityPlayout, .coldLateIO,
+                .alreadyPlayingReceive, .cushionTimeout:
+            return receiveEpoch
+        }
     }
 
     static func schedulerPrefix(

@@ -3398,7 +3398,7 @@ struct ConversationTests {
     }
 
     @MainActor
-    @Test func emptyContactsShowsLoadingPlaceholderWhileRestoringAppleSession() {
+    @Test func emptyContactsDoesNotShowLoadingPlaceholderForRestoredAppleSessionAfterBackendRecovery() {
         let viewModel = PTTViewModel()
         let channelUUID = UUID()
 
@@ -3406,7 +3406,7 @@ struct ConversationTests {
 
         viewModel.handleRestoredChannel(channelUUID)
 
-        #expect(viewModel.shouldShowContactsLoadingPlaceholder)
+        #expect(!viewModel.shouldShowContactsLoadingPlaceholder)
     }
 
     @MainActor
@@ -3418,7 +3418,7 @@ struct ConversationTests {
 
         let contentView = ContentView(viewModel: viewModel)
 
-        #expect(viewModel.shouldShowContactsLoadingPlaceholder)
+        #expect(!viewModel.shouldShowContactsLoadingPlaceholder)
         #expect(!contentView.shouldShowContactsLoadingSurface())
         #expect(!contentView.shouldShowEmptyContactsSurface())
         #expect(contentView.shouldShowSystemSessionContactListSurface())

@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-06-06T00:00:00+00:00",
+  "incidents": [
+    {
+      "name": "device_fast_relay_sender_clock_expiry_bau",
+      "outboundTransportIncidents": [],
+      "packetDeliveries": [
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 88,
+          "transport": "mediaRelayPacket"
+        }
+      ],
+      "receiveQueueIncidents": [
+        {
+          "action": "dropped-expired-sender-clock-age",
+          "localQueueDelayMs": 620,
+          "reason": "expired-sender-clock-age",
+          "receiveEpoch": 1,
+          "senderClockAgeMs": 661,
+          "sequenceNumber": 88,
+          "stage": "live-audio-receive-executor",
+          "thresholdMs": 650,
+          "transport": "mediaRelayPacket"
+        }
+      ],
+      "schedulerOperations": [],
+      "sourceMessages": [
+        "media.playout_repeated_underrun Opus playout buffer updated",
+        "media.incoming_audio_queue_delay Incoming audio payload was delayed in the local receive queue"
+      ],
+      "subject": "@bau",
+      "voiceFrameDeliveries": [
+        {
+          "deltaFrames": 1,
+          "frameIndex": 6,
+          "isFlushFrame": false
+        }
+      ]
+    },
+    {
+      "name": "device_fast_relay_live_backlog_expiry_mau",
+      "outboundTransportIncidents": [],
+      "packetDeliveries": [
+        {
+          "deltaFrames": 1,
+          "sequenceNumber": 72,
+          "transport": "mediaRelayPacket"
+        }
+      ],
+      "receiveQueueIncidents": [
+        {
+          "action": "dropped-expired-live-backlog",
+          "localQueueDelayMs": 2534,
+          "reason": "expired-live-backlog",
+          "receiveEpoch": 4,
+          "senderClockAgeMs": 3066,
+          "sequenceNumber": 72,
+          "stage": "live-audio-receive-executor",
+          "thresholdMs": 650,
+          "transport": "mediaRelayPacket"
+        }
+      ],
+      "schedulerOperations": [],
+      "sourceMessages": [
+        "media.incoming_audio_queue_delay Incoming audio payload was delayed in the local receive queue"
+      ],
+      "subject": "@mau",
+      "voiceFrameDeliveries": []
+    }
+  ],
+  "schemaVersion": 1,
+  "source": "physical-device-fast-relay-rapid-turns-2026-06-05"
+}

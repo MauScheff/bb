@@ -673,6 +673,7 @@ extension PTTViewModel {
 
         mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "incoming-audio-continuity-gap")
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         switch incomingAudioTransport {
@@ -754,12 +755,26 @@ extension PTTViewModel {
     ) -> UInt64 {
         switch incomingAudioTransport {
         case .directQuic:
-            return incomingLiveAudioBacklogExpirationNanoseconds
+            return directQuicIncomingAudioLiveBacklogDropNanoseconds
         case .mediaRelayPacket:
-            return incomingLiveAudioBacklogExpirationNanoseconds
+            return mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds
         case .mediaRelayTcp, .relayWebSocket:
             return incomingLiveAudioBacklogExpirationNanoseconds
         }
+    }
+
+    func incomingLiveAudioBacklogExpirationNanoseconds(
+        for incomingAudioTransport: IncomingAudioPayloadTransport,
+        heldForAppleAudioActivation: Bool
+    ) -> UInt64 {
+        let configured = incomingLiveAudioBacklogExpirationNanoseconds(
+            for: incomingAudioTransport
+        )
+        guard heldForAppleAudioActivation,
+              incomingAudioTransport.isUnreliablePacketMedia else {
+            return configured
+        }
+        return max(configured, appleGatedAudioActivationTimeoutNanoseconds)
     }
 
     func recordIncomingAudioSequenceContractIfNeeded(
@@ -868,6 +883,13 @@ extension PTTViewModel {
         ) else {
             return
         }
+        let heldForAppleAudioActivation =
+            shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: channelID,
+                incomingAudioTransport: incomingAudioTransport,
+                applicationState: applicationState
+            )
         let ingressAdmission = await incomingAudioIngressExecutor.admit(
             IncomingAudioIngressPacket(
                 payload: payload,
@@ -884,10 +906,12 @@ extension PTTViewModel {
                 mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
                 mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
                 liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
-                    for: incomingAudioTransport
+                    for: incomingAudioTransport,
+                    heldForAppleAudioActivation: heldForAppleAudioActivation
                 ),
                 liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
-                    for: incomingAudioTransport
+                    for: incomingAudioTransport,
+                    heldForAppleAudioActivation: heldForAppleAudioActivation
                 )
             )
         )
@@ -1051,6 +1075,12 @@ extension PTTViewModel {
                 metadata["senderClockAgeMs"] = String(senderClockAgeMilliseconds)
                 metadata["thresholdMs"] = String(thresholdMilliseconds)
                 metadata["senderClockAgeThresholdMs"] = String(thresholdMilliseconds)
+            case .duplicatePlaintextStandby(let previousTransport):
+                dropReason = "duplicate-plaintext-standby"
+                metadata["previousTransport"] = previousTransport.diagnosticsValue
+            case .standbyContinuity(let authoritativeTransport):
+                dropReason = "standby-continuity"
+                metadata["authoritativeTransport"] = authoritativeTransport.diagnosticsValue
             case nil:
                 break
             }
@@ -1493,6 +1523,463 @@ extension PTTViewModel {
         )
     }
 
+    nonisolated func handleIncomingLiveAudioPayload(
+        _ payload: String,
+        channelID: String,
+        fromUserID: String,
+        fromDeviceID: String,
+        contactID: UUID,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        transportSequenceNumber: UInt64? = nil,
+        expectedReceiveEpoch: UInt64? = nil,
+        ingressContext: IncomingAudioIngressContext
+    ) async {
+        let packet = LiveAudioReceivePacket(
+            payload: payload,
+            channelID: channelID,
+            fromUserID: fromUserID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            transport: incomingAudioTransport,
+            transportSequenceNumber: transportSequenceNumber,
+            ingressContext: ingressContext
+        )
+        await liveAudioReceiveExecutor.receive(
+            packet,
+            diagnosticsSink: liveMediaDiagnosticsSink,
+            makeContext: { [weak self] in
+                guard let self else { return nil }
+                return await self.makeLiveAudioReceiveContext(
+                    channelID: channelID,
+                    fromDeviceID: fromDeviceID,
+                    contactID: contactID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    expectedReceiveEpoch: expectedReceiveEpoch,
+                    ingressContext: ingressContext
+                )
+            },
+            fallbackToMainActorReceive: { [weak self] in
+                await self?.handleIncomingAudioPayload(
+                    payload,
+                    channelID: channelID,
+                    fromUserID: fromUserID,
+                    fromDeviceID: fromDeviceID,
+                    contactID: contactID,
+                    incomingAudioTransport: incomingAudioTransport,
+                    transportSequenceNumber: transportSequenceNumber,
+                    expectedReceiveEpoch: expectedReceiveEpoch,
+                    ingressContext: ingressContext
+                )
+            },
+            onFirstPlaybackAccepted: { [weak self] admittedPacket in
+                await self?.recordLiveAudioFirstPlaybackAccepted(
+                    admittedPacket,
+                    packet: packet
+                )
+            },
+            onDiagnosticSummary: { [weak self] summary in
+                await self?.recordLiveAudioReceiveSummary(summary)
+            },
+            onDropDiagnostic: { [weak self] drop in
+                await self?.recordLiveAudioReceiveDropDiagnostic(drop)
+            },
+            onPlaybackReadinessDiagnostic: { [weak self] diagnostic in
+                await self?.recordLiveAudioReceivePlaybackReadinessDiagnostic(diagnostic)
+            }
+        )
+    }
+
+    private func makeLiveAudioReceiveContext(
+        channelID: String,
+        fromDeviceID: String,
+        contactID: UUID,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        expectedReceiveEpoch: UInt64?,
+        ingressContext: IncomingAudioIngressContext
+    ) async -> LiveAudioReceiveContext? {
+        guard incomingAudioTransport != .relayWebSocket || currentApplicationState() == .active else {
+            return nil
+        }
+        guard !dropIncomingAudioAfterCancelledTransportDeliveryIfNeeded(
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            sequenceNumber: ingressContext.sequenceNumber,
+            receivedAtNanoseconds: ingressContext.receivedAtNanoseconds,
+            senderSentAtMilliseconds: ingressContext.sentAtMilliseconds,
+            source: ingressContext.source,
+            stage: "live-receive-context"
+        ) else {
+            return nil
+        }
+        configureMediaEncryptionSessionIfPossible(
+            contactID: contactID,
+            channelID: channelID,
+            peerDeviceID: fromDeviceID,
+            logPreservedSession: false
+        )
+        guard !dropIncomingAudioAfterExpiredBackendTransmitLeaseIfNeeded(
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            transportSequenceNumber: ingressContext.sequenceNumber,
+            ingressContext: ingressContext
+        ) else {
+            return nil
+        }
+        let applicationState = currentApplicationState()
+        let shouldBufferForegroundSystemReceive =
+            shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: channelID,
+                incomingAudioTransport: incomingAudioTransport,
+                applicationState: applicationState
+            )
+        let shouldUseForegroundPacketFastPath =
+            shouldAdmitForegroundPacketAudioBeforeSystemBootstrap(
+                incomingAudioTransport: incomingAudioTransport,
+                applicationState: applicationState
+            )
+            && !shouldBufferForegroundSystemReceive
+        if shouldArmLiveAudioBootstrapOnMainActor(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            incomingAudioTransport: incomingAudioTransport,
+            applicationState: applicationState,
+            recordDiagnostic: !shouldUseForegroundPacketFastPath
+        ) {
+            guard shouldUseForegroundPacketFastPath else {
+                return nil
+            }
+            startForegroundPacketAudioBootstrapSideEffectsIfNeeded(
+                contactID: contactID,
+                channelID: channelID,
+                incomingAudioTransport: incomingAudioTransport,
+                applicationState: applicationState
+            )
+        }
+        let receiveActivationMode: MediaSessionActivationMode =
+            shouldUseSystemActivatedReceivePlayback(
+                for: contactID,
+                applicationState: applicationState,
+                incomingAudioTransport: incomingAudioTransport
+            ) ? .systemActivated : .appManaged
+        if shouldUseForegroundPacketFastPath {
+            prepareForegroundPacketAudioSessionForImmediateAdmission(
+                contactID: contactID,
+                activationMode: receiveActivationMode
+            )
+        } else if mediaServices.session() == nil || mediaSessionContactID != contactID {
+            await ensureMediaSession(
+                for: contactID,
+                activationMode: receiveActivationMode,
+                startupMode: .playbackOnly
+            )
+        }
+        guard let session = mediaServices.session(),
+              mediaSessionContactID == contactID else {
+            return nil
+        }
+        markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        if selectedContactId == nil {
+            selectedContactId = contactID
+        }
+        let receiveEpoch = expectedReceiveEpoch ?? mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
+        let playbackDeadlineNanoseconds = incomingAudioAsyncPlaybackDeadlineNanoseconds(
+            receivedAtNanoseconds: ingressContext.receivedAtNanoseconds,
+            senderSentAtMilliseconds: ingressContext.sentAtMilliseconds,
+            incomingAudioTransport: incomingAudioTransport
+        )
+        let sessionPlaybackDeadlineNanoseconds = incomingAudioTransport.isUnreliablePacketMedia
+            ? nil
+            : playbackDeadlineNanoseconds
+        return LiveAudioReceiveContext(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            transport: incomingAudioTransport,
+            receiveEpoch: receiveEpoch,
+            session: session,
+            sessionReceiveEpoch: session.currentRemoteAudioReceiveEpoch(),
+            ingressPolicy: IncomingAudioIngressConfiguration(
+                mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
+                mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
+                liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
+                    for: incomingAudioTransport
+                ),
+                liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
+                    for: incomingAudioTransport
+                )
+            ),
+            playbackProfile: mediaTransportPolicy(for: incomingAudioTransport).playbackProfile,
+            playbackDeadlineNanoseconds: sessionPlaybackDeadlineNanoseconds,
+            ingressExecutor: incomingAudioIngressExecutor
+        )
+    }
+
+    private func shouldAdmitForegroundPacketAudioBeforeSystemBootstrap(
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        applicationState: UIApplication.State
+    ) -> Bool {
+        applicationState == .active && incomingAudioTransport.isUnreliablePacketMedia
+    }
+
+    private func startForegroundPacketAudioBootstrapSideEffectsIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        applicationState: UIApplication.State
+    ) {
+        if shouldUseForegroundAppManagedWakePlayback(
+            for: contactID,
+            applicationState: applicationState,
+            incomingAudioTransport: incomingAudioTransport
+        ) {
+            startForegroundAppManagedWakePlayback(
+                for: contactID,
+                channelID: channelID
+            )
+        }
+        guard shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+            for: contactID,
+            incomingAudioTransport: incomingAudioTransport,
+            applicationState: applicationState
+        ) else { return }
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Bypassed foreground receive buffer for packet media",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+            ]
+        )
+    }
+
+    private func prepareForegroundPacketAudioSessionForImmediateAdmission(
+        contactID: UUID,
+        activationMode: MediaSessionActivationMode
+    ) {
+        let preparedShell = prepareMediaSessionShellIfNeeded(
+            for: contactID,
+            reason: "foreground-packet-receive"
+        )
+        let startupContext = MediaSessionStartupContext(
+            contactID: contactID,
+            activationMode: activationMode,
+            startupMode: .playbackOnly
+        )
+        guard preparedShell || mediaConnectionState != .connected else { return }
+        guard !mediaServices.isStartupInFlight(startupContext) else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.ensureMediaSession(
+                for: contactID,
+                activationMode: activationMode,
+                startupMode: .playbackOnly
+            )
+        }
+    }
+
+    private func shouldArmLiveAudioBootstrapOnMainActor(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        applicationState: UIApplication.State,
+        recordDiagnostic: Bool = true
+    ) -> Bool {
+        let alreadyHasPendingWake = pttWakeRuntime.hasPendingWake(for: contactID)
+        let shouldArmDeferredBackgroundAudioWakeCandidate =
+            !alreadyHasPendingWake
+            && shouldBufferDeferredBackgroundAudioAsWakeCandidate(
+                for: contactID,
+                applicationState: applicationState
+            )
+        let shouldArmAudioWakeCandidate =
+            shouldTreatIncomingSignalAsWakeCandidate(
+                for: contactID,
+                applicationState: applicationState
+            )
+            || shouldArmDeferredBackgroundAudioWakeCandidate
+        let wakeIsAlreadySystemActivated =
+            pttWakeRuntime.incomingWakeActivationState(for: contactID) == .systemActivated
+        let shouldRepairRemoteParticipant =
+            !wakeIsAlreadySystemActivated
+            && !shouldSuppressForegroundDirectQuicRemoteParticipant(
+                for: contactID,
+                applicationState: applicationState
+            )
+            && (!remoteTransmittingContactIDs.contains(contactID) || shouldArmDeferredBackgroundAudioWakeCandidate)
+            && (alreadyHasPendingWake || shouldArmAudioWakeCandidate)
+            && shouldSetSystemRemoteParticipantFromSignalPath(
+                for: contactID,
+                applicationState: applicationState
+            )
+        guard shouldArmAudioWakeCandidate
+              || shouldRepairRemoteParticipant
+              || shouldUseForegroundAppManagedWakePlayback(
+                for: contactID,
+                applicationState: applicationState,
+                incomingAudioTransport: incomingAudioTransport
+              )
+              || shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                incomingAudioTransport: incomingAudioTransport,
+                applicationState: applicationState
+              )
+              || shouldDeferBackgroundPlaybackUntilPTTAudioActivation(
+                for: contactID,
+                applicationState: applicationState
+              )
+        else {
+            return false
+        }
+        if recordDiagnostic {
+            diagnostics.record(
+                .media,
+                message: "Routed incoming live audio through MainActor bootstrap",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "transport": incomingAudioTransport.diagnosticsValue,
+                    "applicationState": String(describing: applicationState),
+                ]
+            )
+        }
+        return true
+    }
+
+    private func recordLiveAudioFirstPlaybackAccepted(
+        _ admittedPacket: IncomingAudioIngressAcceptedPacket,
+        packet: LiveAudioReceivePacket
+    ) async {
+        let ackIdentityPayload = MediaEncryptedAudioPacket.isEncodedPacket(admittedPacket.incomingMediaPayload)
+            ? admittedPacket.incomingMediaPayload
+            : admittedPacket.audioPayload
+        await sendFirstAudioPlaybackStartedAckIfNeeded(
+            originalPayload: ackIdentityPayload,
+            channelID: packet.channelID,
+            fromUserID: packet.fromUserID,
+            fromDeviceID: packet.fromDeviceID,
+            contactID: packet.contactID,
+            incomingAudioTransport: packet.transport
+        )
+    }
+
+    private func recordLiveAudioReceiveSummary(
+        _ summary: LiveAudioReceiveDiagnosticSummary
+    ) {
+        var metadata = [
+            "contactId": summary.contactID.uuidString,
+            "channelId": summary.channelID,
+            "fromDeviceId": summary.fromDeviceID,
+            "transport": summary.transport.diagnosticsValue,
+            "receiveEpoch": String(summary.receiveEpoch),
+            "sampleCount": String(summary.sampleCount),
+            "acceptedCount": String(summary.acceptedCount),
+            "droppedCount": String(summary.droppedCount),
+            "playbackAcceptedCount": String(summary.playbackAcceptedCount),
+            "playbackRejectedCount": String(summary.playbackRejectedCount),
+            "maxLocalQueueDelayMs": String(summary.maxLocalQueueDelayNanoseconds / 1_000_000),
+            "freshnessDecision": summary.lastFreshnessDecision,
+            "playbackDecision": summary.lastPlaybackDecision,
+            "source": "live-audio-receive-executor",
+        ]
+        if let sequenceNumber = summary.lastSequenceNumber {
+            metadata["sequenceNumber"] = String(sequenceNumber)
+        }
+        diagnostics.record(
+            .media,
+            message: "Incoming audio ingress summary",
+            metadata: metadata
+        )
+    }
+
+    private func recordLiveAudioReceiveDropDiagnostic(
+        _ drop: LiveAudioReceiveDropDiagnostic
+    ) {
+        var metadata = [
+            "contactId": drop.contactID.uuidString,
+            "channelId": drop.channelID,
+            "fromDeviceId": drop.fromDeviceID,
+            "incomingTransport": drop.transport.diagnosticsValue,
+            "sequenceNumber": drop.sequenceNumber.map(String.init) ?? "none",
+            "localQueueDelayMs": String(drop.localQueueDelayNanoseconds / 1_000_000),
+            "receiveEpoch": String(drop.receiveEpoch),
+            "reason": drop.reason,
+            "action": drop.freshnessDecision,
+            "stage": "live-audio-receive-executor",
+        ]
+        if let thresholdNanoseconds = drop.thresholdNanoseconds {
+            metadata["thresholdMs"] = String(thresholdNanoseconds / 1_000_000)
+        }
+        if let senderSentAtMilliseconds = drop.senderSentAtMilliseconds {
+            metadata["senderClockAgeMs"] = String(
+                Int64(Date().timeIntervalSince1970 * 1_000) - senderSentAtMilliseconds
+            )
+        }
+        if drop.shouldRecordContract {
+            diagnostics.recordContractViolation(
+                DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                    contactID: drop.contactID,
+                    channelID: drop.channelID,
+                    attemptID: "live-audio-receive-executor",
+                    incomingTransport: drop.transport.diagnosticsValue,
+                    sequenceNumber: drop.sequenceNumber.map(String.init) ?? "none",
+                    localQueueDelayMilliseconds: drop.localQueueDelayNanoseconds / 1_000_000,
+                    senderClockAgeMilliseconds: metadata["senderClockAgeMs"] ?? "none",
+                    thresholdMilliseconds: (drop.thresholdNanoseconds ?? 0) / 1_000_000,
+                    action: drop.freshnessDecision
+                ),
+                metadata: metadata
+            )
+        }
+        if drop.shouldRecordSuppression {
+            metadata["reason"] = "budget-exhausted"
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Suppressing repetitive incoming audio drop diagnostics",
+                metadata: metadata
+            )
+        } else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped incoming audio frame before playback",
+                metadata: metadata
+            )
+        }
+    }
+
+    private func recordLiveAudioReceivePlaybackReadinessDiagnostic(
+        _ diagnostic: LiveAudioReceivePlaybackReadinessDiagnostic
+    ) {
+        diagnostics.record(
+            .media,
+            level: diagnostic.action == "held-until-playback-ready" ? .notice : .info,
+            message: "Held live audio until receive playback is ready",
+            metadata: [
+                "contactId": diagnostic.contactID.uuidString,
+                "channelId": diagnostic.channelID,
+                "fromDeviceId": diagnostic.fromDeviceID,
+                "incomingTransport": diagnostic.transport.diagnosticsValue,
+                "receiveEpoch": String(diagnostic.receiveEpoch),
+                "readiness": diagnostic.readiness.diagnosticsValue,
+                "pendingPacketCount": String(diagnostic.pendingPacketCount),
+                "maxPendingAgeMs": String(diagnostic.maxPendingAgeNanoseconds / 1_000_000),
+                "action": diagnostic.action,
+                "source": "live-audio-receive-executor",
+            ]
+        )
+    }
+
     private func scheduleIncomingAudioPlaybackCompletion(
         audioPayload: String,
         incomingMediaPayload: String,
@@ -1853,7 +2340,7 @@ extension PTTViewModel {
                 reason: "expired-sender-clock-age"
             )
 
-        case .duplicateOrStaleSequence, .orderedBacklog:
+        case .duplicateOrStaleSequence, .orderedBacklog, .duplicatePlaintextStandby, .standbyContinuity:
             break
         }
         if let action {
@@ -2115,13 +2602,32 @@ extension PTTViewModel {
         for incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> Int64 {
         switch incomingAudioTransport {
-        case .directQuic, .mediaRelayPacket:
-            return Int64(incomingLiveAudioBacklogExpirationNanoseconds / 1_000_000)
+        case .directQuic:
+            return Int64(directQuicIncomingAudioLiveBacklogDropNanoseconds / 1_000_000)
+        case .mediaRelayPacket:
+            return Int64(mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds / 1_000_000)
         case .mediaRelayTcp:
             return 3_500
         case .relayWebSocket:
             return 6_000
         }
+    }
+
+    func incomingLiveAudioSenderClockExpirationMilliseconds(
+        for incomingAudioTransport: IncomingAudioPayloadTransport,
+        heldForAppleAudioActivation: Bool
+    ) -> Int64 {
+        let configured = incomingLiveAudioSenderClockExpirationMilliseconds(
+            for: incomingAudioTransport
+        )
+        guard heldForAppleAudioActivation,
+              incomingAudioTransport.isUnreliablePacketMedia else {
+            return configured
+        }
+        let activationTimeoutMilliseconds = Int64(
+            appleGatedAudioActivationTimeoutNanoseconds / 1_000_000
+        )
+        return max(configured, activationTimeoutMilliseconds)
     }
 
     private func completeIncomingAudioPlayback(
@@ -2193,6 +2699,10 @@ extension PTTViewModel {
             return "dropped-expired-live-backlog"
         case .expiredSenderClockAge:
             return "dropped-expired-sender-clock-age"
+        case .duplicatePlaintextStandby:
+            return "dropped-duplicate-plaintext-standby"
+        case .standbyContinuity:
+            return "dropped-standby-continuity"
         case nil:
             return "dropped-unknown"
         }
@@ -2290,6 +2800,7 @@ extension PTTViewModel {
             .remoteActivityByContactID[contactID] != nil
         else { return }
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "expired-live-audio:\(reason)")
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         switch incomingAudioTransport {
@@ -2940,12 +3451,15 @@ extension PTTViewModel {
         case .audioChunk:
             Task {
                 let receivedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
-                await handleIncomingAudioPayload(
+                await handleIncomingLiveAudioPayload(
                     envelope.payload,
                     channelID: envelope.channelId,
                     fromUserID: envelope.fromUserId,
                     fromDeviceID: envelope.fromDeviceId,
                     contactID: contactID,
+                    incomingAudioTransport: .relayWebSocket,
+                    transportSequenceNumber: nil,
+                    expectedReceiveEpoch: nil,
                     ingressContext: IncomingAudioIngressContext(
                         receivedAtNanoseconds: receivedAtNanoseconds,
                         source: "relay-websocket"

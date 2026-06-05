@@ -35,6 +35,7 @@ class IncidentBuilder:
     packet_deliveries: list[dict[str, Any]] = field(default_factory=list)
     voice_frame_deliveries: list[dict[str, Any]] = field(default_factory=list)
     scheduler_operations: list[dict[str, Any]] = field(default_factory=list)
+    receive_queue_incidents: list[dict[str, Any]] = field(default_factory=list)
     outbound_transport_incidents: list[dict[str, Any]] = field(default_factory=list)
     source_messages: list[str] = field(default_factory=list)
     next_synthetic_sequence: int = 0
@@ -269,6 +270,7 @@ def build_incidents(events: list[TimelineEvent], name: str) -> list[dict[str, An
         add_packet_delivery(builder, event)
         add_voice_frame_delivery(builder, event)
         add_scheduler_operations(builder, event)
+        add_receive_queue_incident(builder, event)
         add_outbound_transport_incident(builder, event)
 
     incidents: list[dict[str, Any]] = []
@@ -282,6 +284,7 @@ def build_incidents(events: list[TimelineEvent], name: str) -> list[dict[str, An
             "packetDeliveries": builder.packet_deliveries,
             "voiceFrameDeliveries": builder.voice_frame_deliveries,
             "schedulerOperations": compact_scheduler_operations(builder.scheduler_operations),
+            "receiveQueueIncidents": builder.receive_queue_incidents,
             "outboundTransportIncidents": builder.outbound_transport_incidents,
         }
         incidents.append(incident)
@@ -300,6 +303,8 @@ def is_audio_event(event: TimelineEvent) -> bool:
             "Skipped first audio playback ACK because playback was not accepted",
             "active receive epoch had an excessive gap between accepted audio chunks",
             "active receive epoch had a gap in accepted audio sequence numbers",
+            "Incoming audio payload was delayed in the local receive queue",
+            "media.incoming_audio_queue_delay",
             "Opus playout buffer updated",
             "Deferred playback node start until IO cycle",
             "Playback node still waiting for IO cycle",
@@ -328,6 +333,8 @@ def add_packet_delivery(builder: IncidentBuilder, event: TimelineEvent) -> None:
             "Direct QUIC audio payload received",
             "Dropped incoming audio frame before playback",
             "active receive epoch had a gap in accepted audio sequence numbers",
+            "Incoming audio payload was delayed in the local receive queue",
+            "media.incoming_audio_queue_delay",
         ]
     ):
         return
@@ -355,6 +362,81 @@ def add_packet_delivery(builder: IncidentBuilder, event: TimelineEvent) -> None:
         }
     )
     builder.last_packet_timestamp = event.timestamp
+
+
+def add_receive_queue_incident(builder: IncidentBuilder, event: TimelineEvent) -> None:
+    body = event.body
+    metadata = event.metadata
+    invariant_id = (
+        metadata.get("invariantID")
+        or metadata.get("contractName")
+        or metadata.get("invariantId")
+        or body.split(maxsplit=1)[0]
+    )
+    if invariant_id != "media.incoming_audio_queue_delay" and (
+        "Incoming audio payload was delayed in the local receive queue" not in body
+    ):
+        return
+
+    transport = normalize_transport(metadata.get("transport") or metadata.get("incomingTransport"))
+    sequence_number = parse_int(
+        metadata.get("encryptedSequenceNumber")
+        or metadata.get("directQuicSequenceNumber")
+        or metadata.get("sequenceNumber")
+        or metadata.get("sequence")
+    )
+    local_queue_delay_ms = parse_int(metadata.get("localQueueDelayMs"))
+    sender_clock_age_ms = parse_int(metadata.get("senderClockAgeMs"))
+    threshold_ms = parse_int(
+        metadata.get("thresholdMs")
+        or metadata.get("senderClockAgeThresholdMs")
+        or metadata.get("liveBacklogThresholdMs")
+    )
+
+    incident: dict[str, Any] = {
+        "action": metadata.get("action") or live_queue_action_from_reason(metadata.get("reason")),
+        "reason": metadata.get("reason"),
+    }
+    if sequence_number is not None:
+        incident["sequenceNumber"] = sequence_number
+    if transport is not None:
+        incident["transport"] = transport
+    if local_queue_delay_ms is not None:
+        incident["localQueueDelayMs"] = local_queue_delay_ms
+    if sender_clock_age_ms is not None:
+        incident["senderClockAgeMs"] = sender_clock_age_ms
+    if threshold_ms is not None:
+        incident["thresholdMs"] = threshold_ms
+    receive_epoch = parse_int(metadata.get("receiveEpoch"))
+    if receive_epoch is not None:
+        incident["receiveEpoch"] = receive_epoch
+    stage = metadata.get("stage")
+    if stage:
+        incident["stage"] = stage
+
+    if not any(
+        key in incident
+        for key in (
+            "sequenceNumber",
+            "transport",
+            "localQueueDelayMs",
+            "senderClockAgeMs",
+            "thresholdMs",
+            "receiveEpoch",
+        )
+    ):
+        return
+
+    if incident not in builder.receive_queue_incidents:
+        builder.receive_queue_incidents.append(incident)
+
+
+def live_queue_action_from_reason(reason: str | None) -> str | None:
+    if reason == "expired-live-backlog":
+        return "dropped-expired-live-backlog"
+    if reason == "expired-sender-clock-age":
+        return "dropped-expired-sender-clock-age"
+    return reason
 
 
 def add_voice_frame_delivery(builder: IncidentBuilder, event: TimelineEvent) -> None:
@@ -566,6 +648,7 @@ def has_replayable_content(builder: IncidentBuilder) -> bool:
         builder.packet_deliveries
         or builder.voice_frame_deliveries
         or builder.scheduler_operations
+        or builder.receive_queue_incidents
         or builder.outbound_transport_incidents
     )
 

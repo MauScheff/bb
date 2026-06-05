@@ -1428,10 +1428,6 @@ extension PTTViewModel {
             directQuicIncomingAudioLiveBacklogDropNanoseconds,
             incomingLiveAudioBacklogExpirationNanoseconds
         )
-        let localBacklogResetThresholdNanoseconds = min(
-            directQuicIncomingAudioQueueSevereDelayNanoseconds,
-            liveBacklogDropThresholdNanoseconds
-        )
         let payloadContainsOpusFrame = VoiceAudioFramePayloadCodec
             .mayContainOpusFrame(incomingPayload.payload)
         if liveBacklogDropThresholdNanoseconds > 0,
@@ -1477,32 +1473,6 @@ extension PTTViewModel {
                 thresholdNanoseconds: liveBacklogDropThresholdNanoseconds,
                 action: "preserved-expired-live-backlog"
             )
-        } else if !payloadContainsOpusFrame,
-                  localQueueDelayNanoseconds >= localBacklogResetThresholdNanoseconds {
-            recordDirectQuicIncomingAudioQueueDelayIfNeeded(
-                contactID: contactID,
-                channelID: attempt.channelID,
-                attemptID: attemptID,
-                timingMetadata: timingMetadata,
-                thresholdNanoseconds: localBacklogResetThresholdNanoseconds,
-                action: "dropped-severe-live-backlog"
-            )
-            recordIncomingAudioIngressSummaryIfNeeded(
-                contactID: contactID,
-                channelID: attempt.channelID,
-                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
-                incomingAudioTransport: .directQuic,
-                sequenceNumber: incomingPayload.sequenceNumber,
-                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
-                senderSentAtMilliseconds: incomingPayload.sentAtMilliseconds,
-                freshnessDecision: "dropped-severe-live-backlog",
-                playbackAccepted: false,
-                source: "direct-quic"
-            )
-            mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(
-                reason: "severe-live-backlog"
-            )
-            return
         } else if localQueueDelayNanoseconds >= directQuicIncomingAudioQueueSevereDelayNanoseconds {
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(
                 contactID: contactID,
@@ -1556,7 +1526,7 @@ extension PTTViewModel {
             ],
             ifAbsent: true
         )
-        await handleIncomingAudioPayload(
+        await handleIncomingLiveAudioPayload(
             incomingPayload.payload,
             channelID: attempt.channelID,
             fromUserID: remoteUserID,
@@ -1603,6 +1573,7 @@ extension PTTViewModel {
 
         mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: contactID)
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
+        resetLiveAudioReceiveRuntime(for: contactID, reason: "direct-quic-expired-live-backlog")
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(

@@ -26,6 +26,33 @@ nonisolated enum MediaSessionPlaybackProfile: Equatable {
     case wakeBackgroundContinuity
 }
 
+nonisolated enum MediaSessionReceivePlaybackReadiness: Equatable, Sendable {
+    case ready
+    case notReady(reason: Reason)
+
+    nonisolated enum Reason: String, Equatable, Sendable {
+        case idle
+        case preparing
+        case recovering
+        case closed
+        case failed
+    }
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    var diagnosticsValue: String {
+        switch self {
+        case .ready:
+            return "ready"
+        case .notReady(let reason):
+            return reason.rawValue
+        }
+    }
+}
+
 nonisolated struct MediaTransportPlaybackCushionConfiguration: Equatable {
     let minimumBufferCount: Int
     let timeoutNanoseconds: UInt64
@@ -226,7 +253,8 @@ extension MediaSessionDelegate {
 
 protocol MediaSession: AnyObject {
     var delegate: MediaSessionDelegate? { get set }
-    var state: MediaConnectionState { get }
+    nonisolated var state: MediaConnectionState { get }
+    nonisolated var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness { get }
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?)
     func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration)
@@ -268,6 +296,21 @@ protocol MediaSession: AnyObject {
 }
 
 extension MediaSession {
+    nonisolated var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
+        switch state {
+        case .connected:
+            return .ready
+        case .preparing:
+            return .notReady(reason: .preparing)
+        case .idle:
+            return .notReady(reason: .idle)
+        case .failed:
+            return .notReady(reason: .failed)
+        case .closed:
+            return .notReady(reason: .closed)
+        }
+    }
+
     func updateSenderConfiguration(_ configuration: MediaTransportSenderConfiguration) {}
 
     func resetOutgoingAudioTransport(reason: String) async {}

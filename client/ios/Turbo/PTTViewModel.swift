@@ -219,7 +219,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var pttWakeRuntime = PTTWakeRuntimeState()
     var receiveExecutionRuntime = ReceiveExecutionRuntimeState()
     var mediaRuntime = MediaRuntimeState()
-    let incomingAudioIngressExecutor = IncomingAudioIngressExecutor()
+    nonisolated let incomingAudioIngressExecutor = IncomingAudioIngressExecutor()
+    nonisolated let liveMediaDiagnosticsSink = LiveMediaDiagnosticsSink()
+    nonisolated let liveAudioReceiveExecutor = LiveAudioReceiveExecutor()
     nonisolated let voiceTurnRuntime = VoiceTurnRuntime()
     var backendConfigurationTask: Task<Void, Never>?
     var backendConfigurationKey: String?
@@ -1255,7 +1257,6 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     var shouldShowContactsLoadingPlaceholder: Bool {
         guard contacts.isEmpty, activeConversationContact == nil else { return false }
-        if systemSessionState != .none { return true }
         if backendRuntime.bootstrapRetryTask != nil { return true }
         return !backendRuntime.isReady && backendRuntime.hasClient
     }
