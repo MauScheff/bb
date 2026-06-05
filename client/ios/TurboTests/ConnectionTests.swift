@@ -1008,19 +1008,11 @@ struct ConnectionTests {
             policy: policy,
             nowNanoseconds: baseTime + 760_000_000
         )
-        if case .rejected(
-            .droppedByPlaybackGate(let decision, let sequenceNumber, _, _, let localQueueDelay)
-        ) = sameEpochPacketAfterExpiredBacklog {
-            #expect(sequenceNumber == 78)
-            #expect(localQueueDelay == 0)
-            if case .expiredLiveBacklog(let delay, let threshold) = decision.dropReason {
-                #expect(delay == 0)
-                #expect(threshold == 500_000_000)
-            } else {
-                Issue.record("expected poisoned receive epoch to keep dropping same-epoch packets")
-            }
+        if case .accepted(let acceptedPacket) = sameEpochPacketAfterExpiredBacklog {
+            #expect(acceptedPacket.sequenceNumber == 78)
+            #expect(acceptedPacket.localQueueDelayNanoseconds == 0)
         } else {
-            Issue.record("expected expired backlog to poison the receive epoch")
+            Issue.record("expected fresh packet media in the same receive epoch after an expired packet drop")
         }
 
         let newEpochPacket = await executor.admit(
@@ -1050,7 +1042,7 @@ struct ConnectionTests {
         }
     }
 
-    @Test func incomingAudioIngressExecutorDropsSequenceRestartAfterExpiredBacklogInSameEpoch() async {
+    @Test func incomingAudioIngressExecutorDoesNotPoisonSequenceRestartAfterExpiredBacklogInSameEpoch() async {
         let contactID = UUID()
         let executor = IncomingAudioIngressExecutor()
         let policy = IncomingAudioIngressConfiguration(
@@ -1093,22 +1085,87 @@ struct ConnectionTests {
         }
 
         let staleLowerSequence = await executor.admit(
-            packet(payload: "stale-lower-sequence", sequenceNumber: 153),
+            packet(
+                payload: "fresh-lower-sequence",
+                sequenceNumber: 153,
+                receivedAtNanoseconds: baseTime + 25_100_000_000
+            ),
             policy: policy,
             nowNanoseconds: baseTime + 25_100_000_000
         )
-        if case .rejected(
-            .droppedByPlaybackGate(let decision, let sequenceNumber, _, _, let localQueueDelay)
-        ) = staleLowerSequence {
-            #expect(sequenceNumber == 153)
-            #expect(localQueueDelay == 25_100_000_000)
-            if case .expiredLiveBacklog(_, let threshold) = decision.dropReason {
-                #expect(threshold == 2_000_000_000)
-            } else {
-                Issue.record("expected poisoned same-epoch sequence restart to keep dropping")
-            }
+        if case .accepted(let acceptedPacket) = staleLowerSequence {
+            #expect(acceptedPacket.sequenceNumber == 153)
+            #expect(acceptedPacket.localQueueDelayNanoseconds == 0)
         } else {
-            Issue.record("expected same-epoch sequence restart to remain poisoned after expired backlog")
+            Issue.record("expected stale packet expiry not to poison a fresh same-epoch packet")
+        }
+    }
+
+    @Test func incomingAudioIngressExecutorDoesNotPoisonOrderedFallbackAfterPacketBacklogExpiry() async {
+        let contactID = UUID()
+        let executor = IncomingAudioIngressExecutor()
+        let baseTime: UInt64 = 50_000_000_000
+        let packetPolicy = IncomingAudioIngressConfiguration(
+            mediaEncryptionRequired: false,
+            mediaEncryptionSession: nil,
+            liveAudioBacklogExpirationNanoseconds: 500_000_000
+        )
+        let orderedFallbackPolicy = IncomingAudioIngressConfiguration(
+            mediaEncryptionRequired: false,
+            mediaEncryptionSession: nil,
+            liveAudioBacklogExpirationNanoseconds: 2_000_000_000
+        )
+
+        let stalePacket = await executor.admit(
+            IncomingAudioIngressPacket(
+                payload: "stale-fast-relay-packet",
+                channelID: "channel-1",
+                fromDeviceID: "device-b",
+                contactID: contactID,
+                incomingAudioTransport: .mediaRelayPacket,
+                transportSequenceNumber: 414,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: baseTime,
+                    sequenceNumber: 414,
+                    sentAtMilliseconds: nil,
+                    source: "media-relay"
+                ),
+                receiveEpoch: 1
+            ),
+            policy: packetPolicy,
+            nowNanoseconds: baseTime + 750_000_000
+        )
+        guard case .rejected(.droppedByPlaybackGate) = stalePacket else {
+            Issue.record("expected stale packet media to be dropped")
+            return
+        }
+
+        let fallback = await executor.admit(
+            IncomingAudioIngressPacket(
+                payload: "fresh-ordered-fallback",
+                channelID: "channel-1",
+                fromDeviceID: "device-b",
+                contactID: contactID,
+                incomingAudioTransport: .relayWebSocket,
+                transportSequenceNumber: 1,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: baseTime + 760_000_000,
+                    sequenceNumber: 1,
+                    sentAtMilliseconds: nil,
+                    source: "relay-websocket"
+                ),
+                receiveEpoch: 1
+            ),
+            policy: orderedFallbackPolicy,
+            nowNanoseconds: baseTime + 760_000_000
+        )
+
+        if case .accepted(let acceptedPacket) = fallback {
+            #expect(acceptedPacket.audioPayload == "fresh-ordered-fallback")
+            #expect(acceptedPacket.sequenceNumber == 1)
+            #expect(acceptedPacket.localQueueDelayNanoseconds == 0)
+        } else {
+            Issue.record("expected packet-lane poison not to drop ordered fallback audio")
         }
     }
 
@@ -1158,6 +1215,33 @@ struct ConnectionTests {
             }
         } else {
             Issue.record("expected stale packet media sender clock age to be dropped before playback")
+        }
+
+        let freshPacket = await executor.admit(
+            IncomingAudioIngressPacket(
+                payload: "fresh-relay-packet-after-expired-sender-clock",
+                channelID: "channel-1",
+                fromDeviceID: "device-b",
+                contactID: contactID,
+                incomingAudioTransport: .mediaRelayPacket,
+                transportSequenceNumber: 78,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: baseTime + 1_000_000,
+                    sequenceNumber: 78,
+                    sentAtMilliseconds: 10_000,
+                    source: "media-relay"
+                ),
+                receiveEpoch: 1
+            ),
+            policy: policy,
+            nowNanoseconds: baseTime + 1_000_000,
+            now: now
+        )
+        if case .accepted(let acceptedPacket) = freshPacket {
+            #expect(acceptedPacket.sequenceNumber == 78)
+            #expect(acceptedPacket.localQueueDelayNanoseconds == 0)
+        } else {
+            Issue.record("expected expired sender-clock packet not to poison fresh packet media")
         }
     }
 
@@ -4699,10 +4783,10 @@ struct ConnectionTests {
         #expect(!TurboMediaRelayClient.livePacketAudioWaitsForProcessing)
         #expect(TurboMediaRelayClient.liveAudioMaxConcurrentIncomingHandlers == 4)
         #expect(TurboMediaRelayClient.liveAudioMaxPendingIncomingHandlers == 96)
-        #expect(TurboMediaRelayClient.liveAudioIncomingHandlerExpirationNanoseconds == 350_000_000)
+        #expect(TurboMediaRelayClient.liveAudioIncomingHandlerExpirationNanoseconds == 650_000_000)
         #expect(
             TurboMediaRelayClient.liveAudioIncomingHandlerExpirationNanoseconds
-                <= 350_000_000
+                <= 650_000_000
         )
         #expect(!DirectQuicProbeController.liveAudioDatagramWaitsForProcessing)
     }
@@ -16922,8 +17006,8 @@ struct ConnectionTests {
     @Test func incomingAudioSenderClockExpirationIsTransportSpecific() {
         let viewModel = PTTViewModel()
 
-        #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .directQuic) == 2_000)
-        #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .mediaRelayPacket) == 2_000)
+        #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .directQuic) == 0)
+        #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .mediaRelayPacket) == 0)
         #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .mediaRelayTcp) == 3_500)
         #expect(viewModel.incomingLiveAudioSenderClockExpirationMilliseconds(for: .relayWebSocket) == 6_000)
     }
@@ -19461,7 +19545,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func nearOneSecondDirectQuicOpusBacklogDropsBeforePlayout() async throws {
+    @Test func nearOneSecondDirectQuicOpusBacklogPreservesPayloadForPlayout() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19517,16 +19601,35 @@ struct ConnectionTests {
         )
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
+        #expect(mediaSession.receivedRemoteAudioChunks == [opusPayload])
+        try await waitForCondition(
+            "accepted near-one-second Direct QUIC Opus ingress summary",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Incoming audio ingress summary"
+                    && $0.metadata["transport"] == "direct-quic"
+                    && $0.metadata["sequenceNumber"] == "251"
+                    && $0.metadata["freshnessDecision"] == "accepted"
+                    && $0.metadata["playbackDecision"] == "accepted"
+            }
+        }
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["contractKind"] == "liveness"
                     && $0.metadata["directQuicSequenceNumber"] == "251"
-                    && $0.metadata["action"] == "dropped-expired-live-backlog"
+                    && $0.metadata["action"] == "preserved-expired-live-backlog"
                     && $0.metadata["localQueueDelayMs"] != nil
                     && $0.metadata["thresholdMs"] == "800"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["directQuicSequenceNumber"] == "251"
+                    && $0.metadata["action"] == "dropped-expired-live-backlog"
             }
         )
     }
@@ -19629,7 +19732,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func defaultMediaRelayPacketQueueBacklogDropsObservedLatePayloadBeforePlayback() async throws {
+    @Test func defaultMediaRelayPacketQueueBacklogPreservesObservedLatePayloadForPlayout() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19667,30 +19770,32 @@ struct ConnectionTests {
             )
         )
 
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["observed-late-fast-relay-packet"])
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "346"
-                    && $0.metadata["action"] == "dropped-expired-live-backlog"
-                    && $0.metadata["thresholdMs"] == "350"
             }
         )
-        #expect(
+        try await waitForCondition(
+            "accepted Fast Relay packet ingress summary",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
             viewModel.diagnostics.entries.contains {
                 $0.message == "Incoming audio ingress summary"
                     && $0.metadata["transport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "346"
-                    && $0.metadata["freshnessDecision"] == "dropped-expired-live-backlog"
-                    && $0.metadata["playbackDecision"] == "rejected"
+                    && $0.metadata["freshnessDecision"] == "accepted"
+                    && $0.metadata["playbackDecision"] == "accepted"
             }
-        )
+        }
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketQueueBacklogDropsPayloadBeforePlayback() async throws {
+    @Test func expiredMediaRelayPacketQueueBacklogPreservesPayloadForPlayout() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19729,29 +19834,31 @@ struct ConnectionTests {
             )
         )
 
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["stale-fast-relay-packet"])
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "9"
-                    && $0.metadata["action"] == "dropped-expired-live-backlog"
-                    && $0.metadata["thresholdMs"] == "100"
             }
         )
-        #expect(
+        try await waitForCondition(
+            "accepted stale Fast Relay packet backlog ingress summary",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
             viewModel.diagnostics.entries.contains {
                 $0.message == "Incoming audio ingress summary"
                     && $0.metadata["transport"] == "media-relay-packet"
-                    && $0.metadata["freshnessDecision"] == "dropped-expired-live-backlog"
-                    && $0.metadata["playbackDecision"] == "rejected"
+                    && $0.metadata["freshnessDecision"] == "accepted"
+                    && $0.metadata["playbackDecision"] == "accepted"
             }
-        )
+        }
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketSenderClockDropsPayloadBeforePlayback() async throws {
+    @Test func expiredMediaRelayPacketSenderClockPreservesPayloadForPlayout() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19789,29 +19896,31 @@ struct ConnectionTests {
             )
         )
 
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == ["stale-fast-relay-packet"])
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "142"
-                    && $0.metadata["action"] == "dropped-expired-sender-clock-age"
-                    && $0.metadata["thresholdMs"] == "2000"
             }
         )
-        #expect(
+        try await waitForCondition(
+            "accepted stale Fast Relay sender clock ingress summary",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
             viewModel.diagnostics.entries.contains {
                 $0.message == "Incoming audio ingress summary"
                     && $0.metadata["transport"] == "media-relay-packet"
-                    && $0.metadata["freshnessDecision"] == "dropped-expired-sender-clock-age"
-                    && $0.metadata["playbackDecision"] == "rejected"
+                    && $0.metadata["freshnessDecision"] == "accepted"
+                    && $0.metadata["playbackDecision"] == "accepted"
             }
-        )
+        }
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketStaleDrainDiagnosticsAreBudgeted() async throws {
+    @Test func staleMediaRelayPacketQueueBacklogDoesNotEmitDropDiagnostics() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19855,7 +19964,6 @@ struct ConnectionTests {
         let queueDelayViolations = viewModel.diagnostics.invariantViolations.filter {
             $0.invariantID == "media.incoming_audio_queue_delay"
                 && $0.metadata["incomingTransport"] == "media-relay-packet"
-                && $0.metadata["action"] == "dropped-expired-live-backlog"
         }
         let dropEntries = viewModel.diagnostics.entries.filter {
             $0.message == "Dropped incoming audio frame before playback"
@@ -19874,18 +19982,15 @@ struct ConnectionTests {
                 && $0.metadata["playbackDecision"] == "rejected"
         }
 
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(viewModel.engineSnapshot.scheduledPlaybackCount == 0)
-        #expect(queueDelayViolations.count == 1)
-        #expect(queueDelayViolations.first?.metadata["sequenceNumber"] == "9")
-        #expect(dropEntries.count == 1)
-        #expect(suppressionNotices.count == 1)
-        #expect(suppressionNotices.first?.metadata["detailedReportLimit"] == "1")
-        #expect(ingressSummaries.count == 1)
+        #expect(await mediaSession.waitForReceivedChunkCount(6, timeoutNanoseconds: 500_000_000))
+        #expect(queueDelayViolations.isEmpty)
+        #expect(dropEntries.isEmpty)
+        #expect(suppressionNotices.isEmpty)
+        #expect(ingressSummaries.isEmpty)
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketQueueBacklogStopsReceiveTurn() async throws {
+    @Test func expiredMediaRelayPacketQueueBacklogDoesNotStopReceiveTurn() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19924,6 +20029,7 @@ struct ConnectionTests {
         )
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.connectionState = .connected
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 650_000_000
         viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
 
         let receiveEpoch = viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
@@ -19937,51 +20043,72 @@ struct ConnectionTests {
             transportSequenceNumber: 90,
             expectedReceiveEpoch: receiveEpoch,
             ingressContext: IncomingAudioIngressContext(
-                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 250_000_000,
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 800_000_000,
                 sequenceNumber: 90,
-                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 250,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 800,
                 source: "media-relay"
             )
         )
 
         await viewModel.handleIncomingAudioPayload(
-            "fresh-direct-packet",
+            "fresh-fast-relay-packet",
             channelID: "channel-123",
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
             contactID: contactID,
-            incomingAudioTransport: .directQuic,
+            incomingAudioTransport: .mediaRelayPacket,
             transportSequenceNumber: 91,
             expectedReceiveEpoch: receiveEpoch,
             ingressContext: IncomingAudioIngressContext(
                 receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
                 sequenceNumber: 91,
                 sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
-                source: "direct-quic"
+                source: "media-relay"
             )
         )
 
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
-        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != receiveEpoch)
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "expired-fast-relay-packet",
+            "fresh-fast-relay-packet",
+        ])
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "90"
-                    && $0.metadata["action"] == "dropped-expired-live-backlog"
             }
         )
         #expect(
-            viewModel.diagnosticsTranscript.contains(
+            !viewModel.diagnosticsTranscript.contains(
+                "Dropped expired packet media without stopping remote receive"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
                 "Forced remote receive stop after expired live audio"
             )
+        )
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["incomingTransport"] == "media-relay-packet"
+                    && $0.metadata["sequenceNumber"] == "91"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped asynchronous incoming audio playback after freshness deadline"
+                    && $0.metadata["sequenceNumber"] == "91"
+            }
         )
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketQueueBacklogCancelsPendingAsyncPlaybackCompletion() async throws {
+    @Test func expiredMediaRelayPacketQueueBacklogDoesNotCancelPendingAsyncPlaybackCompletion() async throws {
         let viewModel = PTTViewModel()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.enableSentSignalCaptureForTesting()
@@ -19994,9 +20121,9 @@ struct ConnectionTests {
         let contactID = UUID()
         let channelUUID = UUID()
         let mediaSession = RecordingMediaSession()
-        mediaSession.receiveRemoteAudioChunkPreAppendDelayNanoseconds = 250_000_000
+        mediaSession.receiveRemoteAudioChunkPreAppendDelayNanoseconds = 50_000_000
         viewModel.applicationStateOverride = .active
-        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 100_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 650_000_000
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -20048,7 +20175,7 @@ struct ConnectionTests {
                 source: "media-relay"
             )
         )
-        try await Task.sleep(nanoseconds: 30_000_000)
+        try await Task.sleep(nanoseconds: 10_000_000)
 
         await viewModel.handleIncomingAudioPayload(
             "expired-fast-relay-packet",
@@ -20060,44 +20187,48 @@ struct ConnectionTests {
             transportSequenceNumber: 155,
             expectedReceiveEpoch: receiveEpoch,
             ingressContext: IncomingAudioIngressContext(
-                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 250_000_000,
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 800_000_000,
                 sequenceNumber: 155,
-                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 250,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 800,
                 source: "media-relay"
             )
         )
-        try await Task.sleep(nanoseconds: 350_000_000)
-
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }.isEmpty)
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "pending-fast-relay-packet",
+            "expired-fast-relay-packet",
+        ])
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
         #expect(
-            viewModel.diagnostics.entries.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["incomingTransport"] == "media-relay-packet"
+                    && $0.metadata["sequenceNumber"] == "155"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
                 $0.message == "Dropped asynchronous incoming audio playback after receive epoch changed"
                     && $0.metadata["sequenceNumber"] == "153"
             }
         )
         #expect(
-            viewModel.diagnostics.entries.contains {
-                $0.message == "Incoming audio ingress summary"
-                    && $0.metadata["transport"] == "media-relay-packet"
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped asynchronous incoming audio playback after freshness deadline"
                     && $0.metadata["sequenceNumber"] == "153"
-                    && $0.metadata["freshnessDecision"] == "dropped-stale-receive-epoch"
-                    && $0.metadata["playbackDecision"] == "rejected"
             }
         )
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
-                $0.invariantID == "media.incoming_audio_queue_delay"
-                    && $0.metadata["incomingTransport"] == "media-relay-packet"
-                    && $0.metadata["sequenceNumber"] == "155"
-                    && $0.metadata["action"] == "dropped-expired-live-backlog"
-            }
+            !viewModel.diagnosticsTranscript.contains(
+                "Forced remote receive stop after expired live audio"
+            )
         )
-        #expect(!viewModel.diagnosticsTranscript.contains("Sent first audio playback ACK"))
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketSenderClockStopsReceiveTurn() async throws {
+    @Test func expiredMediaRelayPacketSenderClockDoesNotStopReceiveTurn() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -20172,28 +20303,34 @@ struct ConnectionTests {
             )
         )
 
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
-        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != receiveEpoch)
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "stale-fast-relay-packet",
+            "fresh-fast-relay-packet",
+        ])
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "109"
-                    && $0.metadata["action"] == "dropped-expired-sender-clock-age"
-                    && $0.metadata["senderClockAgeMs"] != nil
             }
         )
         #expect(
-            viewModel.diagnosticsTranscript.contains(
+            !viewModel.diagnosticsTranscript.contains(
+                "Dropped expired packet media without stopping remote receive"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
                 "Forced remote receive stop after expired live audio"
             )
         )
     }
 
     @MainActor
-    @Test func mediaRelayPacketAsyncPlaybackExpiresBeforeSchedulingStaleAudio() async throws {
+    @Test func mediaRelayPacketAsyncPlaybackDelayDoesNotExpireAdmittedPacket() async throws {
         let viewModel = PTTViewModel()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.enableSentSignalCaptureForTesting()
@@ -20260,29 +20397,19 @@ struct ConnectionTests {
                 source: "media-relay"
             )
         )
-        let deadlineNanoseconds = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
-        while DispatchTime.now().uptimeNanoseconds < deadlineNanoseconds,
-              !viewModel.diagnostics.entries.contains(where: {
-                  $0.message == "Dropped asynchronous incoming audio playback after freshness deadline"
-                      && $0.metadata["sequenceNumber"] == "154"
-              }) {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
-        #expect(client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }.isEmpty)
-        #expect(!viewModel.remoteTransmittingContactIDs.contains(contactID))
-        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != receiveEpoch)
+        #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 1_000_000_000))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(mediaSession.receivedRemoteAudioChunks == ["fresh-then-delayed-fast-relay-packet"])
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
         #expect(
-            viewModel.diagnostics.entries.contains {
+            !viewModel.diagnostics.entries.contains {
                 $0.message == "Dropped asynchronous incoming audio playback after freshness deadline"
                     && $0.metadata["sequenceNumber"] == "154"
-                    && $0.metadata["reason"] == "expired-live-backlog"
-                    && ["after-playback", "queue-expired"].contains($0.metadata["stage"])
             }
         )
         #expect(
-            viewModel.diagnostics.entries.contains {
+            !viewModel.diagnostics.entries.contains {
                 $0.message == "Incoming audio ingress summary"
                     && $0.metadata["transport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "154"
@@ -20291,18 +20418,87 @@ struct ConnectionTests {
             }
         )
         #expect(
-            viewModel.diagnostics.invariantViolations.contains {
+            !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_queue_delay"
                     && $0.metadata["incomingTransport"] == "media-relay-packet"
                     && $0.metadata["sequenceNumber"] == "154"
                     && $0.metadata["action"] == "dropped-expired-live-backlog"
             }
         )
-        #expect(!viewModel.diagnosticsTranscript.contains("Sent first audio playback ACK"))
+
+        mediaSession.receiveRemoteAudioChunkPreAppendDelayNanoseconds = nil
+        await viewModel.handleIncomingAudioPayload(
+            "stale-on-arrival-fast-relay-packet",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 155,
+            expectedReceiveEpoch: receiveEpoch,
+            ingressContext: IncomingAudioIngressContext(
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds - 250_000_000,
+                sequenceNumber: 155,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 250,
+                source: "media-relay"
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 500_000_000))
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "fresh-then-delayed-fast-relay-packet",
+            "stale-on-arrival-fast-relay-packet",
+        ])
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.incoming_audio_queue_delay"
+                    && $0.metadata["incomingTransport"] == "media-relay-packet"
+                    && $0.metadata["sequenceNumber"] == "155"
+            }
+        )
+
+        await viewModel.handleIncomingAudioPayload(
+            "fresh-after-expired-fast-relay-packet",
+            channelID: "channel-123",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .mediaRelayPacket,
+            transportSequenceNumber: 156,
+            expectedReceiveEpoch: receiveEpoch,
+            ingressContext: IncomingAudioIngressContext(
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 156,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                source: "media-relay"
+            )
+        )
+
+        #expect(await mediaSession.waitForReceivedChunkCount(3, timeoutNanoseconds: 500_000_000))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(mediaSession.receivedRemoteAudioChunks == [
+            "fresh-then-delayed-fast-relay-packet",
+            "stale-on-arrival-fast-relay-packet",
+            "fresh-after-expired-fast-relay-packet",
+        ])
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Forced remote receive stop after expired live audio"
+            )
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Dropped asynchronous incoming audio playback after freshness deadline"
+                    && $0.metadata["sequenceNumber"] == "156"
+            }
+        )
     }
 
     @MainActor
-    @Test func expiredMediaRelayPacketSenderClockClosesPreservedRelayClient() async throws {
+    @Test func expiredMediaRelayPacketSenderClockPreservesRelayClient() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -20383,17 +20579,18 @@ struct ConnectionTests {
         )
 
         try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(!viewModel.mediaRuntime.hasActiveMediaRelayClient)
-        #expect(viewModel.mediaRuntime.transportPathState == .relay)
-        #expect(mediaSession.closedDeactivateAudioSessionFlags.isEmpty == false)
+        #expect(viewModel.mediaRuntime.hasActiveMediaRelayClient)
+        #expect(viewModel.mediaRuntime.transportPathState == .fastRelay)
+        #expect(mediaSession.closedDeactivateAudioSessionFlags.isEmpty)
+        #expect(mediaSession.receivedRemoteAudioChunks == ["stale-fast-relay-packet"])
         #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "Forced remote receive stop after expired live audio"
+            !viewModel.diagnosticsTranscript.contains(
+                "Dropped expired packet media without stopping remote receive"
             )
         )
         #expect(
             !viewModel.diagnosticsTranscript.contains(
-                "Preserving fast relay media path during media close"
+                "Forced remote receive stop after expired live audio"
             )
         )
     }
@@ -21125,7 +21322,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func mediaRelayPacketContinuityGapResetsReceiveEpoch() async throws {
+    @Test func mediaRelayPacketContinuityGapPreservesReceiveEpoch() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -21214,8 +21411,8 @@ struct ConnectionTests {
             "packet-after-continuity-gap",
         ])
         #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
-        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) != receiveEpoch)
-        #expect(mediaSession.beginReceiveEpochCallCount == 1)
+        #expect(viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID) == receiveEpoch)
+        #expect(mediaSession.beginReceiveEpochCallCount == 0)
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_chunk_gap"
@@ -21224,12 +21421,12 @@ struct ConnectionTests {
         )
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Reset remote audio receive epoch after incoming audio continuity gap"
+                "Preserved Fast Relay packet receive epoch after incoming audio continuity gap"
             )
         )
         #expect(
             !viewModel.diagnosticsTranscript.contains(
-                "Preserved relay receive epoch after incoming audio continuity gap"
+                "Reset remote audio receive epoch after incoming audio continuity gap"
             )
         )
     }
@@ -21386,8 +21583,8 @@ struct ConnectionTests {
         viewModel.isPTTAudioSessionActive = true
         viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 80_000_000
         viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 220_000_000
-        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 300_000_000
-        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 300_000_000
+        viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds = 800_000_000
+        viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 800_000_000
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -21427,12 +21624,13 @@ struct ConnectionTests {
         await viewModel.activateDirectQuicMediaPath(for: contactID, attemptID: "attempt-1")
 
         Task.detached(priority: .userInitiated) {
+            let staleReceivedAt = DispatchTime.now().uptimeNanoseconds - 900_000_000
             controller.injectIncomingAudioPayloadForTesting(
                 DirectQuicIncomingAudioPayload(
                     payload: "stale",
-                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    datagramReceivedAtNanoseconds: staleReceivedAt,
                     sequenceNumber: 1,
-                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 900
                 )
             )
             try? await Task.sleep(nanoseconds: 340_000_000)
@@ -21686,15 +21884,15 @@ struct ConnectionTests {
         #expect(viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds == 240_000_000)
         #expect(viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds == 1_000_000_000)
         #expect(viewModel.directQuicIncomingAudioLiveBacklogDropNanoseconds == 800_000_000)
-        #expect(viewModel.mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds == 350_000_000)
+        #expect(viewModel.mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds == 650_000_000)
         #expect(viewModel.incomingLiveAudioBacklogExpirationNanoseconds == 2_000_000_000)
         #expect(
             viewModel.incomingLiveAudioBacklogExpirationNanoseconds(for: .directQuic)
-                == 800_000_000
+                == 0
         )
         #expect(
             viewModel.incomingLiveAudioBacklogExpirationNanoseconds(for: .mediaRelayPacket)
-                == 350_000_000
+                == 0
         )
         #expect(
             viewModel.incomingLiveAudioBacklogExpirationNanoseconds(for: .mediaRelayTcp)
@@ -21730,7 +21928,7 @@ struct ConnectionTests {
         )
         #expect(
             viewModel.mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds
-                == viewModel.remoteAudioChunkContinuityGapNanoseconds
+                > viewModel.remoteAudioChunkContinuityGapNanoseconds
         )
         #expect(
             viewModel.incomingLiveAudioBacklogExpirationNanoseconds

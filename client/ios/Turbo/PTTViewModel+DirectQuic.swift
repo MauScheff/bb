@@ -1423,7 +1423,9 @@ extension PTTViewModel {
         )
         let payloadContainsOpusFrame = VoiceAudioFramePayloadCodec
             .mayContainOpusFrame(incomingPayload.payload)
-        if localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
+        if liveBacklogDropThresholdNanoseconds > 0,
+           localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds,
+           !payloadContainsOpusFrame {
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(
                 contactID: contactID,
                 channelID: attempt.channelID,
@@ -1454,6 +1456,16 @@ extension PTTViewModel {
                 thresholdNanoseconds: liveBacklogDropThresholdNanoseconds
             )
             return
+        } else if liveBacklogDropThresholdNanoseconds > 0,
+                  localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
+            recordDirectQuicIncomingAudioQueueDelayIfNeeded(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                attemptID: attemptID,
+                timingMetadata: timingMetadata,
+                thresholdNanoseconds: liveBacklogDropThresholdNanoseconds,
+                action: "preserved-expired-live-backlog"
+            )
         } else if !payloadContainsOpusFrame,
                   localQueueDelayNanoseconds >= localBacklogResetThresholdNanoseconds {
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(

@@ -1065,7 +1065,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let livePacketAudioWaitsForProcessing = false
     static let liveAudioMaxConcurrentIncomingHandlers = 4
     static let liveAudioMaxPendingIncomingHandlers = 96
-    static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 350_000_000
+    static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 650_000_000
     private static let maximumReceiveChunkLength = 65_536
     private let config: TurboMediaRelayClientConfig
     private let sessionId: String
@@ -2031,23 +2031,9 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     private func enqueueIncomingAudioPayload(
         _ incomingPayload: TurboMediaRelayIncomingAudioPayload
     ) {
-        let expirationNanoseconds: UInt64?
-        if incomingPayload.mediaMode == .quicDatagram {
-            expirationNanoseconds = Self.saturatingNanosecondDeadline(
-                base: incomingPayload.receivedAtNanoseconds,
-                interval: incomingAudioHandlerExpirationNanoseconds
-            )
-        } else {
-            expirationNanoseconds = nil
-        }
-        incomingAudioPayloadQueue.enqueue(expiringAtNanoseconds: expirationNanoseconds) { [onIncomingAudioPayload] in
+        incomingAudioPayloadQueue.enqueue { [onIncomingAudioPayload] in
             await onIncomingAudioPayload(incomingPayload)
         }
-    }
-
-    private static func saturatingNanosecondDeadline(base: UInt64, interval: UInt64) -> UInt64 {
-        let (deadline, overflow) = base.addingReportingOverflow(interval)
-        return overflow ? UInt64.max : deadline
     }
 
     private func nextSequenceNumber() -> UInt64 {

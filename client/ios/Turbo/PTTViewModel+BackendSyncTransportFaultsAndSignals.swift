@@ -629,8 +629,25 @@ extension PTTViewModel {
         observation: IncomingAudioContinuityObservation,
         thresholdNanoseconds: UInt64
     ) -> Bool {
-        guard incomingAudioTransport.isUnreliablePacketMedia else { return false }
         guard let gapNanoseconds = observation.gapNanoseconds else { return false }
+        guard incomingAudioTransport != .mediaRelayPacket else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Preserved Fast Relay packet receive epoch after incoming audio continuity gap",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                    "gapMilliseconds": String(gapNanoseconds / 1_000_000),
+                    "thresholdMilliseconds": String(thresholdNanoseconds / 1_000_000),
+                    "previousTransport": observation.previousTransport?.diagnosticsValue ?? "none",
+                ]
+            )
+            return false
+        }
+        guard incomingAudioTransport.isUnreliablePacketMedia else { return false }
 
         if incomingAudioTransport == .directQuic,
            retireDirectQuicReceivePathAfterLiveAudioFreshnessFailureIfFallbackReady(
@@ -736,16 +753,8 @@ extension PTTViewModel {
         for incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> UInt64 {
         switch incomingAudioTransport {
-        case .directQuic:
-            return min(
-                directQuicIncomingAudioLiveBacklogDropNanoseconds,
-                incomingLiveAudioBacklogExpirationNanoseconds
-            )
-        case .mediaRelayPacket:
-            return min(
-                mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds,
-                incomingLiveAudioBacklogExpirationNanoseconds
-            )
+        case .directQuic, .mediaRelayPacket:
+            return 0
         case .mediaRelayTcp, .relayWebSocket:
             return incomingLiveAudioBacklogExpirationNanoseconds
         }
@@ -1498,8 +1507,14 @@ extension PTTViewModel {
             senderSentAtMilliseconds: senderSentAtMilliseconds,
             incomingAudioTransport: incomingAudioTransport
         )
+        let playbackQueueExpirationNanoseconds = incomingAudioTransport.isUnreliablePacketMedia
+            ? nil
+            : playbackDeadlineNanoseconds
+        let sessionPlaybackDeadlineNanoseconds = incomingAudioTransport.isUnreliablePacketMedia
+            ? nil
+            : playbackDeadlineNanoseconds
         mediaRuntime.incomingAudioPlaybackQueue.enqueue(
-            expiringAtNanoseconds: playbackDeadlineNanoseconds,
+            expiringAtNanoseconds: playbackQueueExpirationNanoseconds,
             onExpired: { [weak self] in
                 guard let self,
                       let dropReason = await self.incomingAudioAsyncPlaybackDropReason(
@@ -1541,11 +1556,12 @@ extension PTTViewModel {
                 )
                 return
             }
-            if let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
-                receivedAtNanoseconds: receivedAtNanoseconds,
-                senderSentAtMilliseconds: senderSentAtMilliseconds,
-                incomingAudioTransport: incomingAudioTransport
-            ) {
+            if !incomingAudioTransport.isUnreliablePacketMedia,
+               let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
+                   receivedAtNanoseconds: receivedAtNanoseconds,
+                   senderSentAtMilliseconds: senderSentAtMilliseconds,
+                   incomingAudioTransport: incomingAudioTransport
+               ) {
                 await self?.recordExpiredAsyncIncomingAudioPlaybackDrop(
                     contactID: contactID,
                     channelID: channelID,
@@ -1564,7 +1580,7 @@ extension PTTViewModel {
                 audioPayload,
                 playbackProfile: transportPolicy.playbackProfile,
                 expectedReceiveEpoch: sessionReceiveEpoch,
-                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds
+                playbackDeadlineNanoseconds: sessionPlaybackDeadlineNanoseconds
             )
             guard await self?.isIncomingAudioPlaybackCompletionCurrent(
                 contactID: contactID,
@@ -1585,11 +1601,12 @@ extension PTTViewModel {
                 )
                 return
             }
-            if let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
-                receivedAtNanoseconds: receivedAtNanoseconds,
-                senderSentAtMilliseconds: senderSentAtMilliseconds,
-                incomingAudioTransport: incomingAudioTransport
-            ) {
+            if !(incomingAudioTransport.isUnreliablePacketMedia && playbackAccepted),
+               let dropReason = await self?.incomingAudioAsyncPlaybackDropReason(
+                   receivedAtNanoseconds: receivedAtNanoseconds,
+                   senderSentAtMilliseconds: senderSentAtMilliseconds,
+                   incomingAudioTransport: incomingAudioTransport
+               ) {
                 await self?.recordExpiredAsyncIncomingAudioPlaybackDrop(
                     contactID: contactID,
                     channelID: channelID,
@@ -2024,7 +2041,7 @@ extension PTTViewModel {
     ) -> Int64 {
         switch incomingAudioTransport {
         case .directQuic, .mediaRelayPacket:
-            return 2_000
+            return 0
         case .mediaRelayTcp:
             return 3_500
         case .relayWebSocket:
@@ -2154,6 +2171,21 @@ extension PTTViewModel {
         incomingAudioTransport: IncomingAudioPayloadTransport,
         reason: String
     ) {
+        guard shouldStopRemoteReceiveAfterExpiredLiveAudioDrop(for: incomingAudioTransport) else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped expired packet media without stopping remote receive",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "transport": incomingAudioTransport.diagnosticsValue,
+                    "reason": reason,
+                ]
+            )
+            return
+        }
         forceStopRemoteReceiveAfterExpiredLiveAudio(
             contactID: contactID,
             channelID: channelID,
@@ -2161,6 +2193,12 @@ extension PTTViewModel {
             incomingAudioTransport: incomingAudioTransport,
             reason: reason
         )
+    }
+
+    private func shouldStopRemoteReceiveAfterExpiredLiveAudioDrop(
+        for incomingAudioTransport: IncomingAudioPayloadTransport
+    ) -> Bool {
+        !incomingAudioTransport.isUnreliablePacketMedia
     }
 
     private func forceStopRemoteReceiveAfterExpiredLiveAudio(
