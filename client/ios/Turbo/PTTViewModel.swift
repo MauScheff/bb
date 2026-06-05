@@ -220,6 +220,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var receiveExecutionRuntime = ReceiveExecutionRuntimeState()
     var mediaRuntime = MediaRuntimeState()
     let incomingAudioIngressExecutor = IncomingAudioIngressExecutor()
+    nonisolated let voiceTurnRuntime = VoiceTurnRuntime()
     var backendConfigurationTask: Task<Void, Never>?
     var backendConfigurationKey: String?
     var backendConfigurationToken: UUID?
@@ -240,7 +241,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var directQuicIncomingAudioQueueSlowNanoseconds: UInt64 = 120_000_000
     var directQuicIncomingAudioQueueDelayViolationNanoseconds: UInt64 = 240_000_000
     var directQuicIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 800_000_000
-    var mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 350_000_000
+    var mediaRelayPacketIncomingAudioLiveBacklogDropNanoseconds: UInt64 = 650_000_000
     var directQuicIncomingAudioQueueSevereDelayNanoseconds: UInt64 = 1_000_000_000
     var directQuicStalePlaybackDropFallbackThreshold: Int = 3
     var incomingLiveAudioBacklogExpirationNanoseconds: UInt64 = 2_000_000_000
@@ -1049,6 +1050,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             mediaRelayTcpPort: mediaRelayConfig.map { Int($0.tcpPort) },
             mediaRelayActive: mediaRuntime.mediaRelayClient != nil,
             audioPacketDiagnosticsEnabled: TurboAudioDiagnosticsDebugOverride.isPacketMetadataEnabled(),
+            voiceMediaCoreMode: TurboVoiceMediaCoreDebugOverride.liveMode(),
+            binaryVoicePacketV1Enabled: TurboBinaryVoicePacketDebugOverride.isEnabled(),
             backendAdvertisesUpgrade: backendAdvertisesDirectQuicUpgrade,
             effectiveUpgradeEnabled: effectiveDirectQuicUpgradeEnabled,
             transportPathState: mediaTransportPathState,

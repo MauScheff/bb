@@ -1711,6 +1711,40 @@ extension PTTViewModel {
         captureDiagnosticsState("media-audio:packet-diagnostics")
     }
 
+    func setVoiceMediaCoreModeForDebug(_ mode: VoiceMediaCoreMode) {
+        let previousValue = TurboVoiceMediaCoreDebugOverride.liveMode()
+        TurboVoiceMediaCoreDebugOverride.setLiveMode(mode)
+
+        diagnostics.record(
+            .media,
+            message: "Voice media core mode updated",
+            metadata: [
+                "selectedContact": selectedContact?.handle ?? "none",
+                "previousValue": previousValue.rawValue,
+                "newValue": mode.rawValue,
+            ]
+        )
+        statusMessage = "Voice media core: \(mode.rawValue)"
+        captureDiagnosticsState("media-audio:voice-media-core")
+    }
+
+    func setBinaryVoicePacketV1EnabledForDebug(_ isEnabled: Bool) {
+        let previousValue = TurboBinaryVoicePacketDebugOverride.isEnabled()
+        TurboBinaryVoicePacketDebugOverride.setEnabled(isEnabled)
+
+        diagnostics.record(
+            .media,
+            message: "Binary voice packet v1 advertisement updated",
+            metadata: [
+                "selectedContact": selectedContact?.handle ?? "none",
+                "previousValue": String(previousValue),
+                "newValue": String(isEnabled),
+            ]
+        )
+        statusMessage = isEnabled ? "Binary voice packet enabled" : "Binary voice packet disabled"
+        captureDiagnosticsState("media-audio:binary-voice-packet")
+    }
+
     func setDirectQuicTransmitStartupPolicyForDebug(
         _ policy: DirectQuicTransmitStartupPolicy
     ) {

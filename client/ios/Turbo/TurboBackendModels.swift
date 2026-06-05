@@ -912,6 +912,7 @@ nonisolated enum TurboAudioDiagnosticsDebugOverride {
 
 nonisolated enum TurboVoiceMediaCoreDebugOverride {
     static let storageKey = "TurboDebugVoiceMediaCoreMode"
+    static let liveStorageKey = "TurboDebugLiveVoiceMediaCoreMode"
     static let launchArgument = "-TurboDebugVoiceMediaCoreMode"
     static let environmentKey = "TURBO_DEBUG_VOICE_MEDIA_CORE_MODE"
     static var allowsDebugOverridesByDefault: Bool {
@@ -928,6 +929,19 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
         allowDebugOverride: Bool = allowsDebugOverridesByDefault
     ) -> VoiceMediaCoreMode {
         mode(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowDebugOverride: allowDebugOverride
+        )
+    }
+
+    static func liveMode(
+        processInfo: ProcessInfo = .processInfo,
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> VoiceMediaCoreMode {
+        liveMode(
             arguments: processInfo.arguments,
             environment: processInfo.environment,
             defaults: defaults,
@@ -957,11 +971,41 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
         return .legacyAdaptive
     }
 
+    static func liveMode(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> VoiceMediaCoreMode {
+        guard allowDebugOverride else { return .legacyAdaptive }
+        if let launchValue = launchArgumentValue(launchArgument, in: arguments),
+           let parsed = parseMode(launchValue) {
+            return parsed
+        }
+        if let environmentValue = environment[environmentKey],
+           let parsed = parseMode(environmentValue) {
+            return parsed
+        }
+        if let storedLiveValue = defaults.string(forKey: liveStorageKey),
+           let parsed = parseMode(storedLiveValue) {
+            return parsed
+        }
+        return .legacyAdaptive
+    }
+
     static func setMode(_ mode: VoiceMediaCoreMode?, defaults: UserDefaults = .standard) {
         if let mode {
             defaults.set(mode.rawValue, forKey: storageKey)
         } else {
             defaults.removeObject(forKey: storageKey)
+        }
+    }
+
+    static func setLiveMode(_ mode: VoiceMediaCoreMode?, defaults: UserDefaults = .standard) {
+        if let mode {
+            defaults.set(mode.rawValue, forKey: liveStorageKey)
+        } else {
+            defaults.removeObject(forKey: liveStorageKey)
         }
     }
 
@@ -984,6 +1028,76 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
             return nil
         }
         return arguments[index + 1]
+    }
+}
+
+nonisolated enum TurboBinaryVoicePacketDebugOverride {
+    static let storageKey = "TurboDebugBinaryVoicePacketV1Enabled"
+    static let launchArgument = "-TurboDebugBinaryVoicePacketV1Enabled"
+    static let environmentKey = "TURBO_DEBUG_BINARY_VOICE_PACKET_V1_ENABLED"
+    static var allowsDebugOverridesByDefault: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    static func isEnabled(
+        processInfo: ProcessInfo = .processInfo,
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> Bool {
+        isEnabled(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowDebugOverride: allowDebugOverride
+        )
+    }
+
+    static func isEnabled(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> Bool {
+        guard allowDebugOverride else { return false }
+        if let launchValue = launchArgumentValue(launchArgument, in: arguments),
+           let parsed = parseBoolean(launchValue) {
+            return parsed
+        }
+        if arguments.contains(launchArgument) {
+            return true
+        }
+        if let environmentValue = environment[environmentKey],
+           let parsed = parseBoolean(environmentValue) {
+            return parsed
+        }
+        return defaults.bool(forKey: storageKey)
+    }
+
+    static func setEnabled(_ isEnabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(isEnabled, forKey: storageKey)
+    }
+
+    private static func launchArgumentValue(_ launchArgument: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: launchArgument),
+              arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+
+    private static func parseBoolean(_ rawValue: String) -> Bool? {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on":
+            return true
+        case "0", "false", "no", "off":
+            return false
+        default:
+            return nil
+        }
     }
 }
 

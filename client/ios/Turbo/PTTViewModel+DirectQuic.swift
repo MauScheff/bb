@@ -402,6 +402,17 @@ extension PTTViewModel {
                         attemptID: attemptID
                     )
                 },
+                onExpiredIncomingAudioPayload: { [weak self] payload, localQueueDelayNanoseconds, thresholdNanoseconds in
+                    guard let self, !Task.isCancelled else { return }
+                    await self.handleExpiredDirectQuicIncomingAudioPayloadBeforeAppHandler(
+                        payload,
+                        contactID: contactID,
+                        channelID: attempt.channelID,
+                        peerDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                        localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                        thresholdNanoseconds: thresholdNanoseconds
+                    )
+                },
                 onReceiverPrewarmRequest: { [weak self] payload in
                     guard let self, !Task.isCancelled else { return }
                     await self.ingestDirectQuicReceiverPrewarmRequest(
@@ -1694,6 +1705,85 @@ extension PTTViewModel {
             metadata: metadata
         )
         return true
+    }
+
+    nonisolated func handleExpiredDirectQuicIncomingAudioPayloadBeforeAppHandler(
+        _ incoming: DirectQuicIncomingAudioPayload,
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        localQueueDelayNanoseconds: UInt64,
+        thresholdNanoseconds: UInt64
+    ) async {
+        let report = await voiceTurnRuntime.recordExpiredBeforeAppHandler(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: peerDeviceID,
+            transport: "direct-quic",
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            staleReceiveRepairThresholdNanoseconds: thresholdNanoseconds
+        )
+        let shouldRecordReport: Bool
+        switch report.disposition {
+        case .detailed, .suppressionNotice:
+            shouldRecordReport = true
+        case .suppressed:
+            shouldRecordReport = report.shouldRepairStaleReceive
+        }
+        guard shouldRecordReport else {
+            return
+        }
+
+        await MainActor.run {
+            var metadata = [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": peerDeviceID,
+                "directQuicSequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
+                "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                "maxLocalQueueDelayMs": String(report.maxLocalQueueDelayNanoseconds / 1_000_000),
+                "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+                "expiredCount": String(report.expiredCount),
+            ]
+            switch report.disposition {
+            case .detailed:
+                diagnostics.record(
+                    .media,
+                    message: "Dropped expired Direct QUIC incoming audio payload before app handler",
+                    metadata: metadata
+                )
+            case .suppressionNotice:
+                metadata["reason"] = "budget-exhausted"
+                diagnostics.record(
+                    .media,
+                    level: .notice,
+                    message: "Suppressing repetitive expired Direct QUIC incoming audio payload diagnostics",
+                    metadata: metadata
+                )
+            case .suppressed:
+                break
+            }
+
+            guard report.shouldRepairStaleReceive else { return }
+            let repaired = repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID)
+            if !repaired,
+               receiveExecutionCoordinator.state.remoteActivityByContactID[contactID] != nil,
+               localQueueDelayNanoseconds >= thresholdNanoseconds {
+                forceStopRemoteReceiveAfterExpiredLiveAudio(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: peerDeviceID,
+                    incomingAudioTransport: .directQuic,
+                    reason: "expired-before-app-handler",
+                    diagnosticsMessage: "Forced remote receive stop after expired Direct QUIC app-handler backlog",
+                    additionalMetadata: [
+                        "directQuicSequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
+                        "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                        "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+                    ]
+                )
+            }
+        }
     }
 
     @discardableResult

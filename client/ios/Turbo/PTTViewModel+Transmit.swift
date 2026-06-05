@@ -4287,25 +4287,19 @@ extension PTTViewModel {
            pttCoordinator.state.systemChannelUUID == channelUUID,
            pttCoordinator.state.isTransmitting,
            hasActiveTransmitPressIntent(),
-           let epoch = pttAudioSessionRuntime.bindActiveRemoteReceiveToLocalTransmit(
-                channelUUID: channelUUID,
-                contactID: target.contactID,
-                channelID: target.channelID,
-                transmitID: transmitID
-           ) {
+           case .remoteReceive = pttAudioSessionRuntime.activeEpoch?.owner {
             diagnostics.record(
                 .pushToTalk,
-                message: "Rebound active remote receive PTT audio session to local transmit",
-                metadata: epoch.diagnosticsMetadata.merging(
-                    ["stage": stage],
-                    uniquingKeysWith: { _, new in new }
-                )
+                message: "Waiting for fresh local PTT audio activation after remote receive handoff",
+                metadata: [
+                    "contactId": target.contactID.uuidString,
+                    "channelId": target.channelID,
+                    "channelUUID": channelUUID.uuidString,
+                    "transmitId": transmitID,
+                    "stage": stage,
+                    "pttAudioOwner": activePTTAudioSessionOwnerDescription(),
+                ]
             )
-            clearPendingLocalPTTAudioActivation(
-                channelUUID: channelUUID,
-                source: "remote-receive-to-local-transmit:\(stage)"
-            )
-            return true
         }
         diagnostics.record(
             .media,

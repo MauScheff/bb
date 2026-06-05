@@ -435,6 +435,14 @@ actor AudioChunkSender {
                 pendingPayloadCount: pendingPayloadCount
             )
         case .failure(let error):
+            if error is CancellationError {
+                pendingPayloads.removeAll(keepingCapacity: false)
+                cancelAllInFlightSendTasks()
+                inFlightSends.removeAll(keepingCapacity: false)
+                inFlightSendTasks.removeAll(keepingCapacity: false)
+                flushPendingImmediately = false
+                return
+            }
             transportFailureReported = true
             await reportFailure("audio send failed: \(error.localizedDescription)")
             pendingPayloads.removeAll(keepingCapacity: false)
@@ -879,6 +887,10 @@ nonisolated enum PCMOutgoingPayloadSplitter {
                 continue
             }
             guard let data = Data(base64Encoded: chunk) else { return nil }
+            if (try? VoicePacketV1Codec.decode(data)) != nil {
+                opusDurationNanoseconds += UInt64(VoiceFrameAccumulator.frameDurationMilliseconds) * 1_000_000
+                continue
+            }
             frameCount += data.count / bytesPerInt16Sample
         }
         if opusDurationNanoseconds > 0 {
@@ -1125,7 +1137,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
         outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .legacyPCM,
         outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
-        voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.mode()
+        voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
     ) {
         self.initialSendAudioChunk = sendAudioChunk
         self.currentSendAudioChunk = sendAudioChunk
@@ -1744,7 +1756,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                         playbackProfile: playbackProfile,
                         decode: { frame in try opusCodec.decode(frame.packet) },
                         decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
-                        plc: { opusCodec.decodePLC() }
+                        plc: { opusCodec.decodePLC() },
+                        nowNanoseconds: DispatchTime.now().uptimeNanoseconds
                     )
                     reportOpusPlayoutResultIfNeeded(
                         result,
@@ -1793,7 +1806,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                         playbackProfile: playbackProfile,
                         decode: { frame in try opusCodec.decode(frame.packet) },
                         decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
-                        plc: { opusCodec.decodePLC() }
+                        plc: { opusCodec.decodePLC() },
+                        nowNanoseconds: DispatchTime.now().uptimeNanoseconds
                     )
                     reportOpusPlayoutResultIfNeeded(
                         result,
@@ -1864,6 +1878,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
         var metadata = [
             "codec": "opus",
+            "voiceMediaCoreMode": voiceMediaCoreMode.rawValue,
             "frameIndex": String(frame.frameIndex),
             "packetSizeBytes": String(frame.packet.count),
             "playbackProfile": String(describing: playbackProfile),
@@ -1879,6 +1894,12 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             "largestScheduledGapFrames": String(result.largestScheduledGapFrames),
             "adaptiveCushionIncreased": String(result.adaptiveCushionIncreased),
         ]
+        let metrics = playoutEngine.metrics()
+        metadata["playoutPhase"] = String(describing: metrics.phase)
+        metadata["playoutAcceptedPacketCount"] = String(metrics.acceptedPacketCount)
+        metadata["playoutDuplicatePacketCount"] = String(metrics.duplicatePacketCount)
+        metadata["playoutLatePacketCount"] = String(metrics.latePacketCount)
+        metadata["playoutShadowDivergenceCount"] = String(metrics.shadowDivergenceCount)
         var invariantID: String?
         if let interArrivalGapNanoseconds = result.interArrivalGapNanoseconds {
             metadata["interArrivalGapMs"] = String(interArrivalGapNanoseconds / 1_000_000)
@@ -2377,6 +2398,13 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             metadata["sampleRate"] = String(opusFrame.sampleRate)
             metadata["frameDurationMs"] = String(opusFrame.frameDurationMilliseconds)
         } else if let data = Data(base64Encoded: payload),
+                  let packet = try? VoicePacketV1Codec.decode(data) {
+            metadata["codec"] = "binary-opus-v1"
+            metadata["frameIndex"] = String(packet.frameIndex)
+            metadata["packetSizeBytes"] = String(packet.opusPayload.count)
+            metadata["sampleRate"] = String(VoiceFrameAccumulator.sampleRate)
+            metadata["frameDurationMs"] = String(VoiceFrameAccumulator.frameDurationMilliseconds)
+        } else if let data = Data(base64Encoded: payload),
            let levelMetrics = PCMLevelMetrics.forInt16PCMData(data) {
             metadata["codec"] = "legacy-pcm"
             metadata["base64Length"] = String(payload.count)
@@ -2453,12 +2481,28 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             for frame in frames {
                 do {
                     let packet = try opusCodec.encode(frame.pcmData)
-                    if let payload = VoiceAudioFramePayloadCodec.encodeOpus(
-                        packet: packet,
-                        frameIndex: frame.frameIndex,
-                        features: outboundOpusEncodingPolicy.payloadFeatures
-                    ) {
-                        payloads.append(payload)
+                    switch outboundVoiceMediaPolicy {
+                    case .binaryOpusV1:
+                        var flags: UInt16 = 0
+                        if outboundOpusEncodingPolicy.payloadFeatures.contains(VoiceMediaCapabilities.fecFeature) {
+                            flags |= VoicePacketV1Codec.Flag.inBandFEC.rawValue
+                        }
+                        let voicePacket = try VoicePacketV1(
+                            frameIndex: frame.frameIndex,
+                            flags: flags,
+                            opusPayload: packet
+                        )
+                        payloads.append(VoiceAudioFramePayloadCodec.encodeBinaryOpus(voicePacket))
+                    case .opusV2:
+                        if let payload = VoiceAudioFramePayloadCodec.encodeOpus(
+                            packet: packet,
+                            frameIndex: frame.frameIndex,
+                            features: outboundOpusEncodingPolicy.payloadFeatures
+                        ) {
+                            payloads.append(payload)
+                        }
+                    case .legacyPCM:
+                        payloads.append(contentsOf: legacyPCMPayloads(fromCanonicalPCMData: frame.pcmData))
                     }
                 } catch {
                     Task {
@@ -2745,7 +2789,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         pendingRemoteAudioPayloads.removeAll(keepingCapacity: false)
         pendingRemoteAudioChunks.removeAll(keepingCapacity: false)
         resetScheduledPlaybackBufferCount()
-        playoutBuffer.reset()
+        resetPlayoutEngineForCurrentReceiveEpoch()
         resetOpusPlayoutReportBudgets()
         resetPlaybackBufferReportBudget()
         playerNode.stop()
@@ -2768,9 +2812,16 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         playbackEngine.reset()
         playbackConverter = nil
         isPlaybackReady = false
-        playoutBuffer.reset()
+        resetPlayoutEngineForCurrentReceiveEpoch()
         resetOpusPlayoutReportBudgets()
         resetPlaybackBufferReportBudget()
+    }
+
+    private func resetPlayoutEngineForCurrentReceiveEpoch() {
+        playoutEngine.reset(
+            epoch: VoiceReceiveEpochID(rawValue: remoteAudioReceiveEpoch),
+            nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
     }
 
     private func resetOpusPlayoutReportBudgets() {

@@ -589,6 +589,37 @@ extension PTTViewModel {
 
     func handleDidJoinChannel(_ channelUUID: UUID, reason: String) {
         let contactID = contactId(for: channelUUID)
+        if contactID == nil,
+           isRestoredSystemSessionQuarantined(channelUUID: channelUUID) {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Ignoring unresolved restored PTT join",
+                metadata: [
+                    "channelUUID": channelUUID.uuidString,
+                    "reason": reason,
+                    "applicationState": String(describing: currentApplicationState()),
+                    "systemSession": String(describing: pttCoordinator.state.systemSessionState),
+                ]
+            )
+            try? pttSystemClient.leaveChannel(channelUUID: channelUUID)
+            pttCoordinator.send(
+                .didLeaveChannel(
+                    channelUUID: channelUUID,
+                    contactID: nil,
+                    reason: "unresolved-restored-did-join",
+                    autoRejoinContactID: nil,
+                    shouldPropagateBackendLeave: false
+                )
+            )
+            clearRestoredSystemSessionQuarantine(
+                channelUUID: channelUUID,
+                reason: "unresolved-restored-did-join"
+            )
+            syncPTTState()
+            statusMessage = selectedContact == nil ? "Ready to connect" : "Disconnected"
+            captureDiagnosticsState("ptt-callback:joined-unresolved-restored-ignored")
+            return
+        }
         if let staleSystemRejoinSuppression = consumeStaleSystemRejoinSuppression(
             channelUUID: channelUUID,
             contactID: contactID
@@ -1688,10 +1719,21 @@ extension PTTViewModel {
         pttCoordinator.send(.restoredChannel(channelUUID: channelUUID, contactID: contactID))
         syncPTTState()
         if pttSystemClient.isReady {
-            syncPTTSystemChannelDescriptor(channelUUID, reason: "restored-channel")
-            syncPTTTransmissionMode(reason: "restored-channel")
-            syncPTTServiceStatus(reason: "restored-channel")
-            syncPTTAccessoryButtonEvents(reason: "restored-channel")
+            if contactID != nil {
+                syncPTTSystemChannelDescriptor(channelUUID, reason: "restored-channel")
+                syncPTTTransmissionMode(reason: "restored-channel")
+                syncPTTServiceStatus(reason: "restored-channel")
+                syncPTTAccessoryButtonEvents(reason: "restored-channel")
+            } else {
+                diagnostics.record(
+                    .pushToTalk,
+                    message: "Skipped restored PTT channel policy sync for unresolved channel",
+                    metadata: [
+                        "channelUUID": channelUUID.uuidString,
+                        "reason": "restored-channel",
+                    ]
+                )
+            }
         } else {
             diagnostics.record(
                 .pushToTalk,
@@ -1762,7 +1804,7 @@ extension PTTViewModel {
             metadata: metadata
         )
         Task {
-            await handleDeactivatedAudioSession(audioSession)
+            await handleDeactivatedAudioSession(audioSession, deactivatedEpoch: deactivatedEpoch)
             captureDiagnosticsState("ptt-callback:audio-deactivated")
         }
     }

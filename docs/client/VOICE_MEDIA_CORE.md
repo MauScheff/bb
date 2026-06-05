@@ -55,13 +55,24 @@ Capabilities advertise `turbo-voice-packet-v1` alongside existing Opus, PLC, and
 | --- | --- |
 | `legacy-adaptive` | Current adaptive playout implementation schedules audio. |
 | `swift-neteq-v1` | Swift NetEQ-inspired engine schedules audio with its own bounded packet buffer, startup gate, FEC/PLC gap recovery, large-gap resync, jitter-smoothed target delay, and metrics. |
-| `shadow-legacy-scheduled` | Legacy schedules audio; Swift NetEQ receives the same events and reports divergence. |
+| `shadow-legacy-scheduled` | `ShadowLegacyScheduledPlayoutEngine` keeps legacy authoritative, runs Swift NetEQ against the same validated packets with inert decode stubs, and reports scheduler divergence through `VoicePlayoutEngineMetrics.shadowDivergenceCount`. |
 
 Local override:
 
 - UserDefaults key: `TurboDebugVoiceMediaCoreMode`
+- Live diagnostics UserDefaults key: `TurboDebugLiveVoiceMediaCoreMode`
 - Launch argument: `-TurboDebugVoiceMediaCoreMode <mode>`
 - Environment: `TURBO_DEBUG_VOICE_MEDIA_CORE_MODE=<mode>`
+
+Live media sessions use `legacy-adaptive` unless the diagnostics sheet live key, an explicit launch argument, or an environment override selects another mode. The older `TurboDebugVoiceMediaCoreMode` key is kept for debug tooling, but it does not silently change the live call baseline across device retests.
+
+Binary packet advertisement is controlled separately:
+
+- UserDefaults key: `TurboDebugBinaryVoicePacketV1Enabled`
+- Launch argument: `-TurboDebugBinaryVoicePacketV1Enabled <true|false>`
+- Environment: `TURBO_DEBUG_BINARY_VOICE_PACKET_V1_ENABLED=<true|false>`
+
+Keep binary packet advertisement off while proving the `opus-v2` lane, then enable it as its own test cell after the playout engine is stable in shadow or authoritative mode.
 
 Production rollout starts at `legacy-adaptive`, moves to shadow mode for Direct QUIC and Fast Relay packet media, then switches packet media to `swift-neteq-v1` only after focused tests, fuzz, relay tests, replay fixtures, and shadow traces are clean.
 
@@ -87,6 +98,8 @@ Pure modules own packet buffering, delay estimation, clock-drift estimation, and
 The engine tracks sender media time, receiver monotonic time, and playout time separately. Drift correction is explicit through bounded accelerate and preemptive-expand decisions, not implicit buffer-depth side effects.
 
 `SwiftNetEqPlayoutEngine` is the active Swift implementation for the `swift-neteq-v1` mode. It intentionally keeps the current `VoicePlayoutInsertResult` boundary so rollout can happen through the existing AVAudio scheduler while the internal packet buffer and delay estimator are independent from `AdaptiveVoicePlayoutBuffer`.
+
+`ShadowLegacyScheduledPlayoutEngine` is the rollout comparison module. It returns only legacy scheduled PCM frames to AVAudio, so shadow mode cannot perturb playback with observer output. The observer path compares frame index, recovery type, duplicate/late/missing counts, FEC/PLC counts, and resync counts; target-delay differences are informational until shadow traces show stable parity.
 
 ## Replay And Diagnostics
 
@@ -120,10 +133,13 @@ Use the narrowest proof first:
 
 ```bash
 just swift-test-target voicePacketV1CodecRoundTripsOpusFrame
+just swift-test-target voiceAudioFramePayloadCodecRoundTripsBinaryOpusPacket
 just swift-test-target voicePacketV1RejectsMalformedHeaders
 just swift-test-target voiceMediaCoreModeOverrideFallsBackToLegacy
 just swift-test-target legacyAdaptivePlayoutEngineConformsToVoicePlayoutEngineContract
 just swift-test-target swiftNetEqPlayoutEngineConformsToVoicePlayoutEngineContract
+just swift-test-target shadowLegacyScheduledPlayoutEngineConformsToVoicePlayoutEngineContract
+just swift-test-target voicePlayoutEngineFactorySelectsSwappableEngines
 just swift-test-target swiftNetEqPlayoutEngineRaisesTargetDelayAfterLateInterArrivalGap
 just audio-packet-fuzz
 cargo test --manifest-path backend/relay/Cargo.toml

@@ -28,6 +28,8 @@ struct TurboDiagnosticsView: View {
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
     let onSetAudioPacketDiagnosticsEnabled: (Bool) -> Void
+    let onSetVoiceMediaCoreMode: (VoiceMediaCoreMode) -> Void
+    let onSetBinaryVoicePacketV1Enabled: (Bool) -> Void
     let onForceDirectQuicProbe: () -> Void
     let onClearDirectQuicRetryBackoff: () -> Void
     let onCancelDirectQuicAttempt: () -> Void
@@ -185,6 +187,8 @@ struct TurboDiagnosticsView: View {
                     diagnosticsRow("Media relay configured", directQuic.mediaRelayConfigured ? "yes" : "no")
                     diagnosticsRow("Media relay active", directQuic.mediaRelayActive ? "yes" : "no")
                     diagnosticsRow("Audio packet metadata", directQuic.audioPacketDiagnosticsEnabled ? "on" : "off")
+                    diagnosticsRow("Voice media core", directQuic.voiceMediaCoreMode.rawValue)
+                    diagnosticsRow("Binary packet v1", directQuic.binaryVoicePacketV1Enabled ? "on" : "off")
                     diagnosticsRow("Media relay host", directQuic.mediaRelayHost ?? "none")
                     diagnosticsRow(
                         "Media relay ports",
@@ -267,6 +271,25 @@ struct TurboDiagnosticsView: View {
                         isOn: Binding(
                             get: { directQuic.audioPacketDiagnosticsEnabled },
                             set: onSetAudioPacketDiagnosticsEnabled
+                        )
+                    )
+                    .disabled(isRunningDirectQuicDebugAction)
+
+                    Picker("Voice media core", selection: Binding(
+                        get: { directQuic.voiceMediaCoreMode },
+                        set: onSetVoiceMediaCoreMode
+                    )) {
+                        Text("Legacy").tag(VoiceMediaCoreMode.legacyAdaptive)
+                        Text("Shadow").tag(VoiceMediaCoreMode.shadowLegacyScheduled)
+                        Text("Swift NetEQ").tag(VoiceMediaCoreMode.swiftNetEqV1)
+                    }
+                    .disabled(isRunningDirectQuicDebugAction)
+
+                    Toggle(
+                        "Binary packet v1",
+                        isOn: Binding(
+                            get: { directQuic.binaryVoicePacketV1Enabled },
+                            set: onSetBinaryVoicePacketV1Enabled
                         )
                     )
                     .disabled(isRunningDirectQuicDebugAction)
@@ -568,6 +591,8 @@ struct TurboDiagnosticsSheet: View {
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
     let onSetAudioPacketDiagnosticsEnabled: (Bool) -> Void
+    let onSetVoiceMediaCoreMode: (VoiceMediaCoreMode) -> Void
+    let onSetBinaryVoicePacketV1Enabled: (Bool) -> Void
     let onForceDirectQuicProbe: () -> Void
     let onClearDirectQuicRetryBackoff: () -> Void
     let onCancelDirectQuicAttempt: () -> Void
@@ -608,6 +633,8 @@ struct TurboDiagnosticsSheet: View {
                 onSetMediaRelayForced: onSetMediaRelayForced,
                 onSetMediaRelayConfig: onSetMediaRelayConfig,
                 onSetAudioPacketDiagnosticsEnabled: onSetAudioPacketDiagnosticsEnabled,
+                onSetVoiceMediaCoreMode: onSetVoiceMediaCoreMode,
+                onSetBinaryVoicePacketV1Enabled: onSetBinaryVoicePacketV1Enabled,
                 onForceDirectQuicProbe: onForceDirectQuicProbe,
                 onClearDirectQuicRetryBackoff: onClearDirectQuicRetryBackoff,
                 onCancelDirectQuicAttempt: onCancelDirectQuicAttempt

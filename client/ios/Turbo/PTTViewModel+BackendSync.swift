@@ -510,17 +510,6 @@ extension PTTViewModel {
             for: contactID,
             channelID: channelID
         ) else { return false }
-        if prefersForegroundAppManagedReceivePlayback(
-            for: contactID,
-            applicationState: applicationState,
-            incomingAudioTransport: incomingAudioTransport
-        ),
-           !mediaRuntime.hasActiveForegroundSystemReceivePlaybackFallback(
-            for: contactID,
-            channelID: channelID
-           ) {
-            return false
-        }
         guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
         guard let channelUUID = channelUUID(for: contactID) else { return false }
         return pttCoordinator.state.systemChannelUUID == channelUUID
@@ -576,9 +565,15 @@ extension PTTViewModel {
                 "droppedStaleBufferedChunkCount": String(bufferResult.droppedChunkCount),
             ]
         )
+        let fallbackDelayNanoseconds: UInt64? = prefersForegroundAppManagedReceivePlayback(
+            for: contactID,
+            applicationState: applicationState,
+            incomingAudioTransport: incomingAudioTransport
+        ) ? 0 : nil
         scheduleForegroundSystemReceivePlaybackFallback(
             for: contactID,
-            channelID: channelID
+            channelID: channelID,
+            delayNanoseconds: fallbackDelayNanoseconds
         )
         return true
     }
@@ -668,6 +663,9 @@ extension PTTViewModel {
     }
 
     func clearRemoteAudioActivity(for contactID: UUID) {
+        Task { [voiceTurnRuntime] in
+            await voiceTurnRuntime.endReceive(contactID: contactID)
+        }
         receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
@@ -685,6 +683,9 @@ extension PTTViewModel {
     }
 
     func markRemoteTransmitStoppedPreservingPlaybackDrain(for contactID: UUID) {
+        Task { [voiceTurnRuntime] in
+            await voiceTurnRuntime.endReceive(contactID: contactID)
+        }
         receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: true)
@@ -705,6 +706,9 @@ extension PTTViewModel {
         contactID: UUID,
         reason: String
     ) {
+        Task { [voiceTurnRuntime] in
+            await voiceTurnRuntime.endReceive(contactID: contactID)
+        }
         receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionCoordinator.send(
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
@@ -1382,6 +1386,14 @@ extension PTTViewModel {
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
         resetIncomingPacketAudioPayloadQueues(reason: "remote-receive-epoch-start")
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
+        Task { [voiceTurnRuntime] in
+            await voiceTurnRuntime.beginReceive(
+                contactID: contactID,
+                channelID: channelID,
+                senderDeviceID: senderDeviceID,
+                transport: controlTransport
+            )
+        }
         clearFirstAudioPlaybackAckSentState(
             contactID: contactID,
             channelID: channelID,

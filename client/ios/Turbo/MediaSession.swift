@@ -331,7 +331,8 @@ func makeDefaultMediaSession(
     reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
     senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
     outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .legacyPCM,
-    outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback
+    outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
+    voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
 ) -> any MediaSession {
     #if targetEnvironment(simulator)
     // Simulator scenarios validate control-plane behavior, not real audio I/O.
@@ -343,7 +344,8 @@ func makeDefaultMediaSession(
             reportEvent: reportEvent,
             senderConfiguration: senderConfiguration,
             outboundVoiceMediaPolicy: outboundVoiceMediaPolicy,
-            outboundOpusEncodingPolicy: outboundOpusEncodingPolicy
+            outboundOpusEncodingPolicy: outboundOpusEncodingPolicy,
+            voiceMediaCoreMode: voiceMediaCoreMode
         )
     }
     return StubRelayMediaSession()

@@ -141,11 +141,76 @@ extension PTTViewModel {
 
     func handleDeactivatedAudioSession(
         _ audioSession: AVAudioSession,
-        applicationState: UIApplication.State? = nil
+        applicationState: UIApplication.State? = nil,
+        deactivatedEpoch: PTTAudioSessionEpoch? = nil
     ) async {
         let applicationState = applicationState ?? UIApplication.shared.applicationState
         let _ = audioSession
-        if !pttCoordinator.state.isTransmitting {
+        isPTTAudioSessionActive = false
+        if pttCoordinator.state.isTransmitting {
+            let channelUUID = pttCoordinator.state.systemChannelUUID
+            let activeTarget = channelUUID.flatMap { activeTransmitTarget(for: $0) }
+            if shouldTreatPTTAudioDeactivationAsStaleReceiveHandoff(
+                deactivatedEpoch: deactivatedEpoch,
+                channelUUID: channelUUID,
+                activeTarget: activeTarget
+            ) {
+                diagnostics.record(
+                    .pushToTalk,
+                    message: "Ignored stale remote-receive PTT audio deactivation during local transmit activation",
+                    metadata: [
+                        "channelUUID": channelUUID?.uuidString ?? "none",
+                        "contactId": activeTarget?.contactID.uuidString ?? pttCoordinator.state.activeContactID?.uuidString ?? "none",
+                        "channelId": activeTarget?.channelID ?? "none",
+                        "transmitPressActive": String(transmitRuntime.isPressingTalk),
+                        "coordinatorPressing": String(transmitCoordinator.state.isPressingTalk),
+                        "coordinatorPhase": String(describing: transmitCoordinator.state.phase),
+                        "pttAudioOwner": deactivatedEpoch?.owner.diagnosticsValue ?? "none",
+                        "pttAudioEpochId": deactivatedEpoch?.id.uuidString ?? "none",
+                    ]
+                )
+                syncPTTState()
+                syncTransmitState()
+                return
+            }
+            diagnostics.record(
+                .pushToTalk,
+                message: "Treating PTT audio deactivation during transmit as system transmit end",
+                metadata: [
+                    "channelUUID": channelUUID?.uuidString ?? "none",
+                    "contactId": activeTarget?.contactID.uuidString ?? pttCoordinator.state.activeContactID?.uuidString ?? "none",
+                    "channelId": activeTarget?.channelID ?? "none",
+                    "applicationState": String(describing: applicationState),
+                    "transmitPressActive": String(transmitRuntime.isPressingTalk),
+                    "coordinatorPressing": String(transmitCoordinator.state.isPressingTalk),
+                    "coordinatorPhase": String(describing: transmitCoordinator.state.phase),
+                ]
+            )
+            mediaServices.replaceSendAudioChunk(nil)
+            mediaServices.session()?.updateSendAudioChunk(nil)
+            await mediaServices.session()?.abortSendingAudio()
+            let hadPendingLifecycle = channelUUID.map { hasPendingTransmitLifecycle(for: $0) } ?? false
+            cancelActiveTransmitForLifecycleInterruption(reason: "ptt-audio-deactivated")
+            if let channelUUID {
+                await pttCoordinator.handle(
+                    .didEndTransmitting(
+                        channelUUID: channelUUID,
+                        origin: .systemCallback(source: "ptt-audio-deactivated")
+                    )
+                )
+                if let activeTarget {
+                    syncEngineSystemTransmitEnded(
+                        target: activeTarget,
+                        source: "ptt-audio-deactivated"
+                    )
+                }
+                if hadPendingLifecycle {
+                    await transmitCoordinator.handle(.systemEnded)
+                }
+                syncPTTState()
+                syncTransmitState()
+            }
+        } else {
             try? await mediaServices.session()?.stopSendingAudio()
         }
         mediaRuntime.replaceInteractivePrewarmRecoveryTask(with: nil)
@@ -180,6 +245,48 @@ extension PTTViewModel {
         }
     }
 
+    private func shouldTreatPTTAudioDeactivationAsStaleReceiveHandoff(
+        deactivatedEpoch: PTTAudioSessionEpoch?,
+        channelUUID: UUID?,
+        activeTarget: TransmitTarget?
+    ) -> Bool {
+        guard let deactivatedEpoch,
+              let channelUUID,
+              let activeTarget else {
+            return false
+        }
+        guard currentApplicationState() == .active else { return false }
+        guard hasActiveTransmitPressIntent() else { return false }
+        guard transmitStartupTiming.elapsedMilliseconds(for: "transmit-start-signal-sent") == nil else {
+            return false
+        }
+        guard case .remoteReceive(
+            let ownerChannelUUID,
+            let ownerContactID,
+            let ownerChannelID
+        ) = deactivatedEpoch.owner else {
+            return false
+        }
+        guard ownerChannelUUID == channelUUID else { return false }
+        if let ownerContactID, ownerContactID != activeTarget.contactID {
+            return false
+        }
+        if let ownerChannelID, ownerChannelID != activeTarget.channelID {
+            return false
+        }
+        guard case .localTransmit(
+            let pendingChannelUUID,
+            let pendingContactID,
+            let pendingChannelID,
+            _
+        ) = pttAudioSessionRuntime.pendingActivationOwner else {
+            return false
+        }
+        return pendingChannelUUID == channelUUID
+            && pendingContactID == activeTarget.contactID
+            && pendingChannelID == activeTarget.channelID
+    }
+
     func scheduleWakePlaybackFallback(for contactID: UUID) {
         guard pttWakeRuntime.hasPendingWake(for: contactID) else { return }
         guard !pttWakeRuntime.hasPlaybackFallbackTask(for: contactID) else { return }
@@ -208,7 +315,8 @@ extension PTTViewModel {
 
     func scheduleForegroundSystemReceivePlaybackFallback(
         for contactID: UUID,
-        channelID: String
+        channelID: String,
+        delayNanoseconds overrideDelayNanoseconds: UInt64? = nil
     ) {
         guard foregroundSystemReceivePlaybackFallbackDelayNanoseconds > 0 else { return }
         guard !isPTTAudioSessionActive else { return }
@@ -220,14 +328,18 @@ extension PTTViewModel {
         guard !mediaRuntime.hasForegroundSystemReceivePlaybackFallbackTask(for: contactID) else {
             return
         }
-        let delayNanoseconds = foregroundSystemReceivePlaybackFallbackDelayNanoseconds
+        let delayNanoseconds = overrideDelayNanoseconds ?? foregroundSystemReceivePlaybackFallbackDelayNanoseconds
         let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
             guard !Task.isCancelled else { return }
             await self?.runForegroundSystemReceivePlaybackFallbackIfNeeded(
                 for: contactID,
                 channelID: channelID,
-                reason: "ptt-activation-timeout"
+                reason: delayNanoseconds == 0
+                    ? "foreground-app-managed-receive"
+                    : "ptt-activation-timeout"
             )
         }
         mediaRuntime.replaceForegroundSystemReceivePlaybackFallbackTask(
@@ -262,21 +374,26 @@ extension PTTViewModel {
             reason: reason
         )
 
-        diagnostics.recordContractViolation(
-            DiagnosticsContracts.Transmit.appleGatedAudioActivationDeadlineElapsed(
-                contactID: contactID,
-                channelID: channelID,
-                channelUUID: channelUUID(for: contactID) ?? pttCoordinator.state.systemChannelUUID ?? UUID(),
-                targetDeviceID: directQuicPeerDeviceID(for: contactID) ?? "unknown",
-                trigger: "foreground-receive-playback-fallback",
-                startupPolicy: directQuicTransmitStartupPolicy.rawValue,
-                isPTTAudioSessionActive: isPTTAudioSessionActive,
-                timeoutMilliseconds: foregroundSystemReceivePlaybackFallbackDelayNanoseconds / 1_000_000
+        let isImmediateAppManagedReceive = reason == "foreground-app-managed-receive"
+        if !isImmediateAppManagedReceive {
+            diagnostics.recordContractViolation(
+                DiagnosticsContracts.Transmit.appleGatedAudioActivationDeadlineElapsed(
+                    contactID: contactID,
+                    channelID: channelID,
+                    channelUUID: channelUUID(for: contactID) ?? pttCoordinator.state.systemChannelUUID ?? UUID(),
+                    targetDeviceID: directQuicPeerDeviceID(for: contactID) ?? "unknown",
+                    trigger: "foreground-receive-playback-fallback",
+                    startupPolicy: directQuicTransmitStartupPolicy.rawValue,
+                    isPTTAudioSessionActive: isPTTAudioSessionActive,
+                    timeoutMilliseconds: foregroundSystemReceivePlaybackFallbackDelayNanoseconds / 1_000_000
+                )
             )
-        )
+        }
         diagnostics.record(
             .media,
-            message: "PTT activation timed out; starting app-managed foreground receive playback fallback",
+            message: isImmediateAppManagedReceive
+                ? "Starting app-managed foreground receive playback fallback"
+                : "PTT activation timed out; starting app-managed foreground receive playback fallback",
             metadata: [
                 "contactId": contactID.uuidString,
                 "channelId": channelID,

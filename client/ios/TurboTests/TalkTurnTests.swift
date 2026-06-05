@@ -10825,6 +10825,46 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func failedRemoteParticipantClearStillClearsAppLocalParticipant() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+
+        _ = try await viewModel.setSystemActiveRemoteParticipant(
+            name: "Blake",
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "test-set"
+        )
+        #expect(viewModel.systemActiveRemoteParticipantNameByChannelUUID[channelUUID] == "Blake")
+
+        pttClient.activeRemoteParticipantError = NSError(
+            domain: PTChannelErrorDomain,
+            code: 99
+        )
+        await #expect(throws: (any Error).self) {
+            try await viewModel.setSystemActiveRemoteParticipant(
+                name: nil,
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "backend-sync-remote-inactive"
+            )
+        }
+
+        #expect(viewModel.systemActiveRemoteParticipantNameByChannelUUID[channelUUID] == nil)
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == [
+            "Blake",
+            nil,
+        ])
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Active remote participant clear failed"
+            )
+        )
+    }
+
+    @MainActor
     @Test func channelRefreshPeerTransmittingArmsReceiverWakeWithoutMarkingRemoteTalking() async throws {
         let pttClient = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: pttClient)

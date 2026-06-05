@@ -559,6 +559,9 @@ extension PTTViewModel {
                 )
                 throw error
             }
+            if name == nil {
+                systemActiveRemoteParticipantNameByChannelUUID.removeValue(forKey: channelUUID)
+            }
             if let armedActivationOwner {
                 _ = pttAudioSessionRuntime.clearPendingActivationOwner(armedActivationOwner)
             }
@@ -714,10 +717,21 @@ extension PTTViewModel {
             diagnostics.record(.pushToTalk, message: "PTT channel manager ready")
             if let restoredChannelUUID = pttCoordinator.state.systemChannelUUID,
                isRestoredSystemSessionQuarantined(channelUUID: restoredChannelUUID) {
-                syncPTTSystemChannelDescriptor(restoredChannelUUID, reason: "restored-channel-ready")
-                syncPTTTransmissionMode(reason: "restored-channel-ready")
-                syncPTTServiceStatus(reason: "restored-channel-ready")
-                syncPTTAccessoryButtonEvents(reason: "restored-channel-ready")
+                if pttCoordinator.state.activeContactID != nil {
+                    syncPTTSystemChannelDescriptor(restoredChannelUUID, reason: "restored-channel-ready")
+                    syncPTTTransmissionMode(reason: "restored-channel-ready")
+                    syncPTTServiceStatus(reason: "restored-channel-ready")
+                    syncPTTAccessoryButtonEvents(reason: "restored-channel-ready")
+                } else {
+                    diagnostics.record(
+                        .pushToTalk,
+                        message: "Skipped restored PTT channel policy sync for unresolved quarantined channel",
+                        metadata: [
+                            "channelUUID": restoredChannelUUID.uuidString,
+                            "reason": "restored-channel-ready",
+                        ]
+                    )
+                }
             }
             captureDiagnosticsState("app-initialize:ptt-ready")
         } catch {

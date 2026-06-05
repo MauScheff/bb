@@ -27,6 +27,128 @@ struct BufferedForegroundReceiveAudioChunkResult: Equatable {
     let droppedChunkCount: Int
 }
 
+struct VoiceTurnEpoch: Equatable, Sendable {
+    let id: UInt64
+    let contactID: UUID
+    let channelID: String
+    let senderDeviceID: String
+    let transport: String
+}
+
+struct VoiceTurnExpiredPayloadReport: Equatable, Sendable {
+    enum Disposition: Equatable, Sendable {
+        case detailed
+        case suppressionNotice
+        case suppressed
+    }
+
+    let disposition: Disposition
+    let expiredCount: Int
+    let maxLocalQueueDelayNanoseconds: UInt64
+    let shouldRepairStaleReceive: Bool
+}
+
+actor VoiceTurnRuntime {
+    private struct ExpiredPayloadKey: Hashable {
+        let contactID: UUID
+        let channelID: String
+        let senderDeviceID: String
+        let transport: String
+    }
+
+    private struct ExpiredPayloadSummary {
+        var expiredCount = 0
+        var maxLocalQueueDelayNanoseconds: UInt64 = 0
+        var suppressionNoticeEmitted = false
+        var staleReceiveRepairEmitted = false
+    }
+
+    private var nextEpochID: UInt64 = 0
+    private var receiveEpochByContactID: [UUID: VoiceTurnEpoch] = [:]
+    private var expiredPayloadSummaries: [ExpiredPayloadKey: ExpiredPayloadSummary] = [:]
+
+    func beginReceive(
+        contactID: UUID,
+        channelID: String,
+        senderDeviceID: String,
+        transport: String
+    ) -> VoiceTurnEpoch {
+        nextEpochID &+= 1
+        let epoch = VoiceTurnEpoch(
+            id: nextEpochID,
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: senderDeviceID,
+            transport: transport
+        )
+        receiveEpochByContactID[contactID] = epoch
+        expiredPayloadSummaries = expiredPayloadSummaries.filter { $0.key.contactID != contactID }
+        return epoch
+    }
+
+    func endReceive(contactID: UUID) {
+        receiveEpochByContactID[contactID] = nil
+        expiredPayloadSummaries = expiredPayloadSummaries.filter { $0.key.contactID != contactID }
+    }
+
+    func currentReceiveEpoch(contactID: UUID) -> VoiceTurnEpoch? {
+        receiveEpochByContactID[contactID]
+    }
+
+    func isCurrent(_ epoch: VoiceTurnEpoch?) -> Bool {
+        guard let epoch else { return false }
+        return receiveEpochByContactID[epoch.contactID] == epoch
+    }
+
+    func recordExpiredBeforeAppHandler(
+        contactID: UUID,
+        channelID: String,
+        senderDeviceID: String,
+        transport: String,
+        localQueueDelayNanoseconds: UInt64,
+        staleReceiveRepairThresholdNanoseconds: UInt64
+    ) -> VoiceTurnExpiredPayloadReport {
+        let key = ExpiredPayloadKey(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: senderDeviceID,
+            transport: transport
+        )
+        var summary = expiredPayloadSummaries[key] ?? ExpiredPayloadSummary()
+        summary.expiredCount += 1
+        summary.maxLocalQueueDelayNanoseconds = max(
+            summary.maxLocalQueueDelayNanoseconds,
+            localQueueDelayNanoseconds
+        )
+
+        let disposition: VoiceTurnExpiredPayloadReport.Disposition
+        if summary.expiredCount == 1 {
+            disposition = .detailed
+        } else if !summary.suppressionNoticeEmitted {
+            summary.suppressionNoticeEmitted = true
+            disposition = .suppressionNotice
+        } else {
+            disposition = .suppressed
+        }
+
+        let shouldRepairStaleReceive =
+            !summary.staleReceiveRepairEmitted
+            && staleReceiveRepairThresholdNanoseconds > 0
+            && localQueueDelayNanoseconds >= staleReceiveRepairThresholdNanoseconds
+        if shouldRepairStaleReceive {
+            summary.staleReceiveRepairEmitted = true
+        }
+
+        expiredPayloadSummaries[key] = summary
+        return VoiceTurnExpiredPayloadReport(
+            disposition: disposition,
+            expiredCount: summary.expiredCount,
+            maxLocalQueueDelayNanoseconds: summary.maxLocalQueueDelayNanoseconds,
+            shouldRepairStaleReceive: shouldRepairStaleReceive
+        )
+    }
+}
+
 struct ForegroundSystemReceivePlaybackFallbackState: Equatable {
     let channelID: String
     let reason: String
@@ -194,38 +316,6 @@ struct PTTAudioSessionRuntimeState {
         guard pendingChannelUUID == channelUUID,
               pendingContactID == contactID,
               pendingChannelID == channelID else {
-            return nil
-        }
-        epoch.owner = .localTransmit(
-            channelUUID: channelUUID,
-            contactID: contactID,
-            channelID: channelID,
-            transmitID: transmitID
-        )
-        activeEpoch = epoch
-        return epoch
-    }
-
-    @discardableResult
-    mutating func bindActiveRemoteReceiveToLocalTransmit(
-        channelUUID: UUID,
-        contactID: UUID,
-        channelID: String,
-        transmitID: String
-    ) -> PTTAudioSessionEpoch? {
-        guard var epoch = activeEpoch else { return nil }
-        guard case .remoteReceive(
-            let ownerChannelUUID,
-            let ownerContactID,
-            let ownerChannelID
-        ) = epoch.owner else {
-            return nil
-        }
-        guard ownerChannelUUID == channelUUID else { return nil }
-        if let ownerContactID, ownerContactID != contactID {
-            return nil
-        }
-        if let ownerChannelID, ownerChannelID != channelID {
             return nil
         }
         epoch.owner = .localTransmit(
@@ -1168,6 +1258,7 @@ actor IncomingAudioIngressExecutor {
     private struct PlaybackGateKey: Hashable {
         let contactID: UUID
         let receiveEpoch: UInt64
+        let transport: IncomingAudioPayloadTransport
     }
 
     private enum PlaybackGatePoison {
@@ -1213,7 +1304,8 @@ actor IncomingAudioIngressExecutor {
             : 0
         let playbackGateKey = PlaybackGateKey(
             contactID: packet.contactID,
-            receiveEpoch: packet.receiveEpoch
+            receiveEpoch: packet.receiveEpoch,
+            transport: packet.incomingAudioTransport
         )
         if let poison = poisonedPlaybackGateByKey[playbackGateKey] {
             return poisonedPlaybackGateRejection(
@@ -1227,9 +1319,11 @@ actor IncomingAudioIngressExecutor {
         let liveBacklogExpirationNanoseconds = policy.liveAudioBacklogExpirationNanoseconds
         if liveBacklogExpirationNanoseconds > 0,
            localQueueDelayNanoseconds >= liveBacklogExpirationNanoseconds {
-            poisonedPlaybackGateByKey[playbackGateKey] = .expiredLiveBacklog(
-                thresholdNanoseconds: liveBacklogExpirationNanoseconds
-            )
+            if shouldPoisonPlaybackGateAfterFreshnessExpiry(for: packet.incomingAudioTransport) {
+                poisonedPlaybackGateByKey[playbackGateKey] = .expiredLiveBacklog(
+                    thresholdNanoseconds: liveBacklogExpirationNanoseconds
+                )
+            }
             return .rejected(
                 .droppedByPlaybackGate(
                     decision: .drop(
@@ -1251,9 +1345,11 @@ actor IncomingAudioIngressExecutor {
             if nowMilliseconds >= senderSentAtMilliseconds {
                 let senderClockAgeMilliseconds = nowMilliseconds - senderSentAtMilliseconds
                 if senderClockAgeMilliseconds >= policy.liveAudioSenderClockExpirationMilliseconds {
-                    poisonedPlaybackGateByKey[playbackGateKey] = .expiredSenderClockAge(
-                        thresholdMilliseconds: policy.liveAudioSenderClockExpirationMilliseconds
-                    )
+                    if shouldPoisonPlaybackGateAfterFreshnessExpiry(for: packet.incomingAudioTransport) {
+                        poisonedPlaybackGateByKey[playbackGateKey] = .expiredSenderClockAge(
+                            thresholdMilliseconds: policy.liveAudioSenderClockExpirationMilliseconds
+                        )
+                    }
                     return .rejected(
                         .droppedByPlaybackGate(
                             decision: .drop(
@@ -1413,6 +1509,12 @@ actor IncomingAudioIngressExecutor {
         poisonedPlaybackGateByKey = [:]
     }
 
+    private func shouldPoisonPlaybackGateAfterFreshnessExpiry(
+        for transport: IncomingAudioPayloadTransport
+    ) -> Bool {
+        !transport.isUnreliablePacketMedia
+    }
+
     private func poisonedPlaybackGateRejection(
         _ poison: PlaybackGatePoison,
         sequenceNumber: UInt64?,
@@ -1564,7 +1666,11 @@ actor IncomingAudioIngressExecutor {
             for: transport,
             frameDurationNanoseconds: frameDurationNanoseconds
         )
-        let key = PlaybackGateKey(contactID: contactID, receiveEpoch: receiveEpoch)
+        let key = PlaybackGateKey(
+            contactID: contactID,
+            receiveEpoch: receiveEpoch,
+            transport: transport
+        )
         guard let previous = playbackGateByKey[key] else {
             playbackGateByKey[key] = IncomingAudioPlaybackGateState(
                 sequenceNumber: sequenceNumber,

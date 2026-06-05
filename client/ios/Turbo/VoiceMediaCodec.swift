@@ -35,9 +35,13 @@ nonisolated struct VoiceMediaCapabilities: Codable, Equatable, Sendable {
         guard OpusVoiceCodec.isAvailable() else {
             return VoiceMediaCapabilities(codecs: [], features: [])
         }
+        var features = [opusFrameV2Feature, plcFeature, fecFeature]
+        if TurboBinaryVoicePacketDebugOverride.isEnabled() {
+            features.append(binaryVoicePacketV1Feature)
+        }
         return VoiceMediaCapabilities(
             codecs: [opusCodec],
-            features: [opusFrameV2Feature, binaryVoicePacketV1Feature, plcFeature, fecFeature]
+            features: features
         )
     }
 
@@ -358,6 +362,10 @@ nonisolated enum VoiceAudioFramePayloadCodec {
         return String(data: data, encoding: .utf8)
     }
 
+    static func encodeBinaryOpus(_ packet: VoicePacketV1) -> String {
+        VoicePacketV1Codec.encode(packet).base64EncodedString()
+    }
+
     static func decode(_ payload: String) -> VoiceOpusFramePayload? {
         guard payload.first == "{",
               let data = payload.data(using: .utf8),
@@ -397,6 +405,10 @@ nonisolated enum VoiceAudioFramePayloadCodec {
             }
             guard let pcmData = Data(base64Encoded: chunk) else {
                 return nil
+            }
+            if let packet = try? VoicePacketV1Codec.decode(pcmData) {
+                frames.append(.binaryOpusV1(packet))
+                continue
             }
             frames.append(.legacyPCM(pcmData))
         }
@@ -867,6 +879,7 @@ nonisolated struct VoicePlayoutEngineMetrics: Equatable, Sendable {
     var duplicatePacketCount: Int
     var latePacketCount: Int
     var malformedPacketCount: Int
+    var shadowDivergenceCount: Int
     var targetDelayMilliseconds: Int
     var bufferedFrameCount: Int
     var concealmentCount: Int
@@ -1062,6 +1075,7 @@ nonisolated final class LegacyAdaptivePlayoutEngine: VoicePlayoutEngine {
         duplicatePacketCount: 0,
         latePacketCount: 0,
         malformedPacketCount: 0,
+        shadowDivergenceCount: 0,
         targetDelayMilliseconds: 0,
         bufferedFrameCount: 0,
         concealmentCount: 0,
@@ -1176,6 +1190,7 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
         duplicatePacketCount: 0,
         latePacketCount: 0,
         malformedPacketCount: 0,
+        shadowDivergenceCount: 0,
         targetDelayMilliseconds: 0,
         bufferedFrameCount: 0,
         concealmentCount: 0,
@@ -1504,6 +1519,85 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
     }
 }
 
+nonisolated final class ShadowLegacyScheduledPlayoutEngine: VoicePlayoutEngine {
+    private let authoritative = LegacyAdaptivePlayoutEngine()
+    private let observer = SwiftNetEqPlayoutEngine()
+    private var shadowDivergenceCount = 0
+
+    var phase: VoicePlayoutPhase {
+        authoritative.phase
+    }
+
+    func reset(epoch: VoiceReceiveEpochID, nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        authoritative.reset(epoch: epoch, nowNanoseconds: nowNanoseconds)
+        observer.reset(epoch: epoch, nowNanoseconds: nowNanoseconds)
+        shadowDivergenceCount = 0
+    }
+
+    func insert(
+        packet: VoicePacketV1,
+        epoch: VoiceReceiveEpochID,
+        playbackProfile: MediaSessionPlaybackProfile,
+        decode: (VoiceOpusFramePayload) throws -> Data,
+        decodeFEC: (VoiceOpusFramePayload) throws -> Data,
+        plc: () -> Data,
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) throws -> VoicePlayoutInsertResult {
+        let authoritativeResult = try authoritative.insert(
+            packet: packet,
+            epoch: epoch,
+            playbackProfile: playbackProfile,
+            decode: decode,
+            decodeFEC: decodeFEC,
+            plc: plc,
+            nowNanoseconds: nowNanoseconds
+        )
+        let observerResult = try observer.insert(
+            packet: packet,
+            epoch: epoch,
+            playbackProfile: playbackProfile,
+            decode: { _ in Data(repeating: 0, count: VoiceFrameAccumulator.bytesPerFrame) },
+            decodeFEC: { _ in Data(repeating: 0, count: VoiceFrameAccumulator.bytesPerFrame) },
+            plc: { Data(repeating: 0, count: VoiceFrameAccumulator.bytesPerFrame) },
+            nowNanoseconds: nowNanoseconds
+        )
+        if !Self.matches(authoritativeResult, observerResult) {
+            shadowDivergenceCount += 1
+        }
+        return authoritativeResult
+    }
+
+    func metrics() -> VoicePlayoutEngineMetrics {
+        var snapshot = authoritative.metrics()
+        snapshot.shadowDivergenceCount = shadowDivergenceCount
+        return snapshot
+    }
+
+    private static func matches(
+        _ lhs: VoicePlayoutInsertResult,
+        _ rhs: VoicePlayoutInsertResult
+    ) -> Bool {
+        frameSignaturesMatch(lhs.framesToPlay, rhs.framesToPlay)
+            && lhs.duplicateDropCount == rhs.duplicateDropCount
+            && lhs.lateDropCount == rhs.lateDropCount
+            && lhs.missingFrameCount == rhs.missingFrameCount
+            && lhs.plcRecoveryCount == rhs.plcRecoveryCount
+            && lhs.fecRecoveryCount == rhs.fecRecoveryCount
+            && lhs.resynchronizedGapFrameCount == rhs.resynchronizedGapFrameCount
+    }
+
+    private static func frameSignaturesMatch(
+        _ lhs: [VoicePlayoutFrame],
+        _ rhs: [VoicePlayoutFrame]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { left, right in
+            left.frameIndex == right.frameIndex
+                && left.recovery == right.recovery
+        }
+    }
+}
+
 nonisolated final class ScriptedPlayoutEngine: VoicePlayoutEngine {
     private(set) var phase: VoicePlayoutPhase = .idle
     var scriptedResults: [VoicePlayoutInsertResult]
@@ -1544,6 +1638,7 @@ nonisolated final class ScriptedPlayoutEngine: VoicePlayoutEngine {
             duplicatePacketCount: 0,
             latePacketCount: 0,
             malformedPacketCount: 0,
+            shadowDivergenceCount: 0,
             targetDelayMilliseconds: 0,
             bufferedFrameCount: 0,
             concealmentCount: 0,
@@ -1584,8 +1679,10 @@ nonisolated final class ScriptedPlayoutEngine: VoicePlayoutEngine {
 nonisolated enum VoicePlayoutEngineFactory {
     static func make(mode: VoiceMediaCoreMode) -> VoicePlayoutEngine {
         switch mode {
-        case .legacyAdaptive, .shadowLegacyScheduled:
+        case .legacyAdaptive:
             return LegacyAdaptivePlayoutEngine()
+        case .shadowLegacyScheduled:
+            return ShadowLegacyScheduledPlayoutEngine()
         case .swiftNetEqV1:
             return SwiftNetEqPlayoutEngine()
         }

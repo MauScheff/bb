@@ -1067,11 +1067,14 @@ extension PTTViewModel {
         )
         let outgoingAudioSendTargetGate = mediaRuntime.outgoingAudioSendTargetGate
         let outgoingAudioSendTargetToken = outgoingAudioSendTargetGate.install(target)
+        let requireCurrentOutgoingAudioTarget: @Sendable () throws -> Void = {
+            guard outgoingAudioSendTargetGate.allows(outgoingAudioSendTargetToken) else {
+                throw CancellationError()
+            }
+        }
         let sendAudioChunk: @Sendable (String) async throws -> Void = { [weak self] payload in
             try Task.checkCancellation()
-            guard outgoingAudioSendTargetGate.allows(outgoingAudioSendTargetToken) else {
-                return
-            }
+            try requireCurrentOutgoingAudioTarget()
             if let self,
                initialOutboundAudioSendGate.take() {
                 let stageStartedAt = DispatchTime.now().uptimeNanoseconds
@@ -1084,6 +1087,7 @@ extension PTTViewModel {
                     payload.count
                 )
                 try Task.checkCancellation()
+                try requireCurrentOutgoingAudioTarget()
                 guard receiverBecameReady else {
                     throw OutgoingAudioSendError.remoteReceiverAudioNotReady
                 }
@@ -1104,6 +1108,7 @@ extension PTTViewModel {
                 transportPayload.count
             )
             try Task.checkCancellation()
+            try requireCurrentOutgoingAudioTarget()
             let scheduleLocalAudioCapturedSync: @Sendable (String) -> Void = { [weak self] deliveredPayload in
                 guard localAudioCapturedSyncLimiter.take() else { return }
                 Task(priority: .utility) { @MainActor [weak self] in
@@ -1118,6 +1123,7 @@ extension PTTViewModel {
 
             let relaySend: @Sendable () async throws -> Void = { [weak self] in
                 try Task.checkCancellation()
+                try requireCurrentOutgoingAudioTarget()
                 let relayPayload: String
                 if let self {
                     relayPayload = await MainActor.run {
@@ -1126,6 +1132,7 @@ extension PTTViewModel {
                 } else {
                     relayPayload = transportPayload
                 }
+                try requireCurrentOutgoingAudioTarget()
                 let envelope = TurboSignalEnvelope(
                     type: .audioChunk,
                     channelId: channelID,
@@ -1139,6 +1146,7 @@ extension PTTViewModel {
             }
             let mediaRelaySend: @Sendable (TurboMediaRelayClient) async throws -> TurboMediaRelayMediaMode = { relayClient in
                 try Task.checkCancellation()
+                try requireCurrentOutgoingAudioTarget()
                 if let mediaRelayAudioSendOverride {
                     return try await mediaRelayAudioSendOverride(relayClient, transportPayload)
                 }
@@ -1561,12 +1569,14 @@ extension PTTViewModel {
                             guard let shadowOwner = self else { return }
                             do {
                                 try Task.checkCancellation()
+                                try requireCurrentOutgoingAudioTarget()
                                 let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
                                 if let directQuicAudioSendOverride {
                                     try await directQuicAudioSendOverride(directTransport, transportPayload)
                                 } else {
                                     try await directTransport.sendAudioPayload(transportPayload)
                                 }
+                                try requireCurrentOutgoingAudioTarget()
                                 recordSlowOutboundAudioSendStage(
                                     "direct-quic-shadow-send",
                                     directSendStartedAt,
@@ -1622,12 +1632,14 @@ extension PTTViewModel {
                     }
                     do {
                         try Task.checkCancellation()
+                        try requireCurrentOutgoingAudioTarget()
                         let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
                         if let directQuicAudioSendOverride {
                             try await directQuicAudioSendOverride(directTransport, transportPayload)
                         } else {
                             try await directTransport.sendAudioPayload(transportPayload)
                         }
+                        try requireCurrentOutgoingAudioTarget()
                         recordSlowOutboundAudioSendStage(
                             "direct-quic-shadow-send",
                             directSendStartedAt,
@@ -1710,12 +1722,14 @@ extension PTTViewModel {
                             }
                         }
                         try Task.checkCancellation()
+                        try requireCurrentOutgoingAudioTarget()
                         let directSendStartedAt = DispatchTime.now().uptimeNanoseconds
                         if let directQuicAudioSendOverride {
                             try await directQuicAudioSendOverride(directTransport, transportPayload)
                         } else {
                             try await directTransport.sendAudioPayload(transportPayload)
                         }
+                        try requireCurrentOutgoingAudioTarget()
                         recordSlowOutboundAudioSendStage(
                             "direct-quic-send",
                             directSendStartedAt,
@@ -2542,6 +2556,16 @@ extension PTTViewModel {
                     )
                 )
             },
+            onExpiredIncomingAudioPayload: { [weak self] incoming, localQueueDelayNanoseconds, thresholdNanoseconds in
+                await self?.handleExpiredMediaRelayIncomingAudioPayloadBeforeAppHandler(
+                    incoming,
+                    contactID: contactID,
+                    channelID: channelID,
+                    peerDeviceID: peerDeviceID,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    thresholdNanoseconds: thresholdNanoseconds
+                )
+            },
             onIncomingControlFrame: { [weak self] frame in
                 await self?.handleIncomingMediaRelayControlFrame(
                     frame,
@@ -2702,6 +2726,86 @@ extension PTTViewModel {
                 )
             }
             return nil
+        }
+    }
+
+    nonisolated func handleExpiredMediaRelayIncomingAudioPayloadBeforeAppHandler(
+        _ incoming: TurboMediaRelayIncomingAudioPayload,
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        localQueueDelayNanoseconds: UInt64,
+        thresholdNanoseconds: UInt64
+    ) async {
+        let report = await voiceTurnRuntime.recordExpiredBeforeAppHandler(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: peerDeviceID,
+            transport: "media-relay-packet",
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            staleReceiveRepairThresholdNanoseconds: thresholdNanoseconds
+        )
+        let shouldRecordReport: Bool
+        switch report.disposition {
+        case .detailed, .suppressionNotice:
+            shouldRecordReport = true
+        case .suppressed:
+            shouldRecordReport = report.shouldRepairStaleReceive
+        }
+        guard shouldRecordReport else {
+            return
+        }
+
+        await MainActor.run {
+            var metadata = [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "fromDeviceId": peerDeviceID,
+                "mediaMode": incoming.mediaMode.rawValue,
+                "sequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
+                "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                "maxLocalQueueDelayMs": String(report.maxLocalQueueDelayNanoseconds / 1_000_000),
+                "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+                "expiredCount": String(report.expiredCount),
+            ]
+            switch report.disposition {
+            case .detailed:
+                diagnostics.record(
+                    .media,
+                    message: "Dropped expired media relay incoming audio payload before app handler",
+                    metadata: metadata
+                )
+            case .suppressionNotice:
+                metadata["reason"] = "budget-exhausted"
+                diagnostics.record(
+                    .media,
+                    level: .notice,
+                    message: "Suppressing repetitive expired media relay incoming audio payload diagnostics",
+                    metadata: metadata
+                )
+            case .suppressed:
+                break
+            }
+
+            guard report.shouldRepairStaleReceive else { return }
+            let repaired = repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID)
+            if !repaired,
+               receiveExecutionCoordinator.state.remoteActivityByContactID[contactID] != nil,
+               localQueueDelayNanoseconds >= thresholdNanoseconds {
+                forceStopRemoteReceiveAfterExpiredLiveAudio(
+                    contactID: contactID,
+                    channelID: channelID,
+                    fromDeviceID: peerDeviceID,
+                    incomingAudioTransport: .mediaRelayPacket,
+                    reason: "expired-before-app-handler",
+                    diagnosticsMessage: "Forced remote receive stop after expired media relay app-handler backlog",
+                    additionalMetadata: [
+                        "sequenceNumber": incoming.sequenceNumber.map(String.init) ?? "none",
+                        "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                        "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+                    ]
+                )
+            }
         }
     }
 
@@ -3793,6 +3897,7 @@ extension PTTViewModel {
         let senderPolicy = mediaTransportPolicyForOutgoingAudio(for: contactID)
         let voiceMediaPolicy = mediaRuntime.outboundVoiceMediaPayloadFormat(for: contactID)
         let opusPolicy = outboundOpusEncodingPolicy(for: contactID)
+        let voiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
         let session = makeDefaultMediaSession(
             supportsWebSocket: supportsWebSocket,
             sendAudioChunk: media.sendAudioChunk(),
@@ -3804,7 +3909,8 @@ extension PTTViewModel {
             },
             senderConfiguration: senderPolicy.senderConfiguration,
             outboundVoiceMediaPolicy: voiceMediaPolicy,
-            outboundOpusEncodingPolicy: opusPolicy
+            outboundOpusEncodingPolicy: opusPolicy,
+            voiceMediaCoreMode: voiceMediaCoreMode
         )
         session.delegate = self
         media.attach(session, contactID)
@@ -3817,6 +3923,7 @@ extension PTTViewModel {
                 "supportsWebSocket": String(supportsWebSocket),
                 "transportPolicy": senderPolicy.rawValue,
                 "voiceMediaPolicy": voiceMediaPolicy.rawValue,
+                "voiceMediaCoreMode": voiceMediaCoreMode.rawValue,
                 "durationMs": String(Int(Date().timeIntervalSince(sessionCreationStartedAt) * 1000)),
                 "reason": reason,
             ].merging(opusPolicy.diagnosticsMetadata, uniquingKeysWith: { current, _ in current })
@@ -3867,6 +3974,7 @@ extension PTTViewModel {
             || sessionNeedsContactSwitch
             || sessionNeedsRecreation
             || mediaConnectionState != .connected
+            || startupMode == .playbackOnly
 
         guard shouldStartSession else { return }
 

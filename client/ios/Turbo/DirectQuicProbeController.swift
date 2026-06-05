@@ -1065,13 +1065,15 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let livePacketAudioWaitsForProcessing = false
     static let liveAudioMaxConcurrentIncomingHandlers = 4
     static let liveAudioMaxPendingIncomingHandlers = 96
-    static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 650_000_000
+    static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     private static let maximumReceiveChunkLength = 65_536
     private let config: TurboMediaRelayClientConfig
     private let sessionId: String
     private let localDeviceId: String
     private let peerDeviceId: String
     private let onIncomingAudioPayload: @Sendable (TurboMediaRelayIncomingAudioPayload) async -> Void
+    private let onExpiredIncomingAudioPayload:
+        (@Sendable (TurboMediaRelayIncomingAudioPayload, UInt64, UInt64) async -> Void)?
     private let onIncomingControlFrame: (@Sendable (TurboMediaRelayControlFrame) async -> Void)?
     private let onDisconnected: (@Sendable (TurboMediaRelayClient) async -> Void)?
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
@@ -1094,6 +1096,8 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         localDeviceId: String,
         peerDeviceId: String,
         onIncomingAudioPayload: @escaping @Sendable (TurboMediaRelayIncomingAudioPayload) async -> Void,
+        onExpiredIncomingAudioPayload:
+            (@Sendable (TurboMediaRelayIncomingAudioPayload, UInt64, UInt64) async -> Void)? = nil,
         onIncomingControlFrame: (@Sendable (TurboMediaRelayControlFrame) async -> Void)? = nil,
         onDisconnected: (@Sendable (TurboMediaRelayClient) async -> Void)? = nil,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
@@ -1109,6 +1113,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         self.localDeviceId = localDeviceId
         self.peerDeviceId = peerDeviceId
         self.onIncomingAudioPayload = onIncomingAudioPayload
+        self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
         self.onIncomingControlFrame = onIncomingControlFrame
         self.onDisconnected = onDisconnected
         self.reportEvent = reportEvent
@@ -2037,6 +2042,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         )
         incomingAudioPayloadQueue.enqueue(
             expiringAtNanoseconds: expirationNanoseconds,
+            expiresRunningHandler: incomingPayload.mediaMode == .quicDatagram,
             onExpired: { [weak self] in
                 guard let self else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
@@ -2044,6 +2050,14 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                     nowNanoseconds >= incomingPayload.receivedAtNanoseconds
                     ? nowNanoseconds - incomingPayload.receivedAtNanoseconds
                     : 0
+                if let onExpiredIncomingAudioPayload = self.onExpiredIncomingAudioPayload {
+                    await onExpiredIncomingAudioPayload(
+                        incomingPayload,
+                        localQueueDelayNanoseconds,
+                        self.incomingAudioHandlerExpirationNanoseconds
+                    )
+                    return
+                }
                 await self.report(
                     "Dropped expired media relay incoming audio payload before app handler",
                     metadata: self.baseMetadata().merging(
@@ -2286,6 +2300,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
         let id: UUID
         let generation: Int
         let expirationNanoseconds: UInt64?
+        let expiresRunningHandler: Bool
         let onExpired: (@Sendable () async -> Void)?
         let operation: @Sendable () async -> Void
     }
@@ -2321,6 +2336,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
     func enqueue(
         expiringAtNanoseconds expirationNanoseconds: UInt64? = nil,
+        expiresRunningHandler: Bool = false,
         onExpired: (@Sendable () async -> Void)? = nil,
         _ operation: @escaping @Sendable () async -> Void
     ) {
@@ -2349,6 +2365,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
                     id: UUID(),
                     generation: generation,
                     expirationNanoseconds: expirationNanoseconds,
+                    expiresRunningHandler: expiresRunningHandler,
                     onExpired: onExpired,
                     operation: operation
                 )
@@ -2381,7 +2398,6 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
                         continue
                     }
                     let task = Task.detached(priority: priority) { [weak self] in
-                        defer { self?.finish(entry.id) }
                         guard let self,
                               !Task.isCancelled,
                               self.isCurrentGeneration(entry.generation)
@@ -2396,9 +2412,13 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
                             if let onExpired = entry.onExpired {
                                 await onExpired()
                             }
+                            self.finish(entry.id)
                             return
                         }
+                        let expirationTask = self.startRunningExpirationTask(for: entry)
                         await entry.operation()
+                        expirationTask?.cancel()
+                        self.finish(entry.id)
                     }
                     running[entry.id] = task
                     return (task, expiredCallbacks)
@@ -2407,6 +2427,23 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
             }
             result.expiredCallbacks.forEach(runExpirationCallback)
             guard result.task != nil else { return }
+        }
+    }
+
+    private func startRunningExpirationTask(for entry: PendingEntry) -> Task<Void, Never>? {
+        guard entry.expiresRunningHandler else { return nil }
+        guard let expirationNanoseconds = entry.expirationNanoseconds else { return nil }
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        guard expirationNanoseconds > nowNanoseconds else { return nil }
+        return Task.detached(priority: priority) { [weak self] in
+            try? await Task.sleep(nanoseconds: expirationNanoseconds - nowNanoseconds)
+            guard !Task.isCancelled,
+                  let self,
+                  self.expireRunning(entry.id, generation: entry.generation)
+            else { return }
+            if let onExpired = entry.onExpired {
+                await onExpired()
+            }
         }
     }
 
@@ -2437,12 +2474,32 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
             startAvailableHandlers()
         }
     }
+
+    @discardableResult
+    private func expireRunning(_ id: UUID, generation: Int) -> Bool {
+        let result = lock.withLock { () -> (task: Task<Void, Never>?, shouldStartMore: Bool) in
+            guard self.generation == generation,
+                  let task = running[id]
+            else {
+                return (nil, false)
+            }
+            running[id] = nil
+            return (task, !pending.isEmpty)
+        }
+        guard let task = result.task else { return false }
+        task.cancel()
+        if result.shouldStartMore {
+            startAvailableHandlers()
+        }
+        return true
+    }
 }
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
     private static let liveAudioMaxConcurrentIncomingHandlers = 1
     static let liveAudioDatagramWaitsForProcessing = false
+    private static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     // Apple PTT activation can hold the first transmit/receive path for several
     // seconds. Keep the app-level consent watchdog longer than that activation
     // window so a warm Direct QUIC path is not torn down just before audio starts.
@@ -2463,6 +2520,8 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private var verifiedPeerCertificateFingerprint: String?
     private var nominatedPath: DirectQuicNominatedPath?
     private var onIncomingAudioPayload: (@Sendable (DirectQuicIncomingAudioPayload) async -> Void)?
+    private var onExpiredIncomingAudioPayload:
+        (@Sendable (DirectQuicIncomingAudioPayload, UInt64, UInt64) async -> Void)?
     private var onReceiverPrewarmRequest: (@Sendable (DirectQuicReceiverPrewarmPayload) async -> Void)?
     private var onReceiverPrewarmAck: (@Sendable (DirectQuicReceiverPrewarmPayload) async -> Void)?
     private var onPathClosing: (@Sendable (DirectQuicPathClosingPayload) async -> Void)?
@@ -2741,6 +2800,8 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 
     func activateMediaTransport(
         onIncomingAudioPayload: @escaping @Sendable (DirectQuicIncomingAudioPayload) async -> Void,
+        onExpiredIncomingAudioPayload:
+            (@Sendable (DirectQuicIncomingAudioPayload, UInt64, UInt64) async -> Void)? = nil,
         onReceiverPrewarmRequest: (@Sendable (DirectQuicReceiverPrewarmPayload) async -> Void)? = nil,
         onReceiverPrewarmAck: (@Sendable (DirectQuicReceiverPrewarmPayload) async -> Void)? = nil,
         onPathClosing: (@Sendable (DirectQuicPathClosingPayload) async -> Void)? = nil,
@@ -2756,6 +2817,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
             withLockedState {
                 suppressPathLostCallback = false
                 self.onIncomingAudioPayload = onIncomingAudioPayload
+                self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
                 self.onReceiverPrewarmRequest = onReceiverPrewarmRequest
                 self.onReceiverPrewarmAck = onReceiverPrewarmAck
                 self.onPathClosing = onPathClosing
@@ -2783,6 +2845,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
         withLockedState {
             suppressPathLostCallback = false
             self.onIncomingAudioPayload = onIncomingAudioPayload
+            self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
             self.onReceiverPrewarmRequest = onReceiverPrewarmRequest
             self.onReceiverPrewarmAck = onReceiverPrewarmAck
             self.onPathClosing = onPathClosing
@@ -2918,17 +2981,67 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     }
 
     func injectIncomingAudioPayloadForTesting(_ incomingPayload: DirectQuicIncomingAudioPayload) {
-        let onIncomingAudioPayload = withLockedState { self.onIncomingAudioPayload }
-        incomingAudioPayloadQueue.enqueue {
-            await onIncomingAudioPayload?(incomingPayload)
-        }
+        enqueueIncomingAudioPayload(incomingPayload)
     }
 #endif
+
+    private func enqueueIncomingAudioPayload(_ incomingPayload: DirectQuicIncomingAudioPayload) {
+        let expirationNanoseconds = Self.liveAudioHandlerExpirationDeadline(
+            receivedAtNanoseconds: incomingPayload.datagramReceivedAtNanoseconds,
+            intervalNanoseconds: Self.liveAudioIncomingHandlerExpirationNanoseconds
+        )
+        let callbacks = withLockedState {
+            (
+                onIncomingAudioPayload: self.onIncomingAudioPayload,
+                onExpiredIncomingAudioPayload: self.onExpiredIncomingAudioPayload
+            )
+        }
+        incomingAudioPayloadQueue.enqueue(
+            expiringAtNanoseconds: expirationNanoseconds,
+            expiresRunningHandler: true,
+            onExpired: { [weak self] in
+                guard let self else { return }
+                let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+                let localQueueDelayNanoseconds =
+                    nowNanoseconds >= incomingPayload.datagramReceivedAtNanoseconds
+                    ? nowNanoseconds - incomingPayload.datagramReceivedAtNanoseconds
+                    : 0
+                if let onExpiredIncomingAudioPayload = callbacks.onExpiredIncomingAudioPayload {
+                    await onExpiredIncomingAudioPayload(
+                        incomingPayload,
+                        localQueueDelayNanoseconds,
+                        Self.liveAudioIncomingHandlerExpirationNanoseconds
+                    )
+                    return
+                }
+                await self.report(
+                    "Dropped expired Direct QUIC incoming audio payload before app handler",
+                    metadata: [
+                        "directQuicSequenceNumber": incomingPayload.sequenceNumber.map(String.init) ?? "none",
+                        "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
+                        "thresholdMs": String(Self.liveAudioIncomingHandlerExpirationNanoseconds / 1_000_000),
+                    ]
+                )
+            }
+        ) {
+            await callbacks.onIncomingAudioPayload?(incomingPayload)
+        }
+    }
+
+    private static func liveAudioHandlerExpirationDeadline(
+        receivedAtNanoseconds: UInt64,
+        intervalNanoseconds: UInt64
+    ) -> UInt64? {
+        guard intervalNanoseconds > 0 else { return nil }
+        let (deadline, overflow) = receivedAtNanoseconds.addingReportingOverflow(intervalNanoseconds)
+        return overflow ? UInt64.max : deadline
+    }
 
     func cancel(reason: String) {
         let resources = withLockedState { () -> (NWListener?, NWConnection?, NWConnection?, Task<Void, Never>?) in
             suppressPathLostCallback = true
             onIncomingAudioPayload = nil
+            onExpiredIncomingAudioPayload = nil
             onReceiverPrewarmRequest = nil
             onReceiverPrewarmAck = nil
             onPathClosing = nil
@@ -3682,16 +3795,13 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
                     switch decoded {
                     case .packet(.packetAudio(let payload, let sequenceNumber, let sentAtMilliseconds)):
                         self.notifyLivenessConfirmed("packet-audio-received")
-                        let onIncomingAudioPayload = self.withLockedState { self.onIncomingAudioPayload }
                         let incomingPayload = DirectQuicIncomingAudioPayload(
                             payload: payload,
                             datagramReceivedAtNanoseconds: datagramReceivedAtNanoseconds,
                             sequenceNumber: sequenceNumber,
                             sentAtMilliseconds: sentAtMilliseconds
                         )
-                        self.incomingAudioPayloadQueue.enqueue {
-                            await onIncomingAudioPayload?(incomingPayload)
-                        }
+                        self.enqueueIncomingAudioPayload(incomingPayload)
                     case .control(let messages):
                         Task {
                             await self.report(

@@ -3804,6 +3804,36 @@ struct ConversationTests {
         )
     }
 
+    @MainActor
+    @Test func unresolvedRestoredDidJoinLeavesWithoutApplyingApplePolicy() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let restoredChannelUUID = UUID()
+
+        viewModel.handleRestoredChannel(restoredChannelUUID)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(viewModel.isRestoredSystemSessionQuarantined(channelUUID: restoredChannelUUID))
+        #expect(pttClient.transmissionModeUpdates.isEmpty)
+        #expect(pttClient.serviceStatusUpdates.isEmpty)
+        #expect(pttClient.accessoryButtonEventUpdates.isEmpty)
+
+        viewModel.handleDidJoinChannel(restoredChannelUUID, reason: "restored-channel-ready")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(pttClient.leaveRequests == [restoredChannelUUID])
+        #expect(viewModel.pttCoordinator.state.systemSessionState == .none)
+        #expect(!viewModel.isRestoredSystemSessionQuarantined(channelUUID: restoredChannelUUID))
+        #expect(pttClient.transmissionModeUpdates.isEmpty)
+        #expect(pttClient.serviceStatusUpdates.isEmpty)
+        #expect(pttClient.accessoryButtonEventUpdates.isEmpty)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Ignoring unresolved restored PTT join"
+            )
+        )
+    }
+
     @Test func expandedCallScreenRequestDoesNotShowCallScreenForIdleOnlineFriend() {
         let selectedConversationState = SelectedConversationState(
             relationship: .none,

@@ -1167,6 +1167,8 @@ struct DirectQuicDiagnosticsSummary: Codable, Equatable {
     let mediaRelayTcpPort: Int?
     let mediaRelayActive: Bool
     let audioPacketDiagnosticsEnabled: Bool
+    let voiceMediaCoreMode: VoiceMediaCoreMode
+    let binaryVoicePacketV1Enabled: Bool
     let backendAdvertisesUpgrade: Bool
     let effectiveUpgradeEnabled: Bool
     let transportPathState: MediaTransportPathState
