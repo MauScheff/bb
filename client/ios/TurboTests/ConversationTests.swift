@@ -1489,6 +1489,42 @@ struct ConversationTests {
         #expect(projection.reconciliationAction == .teardownDevicePTTSession(contactID: contactID))
     }
 
+    @Test func staleIncomingBeepDoesNotTearDownEstablishedBackendReadySession() {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .ready,
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true,
+            systemSessionState: .active(contactID: contactID, channelUUID: channelUUID),
+            pendingAction: .none,
+            localJoinFailure: nil,
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true,
+                    hasIncomingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .incomingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase != .incomingBeep)
+        #expect(projection.reconciliationAction == .none)
+    }
+
     @Test func selectedConversationStatePreservesConnectingWhileAcceptedIncomingBeepIsStillJoining() {
         let contactID = UUID()
         let context = ConversationDerivationContext(

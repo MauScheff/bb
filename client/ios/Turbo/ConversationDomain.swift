@@ -1636,6 +1636,13 @@ struct ConversationDerivationContext: Equatable {
         return channel.canTransmit
     }
 
+    var backendShowsEstablishedReadyConversation: Bool {
+        backendChannelReadiness.hasLocalMembership
+            && backendChannelReadiness.hasPeerMembership
+            && backendChannelReadiness.peerDeviceConnected
+            && backendChannelReadiness.canTransmit
+    }
+
     var backendShowsWakeCapableReceiverRecovery: Bool {
         guard let channel else { return false }
         guard !backendJoinSettling else { return false }
@@ -2058,7 +2065,7 @@ enum ConversationStateMachine {
             guard context.pendingAction.pendingJoinContactID != context.contactID else {
                 return nil
             }
-            guard !context.rawLocalDevicePTTEvidencePresent,
+            guard (!context.rawLocalDevicePTTEvidencePresent || !context.backendShowsEstablishedReadyConversation),
                   !context.backendJoinSettling else {
                 return nil
             }
@@ -2723,6 +2730,7 @@ enum ConversationStateMachine {
            !context.backendJoinSettling,
            context.pendingAction.pendingJoinContactID != context.contactID,
            context.rawLocalDevicePTTEvidencePresent,
+           !context.backendShowsEstablishedReadyConversation,
            !explicitLeaveRequested {
             return .teardownDevicePTTSession(contactID: context.contactID)
         }

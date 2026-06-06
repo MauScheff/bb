@@ -7818,6 +7818,57 @@ struct TalkTurnTests {
         )
     }
 
+    @MainActor
+    @Test func currentPendingTransmitCanActivateWhenRuntimePressLatchWasLostWithoutExplicitStop() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let request = TransmitRequestContext(
+            contactID: contactID,
+            contactHandle: "@blake",
+            backendChannelID: "channel-123",
+            remoteUserID: "peer-user",
+            channelUUID: channelUUID,
+            usesLocalHTTPBackend: false,
+            backendSupportsWebSocket: true
+        )
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.transmitCoordinator.effectHandler = nil
+
+        await viewModel.transmitCoordinator.handle(.pressRequested(request))
+
+        #expect(viewModel.transmitRuntime.isPressingTalk == false)
+        #expect(viewModel.transmitCoordinator.state.isPressingTalk)
+        #expect(
+            viewModel.shouldActivateBackendTransmitLease(
+                request: request,
+                workID: 999
+            )
+        )
+
+        viewModel.transmitRuntime.markExplicitStopRequested()
+        #expect(
+            !viewModel.shouldActivateBackendTransmitLease(
+                request: request,
+                workID: 999
+            )
+        )
+    }
+
     @Test func transmitReducerReleaseBeforeGrantCancelsPendingBeginAndIgnoresLateGrant() {
         let request = makeTransmitRequest()
         let target = TransmitTarget(

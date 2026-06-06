@@ -2229,7 +2229,9 @@ extension PTTViewModel {
                     && pttCoordinator.state.systemChannelUUID == $0
                 )
             } ?? false
-        guard transmitRuntime.isPressingTalk || hasMatchingSystemHandoff else { return false }
+        guard transmitRuntime.isPressingTalk
+            || transmitCoordinator.state.isPressingTalk
+            || hasMatchingSystemHandoff else { return false }
         guard transmitCoordinator.state.isPressingTalk || hasMatchingSystemHandoff else { return false }
         guard transmitCoordinator.state.pendingRequest == request else { return false }
         return true
