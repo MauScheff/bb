@@ -469,6 +469,63 @@ struct AudioFuzzTests {
         }
     }
 
+    @Test func receiverAudioQueueFuzzesBurstsAppleTimingRapidTurnsAndSlowPlayout() throws {
+        let config = PropertyRunConfig(seed: 0xA11D_9E11_2026_0606, iterations: 260)
+
+        try runProperty(config, name: "receiverAudioQueueFuzzesBurstsAppleTimingRapidTurnsAndSlowPlayout") { rng, iteration, seed in
+            var model = ReceiveQueuePressureModel()
+            let operations = Self.generateReceiveQueuePressureOperations(rng: &rng)
+            let inputSummary = Self.receiveQueuePressureOperationSummary(operations)
+
+            for operation in operations {
+                try model.apply(
+                    operation,
+                    seed: seed,
+                    iteration: iteration,
+                    inputSummary: inputSummary
+                )
+            }
+
+            try model.forceEpochBoundaryAndAssertQuiescent(
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary
+            )
+            try requireProperty(
+                model.sawOverflowDrop,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver queue fuzz exercises bounded overflow pressure",
+                observed: model.summary
+            )
+            try requireProperty(
+                model.sawLateAppleCallback,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver queue fuzz exercises late Apple playback callbacks",
+                observed: model.summary
+            )
+            try requireProperty(
+                model.sawSlowPlayout,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver queue fuzz exercises slow playout under queue pressure",
+                observed: model.summary
+            )
+            try requireProperty(
+                model.playedPacketCount > 0,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver queue fuzz still makes current-turn playback progress",
+                observed: model.summary
+            )
+        }
+    }
+
     @Test func audioIncidentCorpusReplaysExtractedDeviceTimelines() async throws {
         let corpusURLs = try Self.audioIncidentCorpusURLs()
         try requireProperty(
@@ -1111,6 +1168,304 @@ private extension AudioFuzzTests {
         case clearOtherBuffered
     }
 
+    enum ReceiveQueueAppleState: CustomStringConvertible {
+        case waiting
+        case ready
+        case denied
+
+        var description: String {
+            switch self {
+            case .waiting:
+                return "waiting"
+            case .ready:
+                return "ready"
+            case .denied:
+                return "denied"
+            }
+        }
+    }
+
+    enum ReceiveQueuePressureOperation {
+        case advance(UInt64)
+        case beginTurn
+        case appleState(ReceiveQueueAppleState)
+        case lateAppleReady(UInt64)
+        case setPlayoutLatency(UInt64)
+        case receivePacket(sequenceNumber: UInt64, transport: IncomingAudioPayloadTransport, senderAgeMilliseconds: UInt64)
+        case burst(count: Int, transport: IncomingAudioPayloadTransport, senderAgeMilliseconds: UInt64)
+    }
+
+    @MainActor
+    struct ReceiveQueuePressureModel {
+        private struct Packet {
+            let id: UInt64
+            let epoch: UInt64
+            let sequenceNumber: UInt64
+            let transport: IncomingAudioPayloadTransport
+            let receivedAtNanoseconds: UInt64
+            let senderAgeMilliseconds: UInt64
+        }
+
+        private enum PacketFate {
+            case pending
+            case running
+            case played
+            case dropped(String)
+        }
+
+        private struct RunningPacket {
+            let packet: Packet
+            let completesAtNanoseconds: UInt64
+        }
+
+        private let maximumPendingPackets = 96
+        private let maximumRunningPackets = 4
+        private let freshnessBudgetNanoseconds: UInt64 = 650_000_000
+        private let freshnessBudgetMilliseconds: UInt64 = 650
+        private var nowNanoseconds: UInt64 = 1_000_000_000
+        private var currentEpoch: UInt64 = 0
+        private var currentAppleState: ReceiveQueueAppleState = .ready
+        private var playoutLatencyNanoseconds: UInt64 = 20_000_000
+        private var nextPacketID: UInt64 = 0
+        private var pendingPackets: [Packet] = []
+        private var runningPackets: [RunningPacket] = []
+        private var packetFates: [UInt64: PacketFate] = [:]
+        private(set) var sawOverflowDrop = false
+        private(set) var sawLateAppleCallback = false
+        private(set) var sawSlowPlayout = false
+        private(set) var playedPacketCount = 0
+        private var turnBeginCount = 0
+        private var controlConvergenceCount = 0
+
+        var summary: String {
+            """
+            epoch=\(currentEpoch) apple=\(currentAppleState) nowNs=\(nowNanoseconds) pending=\(pendingPackets.count) \
+            running=\(runningPackets.count) played=\(playedPacketCount) turnBegins=\(turnBeginCount) \
+            controlConvergence=\(controlConvergenceCount) overflow=\(sawOverflowDrop) lateApple=\(sawLateAppleCallback) \
+            slowPlayout=\(sawSlowPlayout) fates=\(packetFates.count)
+            """
+        }
+
+        mutating func apply(
+            _ operation: ReceiveQueuePressureOperation,
+            seed: UInt64,
+            iteration: Int,
+            inputSummary: String
+        ) throws {
+            switch operation {
+            case .advance(let nanoseconds):
+                advance(nanoseconds)
+            case .beginTurn:
+                beginTurn()
+            case .appleState(let state):
+                currentAppleState = state
+            case .lateAppleReady(let epoch):
+                sawLateAppleCallback = true
+                if epoch == currentEpoch {
+                    currentAppleState = .ready
+                }
+            case .setPlayoutLatency(let nanoseconds):
+                playoutLatencyNanoseconds = nanoseconds
+                if nanoseconds >= 250_000_000 {
+                    sawSlowPlayout = true
+                }
+            case .receivePacket(let sequenceNumber, let transport, let senderAgeMilliseconds):
+                receivePacket(
+                    sequenceNumber: sequenceNumber,
+                    transport: transport,
+                    senderAgeMilliseconds: senderAgeMilliseconds
+                )
+            case .burst(let count, let transport, let senderAgeMilliseconds):
+                for offset in 0..<count {
+                    receivePacket(
+                        sequenceNumber: UInt64(offset),
+                        transport: transport,
+                        senderAgeMilliseconds: senderAgeMilliseconds
+                    )
+                }
+            }
+
+            service()
+            try assertInvariants(seed: seed, iteration: iteration, inputSummary: inputSummary)
+        }
+
+        mutating func forceEpochBoundaryAndAssertQuiescent(
+            seed: UInt64,
+            iteration: Int,
+            inputSummary: String
+        ) throws {
+            beginTurn()
+            service()
+            try assertInvariants(seed: seed, iteration: iteration, inputSummary: inputSummary)
+            try requireProperty(
+                pendingPackets.isEmpty && runningPackets.isEmpty,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver queue epoch boundary clears stale queued and running packet work",
+                observed: summary
+            )
+        }
+
+        private mutating func beginTurn() {
+            dropPackets(pendingPackets, reason: "stale-epoch")
+            dropPackets(runningPackets.map(\.packet), reason: "stale-epoch")
+            pendingPackets.removeAll(keepingCapacity: false)
+            runningPackets.removeAll(keepingCapacity: false)
+            currentEpoch &+= 1
+            currentAppleState = .waiting
+            turnBeginCount += 1
+            controlConvergenceCount += 1
+        }
+
+        private mutating func advance(_ nanoseconds: UInt64) {
+            nowNanoseconds &+= nanoseconds
+            completeRunningPackets()
+        }
+
+        private mutating func receivePacket(
+            sequenceNumber: UInt64,
+            transport: IncomingAudioPayloadTransport,
+            senderAgeMilliseconds: UInt64
+        ) {
+            let packet = Packet(
+                id: nextPacketID,
+                epoch: currentEpoch,
+                sequenceNumber: sequenceNumber,
+                transport: transport,
+                receivedAtNanoseconds: nowNanoseconds,
+                senderAgeMilliseconds: senderAgeMilliseconds
+            )
+            nextPacketID &+= 1
+            packetFates[packet.id] = .pending
+
+            if currentAppleState == .denied {
+                markDropped(packet, reason: "apple-denied")
+                return
+            }
+            if senderAgeMilliseconds >= freshnessBudgetMilliseconds {
+                markDropped(packet, reason: "expired-sender-clock")
+                return
+            }
+            pendingPackets.append(packet)
+            if pendingPackets.count > maximumPendingPackets {
+                let overflow = pendingPackets.count - maximumPendingPackets
+                let dropped = Array(pendingPackets.prefix(overflow))
+                pendingPackets.removeFirst(overflow)
+                sawOverflowDrop = true
+                dropPackets(dropped, reason: "overflow")
+            }
+        }
+
+        private mutating func service() {
+            completeRunningPackets()
+            guard currentAppleState == .ready else { return }
+            while runningPackets.count < maximumRunningPackets, !pendingPackets.isEmpty {
+                let packet = pendingPackets.removeFirst()
+                guard packet.epoch == currentEpoch else {
+                    markDropped(packet, reason: "stale-epoch")
+                    continue
+                }
+                guard nowNanoseconds &- packet.receivedAtNanoseconds < freshnessBudgetNanoseconds else {
+                    markDropped(packet, reason: "expired-local-queue")
+                    continue
+                }
+                packetFates[packet.id] = .running
+                runningPackets.append(
+                    RunningPacket(
+                        packet: packet,
+                        completesAtNanoseconds: nowNanoseconds &+ playoutLatencyNanoseconds
+                    )
+                )
+            }
+        }
+
+        private mutating func completeRunningPackets() {
+            guard !runningPackets.isEmpty else { return }
+            var stillRunning: [RunningPacket] = []
+            for runningPacket in runningPackets {
+                guard runningPacket.completesAtNanoseconds <= nowNanoseconds else {
+                    stillRunning.append(runningPacket)
+                    continue
+                }
+                guard runningPacket.packet.epoch == currentEpoch else {
+                    markDropped(runningPacket.packet, reason: "stale-epoch-after-playout")
+                    continue
+                }
+                guard nowNanoseconds &- runningPacket.packet.receivedAtNanoseconds < freshnessBudgetNanoseconds else {
+                    markDropped(runningPacket.packet, reason: "expired-before-completion")
+                    continue
+                }
+                packetFates[runningPacket.packet.id] = .played
+                playedPacketCount += 1
+            }
+            runningPackets = stillRunning
+        }
+
+        private mutating func dropPackets(_ packets: [Packet], reason: String) {
+            for packet in packets {
+                markDropped(packet, reason: reason)
+            }
+        }
+
+        private mutating func markDropped(_ packet: Packet, reason: String) {
+            packetFates[packet.id] = .dropped(reason)
+        }
+
+        private func assertInvariants(
+            seed: UInt64,
+            iteration: Int,
+            inputSummary: String
+        ) throws {
+            try requireProperty(
+                pendingPackets.count <= maximumPendingPackets,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver packet queue remains bounded under bursts",
+                observed: summary
+            )
+            try requireProperty(
+                runningPackets.count <= maximumRunningPackets,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "receiver playout work remains bounded under slow Apple/playout timing",
+                observed: summary
+            )
+            try requireProperty(
+                pendingPackets.allSatisfy { $0.epoch == currentEpoch }
+                    && runningPackets.allSatisfy { $0.packet.epoch == currentEpoch },
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "old receive epochs cannot remain queued or running after a turn boundary",
+                observed: summary
+            )
+            try requireProperty(
+                controlConvergenceCount == turnBeginCount,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "queue pressure never blocks UI/control turn convergence",
+                observed: summary
+            )
+            try requireProperty(
+                packetFates.values.allSatisfy { fate in
+                    switch fate {
+                    case .pending, .running, .played, .dropped:
+                        return true
+                    }
+                },
+                seed: seed,
+                iteration: iteration,
+                inputSummary: inputSummary,
+                expectedInvariant: "every current-turn packet either plays, remains bounded, or is intentionally dropped with a metric reason",
+                observed: summary
+            )
+        }
+    }
+
     static func generatePlaybackSchedulerOperations(rng: inout SeededRNG) -> [PlaybackSchedulerOperation] {
         var operations: [PlaybackSchedulerOperation] = [
             .setIOCycleAvailable(false),
@@ -1158,6 +1513,96 @@ private extension AudioFuzzTests {
         return operations
     }
 
+    static func generateReceiveQueuePressureOperations(rng: inout SeededRNG) -> [ReceiveQueuePressureOperation] {
+        var operations: [ReceiveQueuePressureOperation] = [
+            .appleState(.ready),
+            .burst(count: 132, transport: .mediaRelayPacket, senderAgeMilliseconds: 20),
+            .advance(25_000_000),
+            .setPlayoutLatency(320_000_000),
+            .receivePacket(sequenceNumber: 10_000, transport: .directQuic, senderAgeMilliseconds: 20),
+            .beginTurn,
+            .lateAppleReady(0),
+            .receivePacket(sequenceNumber: 0, transport: .mediaRelayPacket, senderAgeMilliseconds: 20),
+            .lateAppleReady(1),
+            .advance(360_000_000),
+        ]
+        var modelEpoch: UInt64 = 1
+        var nextSequence: UInt64 = 20_000
+        let transports = IncomingAudioPayloadTransport.fuzzCases
+
+        let operationCount = rng.nextInt(in: 160...360)
+        for index in 0..<operationCount {
+            switch rng.nextInt(in: 0...99) {
+            case 0..<12:
+                operations.append(.beginTurn)
+                modelEpoch &+= 1
+            case 12..<22:
+                operations.append(.appleState(rng.pick([.waiting, .ready, .denied])))
+            case 22..<30:
+                let callbackEpoch = rng.nextBool()
+                    ? modelEpoch
+                    : (modelEpoch > 0 ? modelEpoch - 1 : 0)
+                operations.append(.lateAppleReady(callbackEpoch))
+            case 30..<42:
+                operations.append(
+                    .setPlayoutLatency(
+                        rng.pick([
+                            0,
+                            20_000_000,
+                            60_000_000,
+                            180_000_000,
+                            320_000_000,
+                            700_000_000,
+                        ])
+                    )
+                )
+            case 42..<58:
+                operations.append(
+                    .advance(
+                        UInt64(
+                            rng.pick([
+                                1,
+                                10,
+                                20,
+                                80,
+                                180,
+                                360,
+                                720,
+                            ])
+                        ) * 1_000_000
+                    )
+                )
+            case 58..<74:
+                let count = rng.nextInt(in: 1...160)
+                operations.append(
+                    .burst(
+                        count: count,
+                        transport: rng.pick(transports),
+                        senderAgeMilliseconds: UInt64(rng.pick([0, 20, 80, 220, 700, 1_100]))
+                    )
+                )
+                nextSequence &+= UInt64(count)
+            default:
+                operations.append(
+                    .receivePacket(
+                        sequenceNumber: nextSequence,
+                        transport: rng.pick(transports),
+                        senderAgeMilliseconds: UInt64(rng.pick([0, 20, 80, 220, 700, 1_100]))
+                    )
+                )
+                nextSequence &+= 1
+            }
+
+            if index.isMultiple(of: 31) {
+                operations.append(.lateAppleReady(modelEpoch))
+            }
+            if index.isMultiple(of: 47) {
+                operations.append(.advance(700_000_000))
+            }
+        }
+        return operations
+    }
+
     static func playbackSchedulerOperationSummary(
         _ operations: [PlaybackSchedulerOperation]
     ) -> String {
@@ -1180,6 +1625,31 @@ private extension AudioFuzzTests {
                     return "complete"
                 case .startupReassertion:
                     return "reassert"
+                }
+            }
+            .joined(separator: ",")
+    }
+
+    static func receiveQueuePressureOperationSummary(
+        _ operations: [ReceiveQueuePressureOperation]
+    ) -> String {
+        operations.prefix(80)
+            .map { operation in
+                switch operation {
+                case .advance(let nanoseconds):
+                    return "advance(\(nanoseconds / 1_000_000)ms)"
+                case .beginTurn:
+                    return "begin-turn"
+                case .appleState(let state):
+                    return "apple(\(state))"
+                case .lateAppleReady(let epoch):
+                    return "late-apple-ready(\(epoch))"
+                case .setPlayoutLatency(let nanoseconds):
+                    return "playout-latency(\(nanoseconds / 1_000_000)ms)"
+                case .receivePacket(let sequenceNumber, let transport, let senderAgeMilliseconds):
+                    return "packet(\(sequenceNumber),\(transport.diagnosticsValue),age=\(senderAgeMilliseconds)ms)"
+                case .burst(let count, let transport, let senderAgeMilliseconds):
+                    return "burst(\(count),\(transport.diagnosticsValue),age=\(senderAgeMilliseconds)ms)"
                 }
             }
             .joined(separator: ",")

@@ -22692,6 +22692,7 @@ struct ConnectionTests {
         let channelUUID = UUID()
         let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 350_000_000)
         viewModel.applicationStateOverride = .active
+        viewModel.isPTTAudioSessionActive = true
         viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 250_000_000
         viewModel.directQuicIncomingAudioQueueSevereDelayNanoseconds = 320_000_000
         viewModel.incomingLiveAudioBacklogExpirationNanoseconds = 1_000_000_000
@@ -22856,6 +22857,7 @@ struct ConnectionTests {
         let channelUUID = UUID()
         let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 0)
         viewModel.applicationStateOverride = .active
+        viewModel.isPTTAudioSessionActive = true
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -22932,6 +22934,7 @@ struct ConnectionTests {
         let channelUUID = UUID()
         let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 0)
         viewModel.applicationStateOverride = .active
+        viewModel.isPTTAudioSessionActive = true
         viewModel.contacts = [
             Contact(
                 id: contactID,
