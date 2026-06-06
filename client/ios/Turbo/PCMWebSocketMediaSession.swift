@@ -10,6 +10,7 @@ nonisolated enum PlaybackBufferReceivePlan: Equatable {
 
 nonisolated enum PlaybackCushionPolicy: Equatable {
     case applyTransportCushion
+    case applySchedulerStartupCushion
     case alreadyCushioned
 }
 
@@ -1153,7 +1154,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         sendAudioChunk: (@Sendable (String) async throws -> Void)?,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
         senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
-        outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .legacyPCM,
+        outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .opusV2,
         outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
         voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
     ) {
@@ -1694,7 +1695,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             switch frame {
             case .legacyPCM(let data):
                 if !data.isEmpty {
-                    hasPlayableFrame = true
+                    reportLegacyPCMRejected(reason: "validation")
+                    return .invalid
                 }
             case .opus(let opusFrame):
                 guard opusCodec != nil else {
@@ -1746,18 +1748,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             switch frame {
             case .legacyPCM(let data):
                 guard !data.isEmpty else { continue }
-                acceptedForPlayback = true
-                chunks.append(
-                    DecodedCanonicalPCMChunk(
-                        data: PCMInt16SampleRateConverter.convert(
-                            data,
-                            fromSampleRate: Int(PCMOutgoingPayloadSplitter.targetSampleRate),
-                            toSampleRate: VoiceFrameAccumulator.sampleRate
-                        ),
-                        playbackProfile: playbackProfile,
-                        cushionPolicy: .applyTransportCushion
-                    )
-                )
+                reportLegacyPCMRejected(reason: "live-decode")
+                continue
             case .opus(let opusFrame):
                 guard let opusCodec else {
                     reportCodecNegotiationMismatch(
@@ -1790,7 +1782,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             DecodedCanonicalPCMChunk(
                                 data: $0.pcmData,
                                 playbackProfile: playbackProfile,
-                                cushionPolicy: .alreadyCushioned
+                                cushionPolicy: .applySchedulerStartupCushion
                             )
                         }
                     )
@@ -1840,7 +1832,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             DecodedCanonicalPCMChunk(
                                 data: frame.pcmData,
                                 playbackProfile: playbackProfile,
-                                cushionPolicy: .alreadyCushioned
+                                cushionPolicy: .applySchedulerStartupCushion
                             )
                         }
                     )
@@ -1856,6 +1848,20 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             chunks: chunks,
             acceptedForPlayback: acceptedForPlayback || !chunks.isEmpty
         )
+    }
+
+    private func reportLegacyPCMRejected(reason: String) {
+        Task {
+            await report(
+                "Rejected legacy PCM live audio payload",
+                metadata: [
+                    "contractKind": DiagnosticsContractKind.precondition.rawValue,
+                    "invariantID": "voice.media.no_live_legacy_pcm",
+                    "scope": DiagnosticsInvariantScope.local.rawValue,
+                    "reason": reason,
+                ]
+            )
+        }
     }
 
     private func reportCodecNegotiationMismatch(
@@ -2492,7 +2498,15 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         switch outboundVoiceMediaPolicy {
         case .opusV2, .binaryOpusV1:
             guard let opusCodec else {
-                return legacyPCMPayloads(fromCanonicalPCMData: bytes)
+                Task {
+                    await report(
+                        "Opus encode unavailable; dropping live audio frame instead of falling back to legacy PCM",
+                        metadata: [
+                            "policy": outboundVoiceMediaPolicy.rawValue,
+                        ]
+                    )
+                }
+                return []
             }
             let frames = outboundFrameAccumulator.append(bytes)
             var payloads: [String] = []
@@ -2521,25 +2535,34 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             payloads.append(payload)
                         }
                     case .legacyPCM:
-                        payloads.append(contentsOf: legacyPCMPayloads(fromCanonicalPCMData: frame.pcmData))
+                        break
                     }
                 } catch {
                     Task {
                         await report(
-                            "Opus encode failed; falling back to legacy PCM for frame",
+                            "Opus encode failed; dropping live audio frame instead of falling back to legacy PCM",
                             metadata: [
                                 "frameIndex": String(frame.frameIndex),
                                 "error": error.localizedDescription,
                             ]
                         )
                     }
-                    payloads.append(contentsOf: legacyPCMPayloads(fromCanonicalPCMData: frame.pcmData))
                 }
             }
             return payloads
         case .legacyPCM:
             outboundFrameAccumulator.reset()
-            return legacyPCMPayloads(fromCanonicalPCMData: bytes)
+            Task {
+                await report(
+                    "Rejected legacy PCM outbound live audio policy",
+                    metadata: [
+                        "contractKind": DiagnosticsContractKind.precondition.rawValue,
+                        "invariantID": "voice.media.no_live_legacy_pcm",
+                        "scope": DiagnosticsInvariantScope.local.rawValue,
+                    ]
+                )
+            }
+            return []
         }
     }
 
@@ -3090,10 +3113,13 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         scheduledPlaybackBufferCount: Int,
         minimumCushionBufferCount: Int
     ) -> Bool {
-        guard cushionPolicy == .applyTransportCushion else { return false }
+        guard cushionPolicy != .alreadyCushioned else { return false }
         guard scheduledPlaybackBufferCount == 0,
               pendingPlaybackBufferCount < minimumCushionBufferCount else {
             return false
+        }
+        if cushionPolicy == .applySchedulerStartupCushion {
+            return receivePlan == .scheduleAndStartNode
         }
         switch playbackProfile {
         case .lowLatency, .fastRelayBalanced, .relayJitterBuffered, .wakeBackgroundContinuity:

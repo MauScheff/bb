@@ -2742,7 +2742,14 @@ private extension AudioFuzzTests {
     }
 
     static func playbackCushionPolicy(from value: String) -> PlaybackCushionPolicy {
-        value == "applyTransportCushion" ? .applyTransportCushion : .alreadyCushioned
+        switch value {
+        case "applyTransportCushion":
+            return .applyTransportCushion
+        case "applySchedulerStartupCushion":
+            return .applySchedulerStartupCushion
+        default:
+            return .alreadyCushioned
+        }
     }
 
     static func generatePacketDeliveries(rng: inout SeededRNG) -> [PacketDelivery] {

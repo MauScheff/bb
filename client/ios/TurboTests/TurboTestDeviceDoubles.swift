@@ -330,6 +330,7 @@ final class BlockingPlaybackMediaSession: MediaSession {
     weak var delegate: MediaSessionDelegate?
     private let lock = NSLock()
     private let blockingNanoseconds: UInt64
+    private let suspendsDuringPlayback: Bool
     private var chunks: [String] = []
     private var threadIsMain: [Bool] = []
     var receivePlaybackReadinessOverride: MediaSessionReceivePlaybackReadiness?
@@ -340,8 +341,9 @@ final class BlockingPlaybackMediaSession: MediaSession {
         receivePlaybackReadinessOverride ?? .ready
     }
 
-    init(blockingNanoseconds: UInt64) {
+    init(blockingNanoseconds: UInt64, suspendsDuringPlayback: Bool = false) {
         self.blockingNanoseconds = blockingNanoseconds
+        self.suspendsDuringPlayback = suspendsDuringPlayback
     }
 
     var receivedRemoteAudioChunks: [String] {
@@ -380,7 +382,11 @@ final class BlockingPlaybackMediaSession: MediaSession {
             threadIsMain.append(Thread.isMainThread)
         }
         if blockingNanoseconds > 0 {
-            blockCurrentThread(for: blockingNanoseconds)
+            if suspendsDuringPlayback {
+                try? await Task.sleep(nanoseconds: blockingNanoseconds)
+            } else {
+                blockCurrentThread(for: blockingNanoseconds)
+            }
         }
         return true
     }

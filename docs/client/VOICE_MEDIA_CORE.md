@@ -64,7 +64,7 @@ Local override:
 - Launch argument: `-TurboDebugVoiceMediaCoreMode <mode>`
 - Environment: `TURBO_DEBUG_VOICE_MEDIA_CORE_MODE=<mode>`
 
-Live media sessions use `legacy-adaptive` unless the diagnostics sheet live key, an explicit launch argument, or an environment override selects another mode. The older `TurboDebugVoiceMediaCoreMode` key is kept for debug tooling, but it does not silently change the live call baseline across device retests.
+Live media sessions use `swift-neteq-v1`. Legacy and shadow modes remain constructible for compatibility tests, replay fixtures, and historical diagnostics, but live calls normalize stale legacy/shadow launch arguments or defaults back to Swift NetEQ. The diagnostics sheet no longer exposes live legacy/shadow selection.
 
 Binary packet advertisement is controlled separately:
 
@@ -72,9 +72,9 @@ Binary packet advertisement is controlled separately:
 - Launch argument: `-TurboDebugBinaryVoicePacketV1Enabled <true|false>`
 - Environment: `TURBO_DEBUG_BINARY_VOICE_PACKET_V1_ENABLED=<true|false>`
 
-Keep binary packet advertisement off while proving the `opus-v2` lane, then enable it as its own test cell after the playout engine is stable in shadow or authoritative mode.
+Binary packet advertisement is on by default for live media when Opus is available. Debug builds may explicitly disable it for a comparison cell.
 
-Production rollout starts at `legacy-adaptive`, moves to shadow mode for Direct QUIC and Fast Relay packet media, then switches packet media to `swift-neteq-v1` only after focused tests, fuzz, relay tests, replay fixtures, and shadow traces are clean.
+Legacy PCM is not a live fallback. If Opus encode or codec setup fails, the live session drops the frame and emits `voice.media.no_live_legacy_pcm` evidence instead of switching to base64 PCM.
 
 ## Playout Algebra
 
@@ -135,7 +135,8 @@ Use the narrowest proof first:
 just swift-test-target voicePacketV1CodecRoundTripsOpusFrame
 just swift-test-target voiceAudioFramePayloadCodecRoundTripsBinaryOpusPacket
 just swift-test-target voicePacketV1RejectsMalformedHeaders
-just swift-test-target voiceMediaCoreModeOverrideFallsBackToLegacy
+just swift-test-target voiceMediaCoreModeDefaultsLiveCallsToSwiftNetEq
+just swift-test-target directQuicAudioPayloadAsyncQueueKeepsRealtimeAudioAheadOfDiagnosticsStorm
 just swift-test-target legacyAdaptivePlayoutEngineConformsToVoicePlayoutEngineContract
 just swift-test-target swiftNetEqPlayoutEngineConformsToVoicePlayoutEngineContract
 just swift-test-target shadowLegacyScheduledPlayoutEngineConformsToVoicePlayoutEngineContract

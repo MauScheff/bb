@@ -672,12 +672,7 @@ extension PTTViewModel {
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: false)
         )
         receiveExecutionRuntime.markRemoteTransmitStopProjectionGrace(for: contactID)
-        mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
-        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
-        mediaRuntime.clearIncomingAudioSequence(for: contactID)
-        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
-        resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
-        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-transmit-stopped")
+        resetRemoteAudioReceiveRuntime(for: contactID, reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
@@ -693,12 +688,6 @@ extension PTTViewModel {
             .remoteTransmitStopped(contactID: contactID, preservePlaybackDrain: true)
         )
         receiveExecutionRuntime.markRemoteTransmitStopProjectionGrace(for: contactID)
-        mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
-        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
-        mediaRuntime.clearIncomingAudioSequence(for: contactID)
-        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
-        resetIncomingPacketAudioPayloadQueues(reason: "remote-transmit-stopped")
-        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-transmit-stopped")
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:draining")
@@ -1424,6 +1413,15 @@ extension PTTViewModel {
     func resetIncomingPacketAudioPayloadQueues(reason: String) {
         mediaRuntime.directQuicProbeController?.resetIncomingAudioPayloadQueue(reason: reason)
         mediaRuntime.mediaRelayClient?.resetIncomingAudioPayloadQueue(reason: reason)
+    }
+
+    func resetRemoteAudioReceiveRuntime(for contactID: UUID, reason: String) {
+        mediaRuntime.resetIncomingRelayAudioDiagnostics(for: contactID)
+        mediaRuntime.clearIncomingAudioContinuity(for: contactID)
+        mediaRuntime.clearIncomingAudioSequence(for: contactID)
+        mediaRuntime.clearForegroundSystemReceiveAudioChunks(for: contactID)
+        resetIncomingPacketAudioPayloadQueues(reason: reason)
+        resetLiveAudioReceiveRuntime(for: contactID, reason: reason)
     }
 
     func resetLiveAudioReceiveRuntime(for contactID: UUID, reason _: String) {

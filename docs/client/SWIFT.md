@@ -90,7 +90,8 @@ Receiver flow:
 - Startup cushions are lane-specific: Direct QUIC targets 4 frames, Fast Relay packet targets 5, websocket fallback targets 7, and wake/background continuity targets 8. Opus startup can begin after the lane timeout with a partial cushion so sparse or reordered live packets do not block playback indefinitely.
 - Duplicate and late frames are dropped. Missing frames use next-packet FEC for the immediately previous frame when available, otherwise native PLC. Repeated gaps increase adaptive cushion up to 3 extra frames for the current transmit.
 - Each remote transmit prepare starts a fresh receive playout epoch. Warm receive media sessions must reset Opus frame-index state and pending playback for the new transmit so frame indexes from an earlier press cannot delay or drop the next press.
-- Opus decoded frames are already gated by the adaptive playout buffer and must not receive an additional transport-level startup cushion. Legacy PCM uses the lane-specific transport cushion.
+- Opus decoded frames are packet/jitter-gated by the active playout engine. After Apple/system audio activation, AVAudio may apply a startup-only scheduler cushion before the player node starts so the first audible buffers are not starved; once the node is playing, Opus frames schedule without an extra transport cushion. Legacy PCM uses the lane-specific transport cushion.
+- Receive playback admission must not await first-playback ACK sends, ingress summaries, or diagnostics. Those are post-admission observers; an Apple-gated startup burst must continue entering playout while control-plane and reporting work catches up on a separate bounded queue.
 - Playback drain/readiness is based on AVAudioPlayerNode `.dataPlayedBack` completion so the UI remains blocked while scheduled audio is still audible.
 
 Current codec implementation:

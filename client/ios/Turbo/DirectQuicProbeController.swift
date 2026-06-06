@@ -1063,7 +1063,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
-    static let liveAudioMaxConcurrentIncomingHandlers = 4
+    static let liveAudioMaxConcurrentIncomingHandlers = 1
     static let liveAudioMaxPendingIncomingHandlers = 96
     static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     private static let maximumReceiveChunkLength = 65_536
@@ -1078,6 +1078,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     private let onDisconnected: (@Sendable (TurboMediaRelayClient) async -> Void)?
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
     private let incomingAudioPayloadQueue: DirectQuicAudioPayloadAsyncQueue
+    private let incomingOrderedAudioPayloadQueue: DirectQuicAudioPayloadAsyncQueue
     private let incomingAudioHandlerExpirationNanoseconds: UInt64
     private let queue = DispatchQueue(label: "turbo.media-relay-client")
     private let lock = NSLock()
@@ -1120,6 +1121,10 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         self.incomingAudioHandlerExpirationNanoseconds = incomingAudioHandlerExpirationNanoseconds
         self.incomingAudioPayloadQueue = DirectQuicAudioPayloadAsyncQueue(
             maxConcurrentHandlers: incomingAudioMaxConcurrentHandlers,
+            maxPendingHandlers: incomingAudioMaxPendingHandlers
+        )
+        self.incomingOrderedAudioPayloadQueue = DirectQuicAudioPayloadAsyncQueue(
+            maxConcurrentHandlers: 1,
             maxPendingHandlers: incomingAudioMaxPendingHandlers
         )
     }
@@ -1305,6 +1310,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
             return (connection, datagramConnection)
         }
         incomingAudioPayloadQueue.reset()
+        incomingOrderedAudioPayloadQueue.reset()
         connections.stream?.cancel()
         connections.datagram?.cancel()
     }
@@ -1704,10 +1710,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     }
 
     nonisolated static func shouldFallbackPacketOversizeToStream(afterPacketSendError error: Error) -> Bool {
-        guard case DirectQuicProbeError.proofFailed(let message) = error else {
-            return false
-        }
-        return message.hasPrefix("media relay datagram exceeded path maximum:")
+        false
     }
 
     private func sendDatagramJoinUntilAck(
@@ -2040,9 +2043,13 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
             receivedAtNanoseconds: incomingPayload.receivedAtNanoseconds,
             intervalNanoseconds: incomingAudioHandlerExpirationNanoseconds
         )
-        incomingAudioPayloadQueue.enqueue(
+        let isPacketMedia = incomingPayload.mediaMode == .quicDatagram
+        let queue = isPacketMedia
+            ? incomingAudioPayloadQueue
+            : incomingOrderedAudioPayloadQueue
+        queue.enqueue(
             expiringAtNanoseconds: expirationNanoseconds,
-            expiresRunningHandler: incomingPayload.mediaMode == .quicDatagram,
+            expiresRunningHandler: false,
             onExpired: { [weak self] in
                 guard let self else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
@@ -2100,6 +2107,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
 
     func resetIncomingAudioPayloadQueue(reason: String) {
         incomingAudioPayloadQueue.reset()
+        incomingOrderedAudioPayloadQueue.reset()
         Task {
             await report(
                 "Reset media relay incoming audio payload queue",
@@ -2289,6 +2297,22 @@ nonisolated final class DirectQuicSerialAsyncQueue: @unchecked Sendable {
     }
 }
 
+nonisolated enum DirectQuicAudioPayloadWorkClass: Int, CaseIterable, Sendable {
+    case audioRealtime = 0
+    case appleBoundary = 1
+    case controlPlane = 2
+    case observability = 3
+    case maintenance = 4
+}
+
+nonisolated enum DirectQuicAudioPayloadDropPolicy: Sendable, Equatable {
+    case mustRun
+    case cancelOnReset
+    case expireAtDeadline
+    case replaceByKey(String)
+    case aggregateByKey(String)
+}
+
 nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     // The default is serial for explicit ordering tests and ordered fallback-style
     // use. Direct packet media controllers opt into bounded concurrency because
@@ -2299,10 +2323,17 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     private struct PendingEntry: Sendable {
         let id: UUID
         let generation: Int
+        let sequence: UInt64
+        let workClass: DirectQuicAudioPayloadWorkClass
         let expirationNanoseconds: UInt64?
         let expiresRunningHandler: Bool
+        let dropPolicy: DirectQuicAudioPayloadDropPolicy
         let onExpired: (@Sendable () async -> Void)?
         let operation: @Sendable () async -> Void
+
+        var sortDeadlineNanoseconds: UInt64 {
+            expirationNanoseconds ?? UInt64.max
+        }
     }
 
     private let lock = NSLock()
@@ -2310,7 +2341,8 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     private let maxConcurrentHandlers: Int
     private let maxPendingHandlers: Int
     private var generation = 0
-    private var pending: [PendingEntry] = []
+    private var nextSequence: UInt64 = 0
+    private var pendingByClass: [DirectQuicAudioPayloadWorkClass: [PendingEntry]] = [:]
     private var running: [UUID: Task<Void, Never>] = [:]
 
     init(
@@ -2326,7 +2358,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     func reset() {
         let tasks = lock.withLock { () -> [Task<Void, Never>] in
             generation += 1
-            pending.removeAll()
+            pendingByClass.removeAll()
             let tasks = Array(self.running.values)
             self.running.removeAll()
             return tasks
@@ -2335,6 +2367,8 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     }
 
     func enqueue(
+        workClass: DirectQuicAudioPayloadWorkClass = .audioRealtime,
+        dropPolicy: DirectQuicAudioPayloadDropPolicy = .cancelOnReset,
         expiringAtNanoseconds expirationNanoseconds: UInt64? = nil,
         expiresRunningHandler: Bool = false,
         onExpired: (@Sendable () async -> Void)? = nil,
@@ -2352,28 +2386,26 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
                 }
                 return expiredCallbacks
             }
-            pending.removeAll { entry in
-                let isExpired = Self.isExpired(entry.expirationNanoseconds, nowNanoseconds: nowNanoseconds)
-                if isExpired,
-                   let onExpired = entry.onExpired {
-                    expiredCallbacks.append(onExpired)
-                }
-                return isExpired
-            }
-            pending.append(
+            expirePendingLocked(nowNanoseconds: nowNanoseconds, expiredCallbacks: &expiredCallbacks)
+            removeReplaceablePendingLocked(
+                workClass: workClass,
+                dropPolicy: dropPolicy
+            )
+            nextSequence &+= 1
+            pushPendingLocked(
                 PendingEntry(
                     id: UUID(),
                     generation: generation,
+                    sequence: nextSequence,
+                    workClass: workClass,
                     expirationNanoseconds: expirationNanoseconds,
                     expiresRunningHandler: expiresRunningHandler,
+                    dropPolicy: dropPolicy,
                     onExpired: onExpired,
                     operation: operation
                 )
             )
-            let overflow = pending.count - maxPendingHandlers
-            if overflow > 0 {
-                pending.removeFirst(overflow)
-            }
+            removeOverflowPendingLocked()
             return expiredCallbacks
         }
         expiredCallbacks.forEach(runExpirationCallback)
@@ -2385,8 +2417,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
             let result = lock.withLock { () -> (task: Task<Void, Never>?, expiredCallbacks: [@Sendable () async -> Void]) in
                 var expiredCallbacks: [@Sendable () async -> Void] = []
                 while running.count < maxConcurrentHandlers,
-                      !pending.isEmpty {
-                    let entry = pending.removeFirst()
+                      let entry = popNextPendingLocked() {
                     let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
                     guard !Self.isExpired(
                         entry.expirationNanoseconds,
@@ -2468,7 +2499,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     private func finish(_ id: UUID) {
         let shouldStartMore = lock.withLock { () -> Bool in
             running[id] = nil
-            return !pending.isEmpty
+            return pendingCountLocked() > 0
         }
         if shouldStartMore {
             startAvailableHandlers()
@@ -2484,7 +2515,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
                 return (nil, false)
             }
             running[id] = nil
-            return (task, !pending.isEmpty)
+            return (task, pendingCountLocked() > 0)
         }
         guard let task = result.task else { return false }
         task.cancel()
@@ -2493,11 +2524,172 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
         }
         return true
     }
+
+    private func pendingCountLocked() -> Int {
+        pendingByClass.values.reduce(0) { $0 + $1.count }
+    }
+
+    private func removeReplaceablePendingLocked(
+        workClass: DirectQuicAudioPayloadWorkClass,
+        dropPolicy: DirectQuicAudioPayloadDropPolicy
+    ) {
+        let replacementKey: String?
+        switch dropPolicy {
+        case .replaceByKey(let key), .aggregateByKey(let key):
+            replacementKey = key
+        case .mustRun, .cancelOnReset, .expireAtDeadline:
+            replacementKey = nil
+        }
+        guard let replacementKey else { return }
+        var heap = pendingByClass[workClass] ?? []
+        heap.removeAll { entry in
+            switch entry.dropPolicy {
+            case .replaceByKey(let key), .aggregateByKey(let key):
+                return key == replacementKey
+            case .mustRun, .cancelOnReset, .expireAtDeadline:
+                return false
+            }
+        }
+        heapify(&heap)
+        pendingByClass[workClass] = heap
+    }
+
+    private func expirePendingLocked(
+        nowNanoseconds: UInt64,
+        expiredCallbacks: inout [@Sendable () async -> Void]
+    ) {
+        for workClass in DirectQuicAudioPayloadWorkClass.allCases {
+            var heap = pendingByClass[workClass] ?? []
+            heap.removeAll { entry in
+                let isExpired = Self.isExpired(entry.expirationNanoseconds, nowNanoseconds: nowNanoseconds)
+                if isExpired,
+                   let onExpired = entry.onExpired {
+                    expiredCallbacks.append(onExpired)
+                }
+                return isExpired
+            }
+            heapify(&heap)
+            pendingByClass[workClass] = heap
+        }
+    }
+
+    private func removeOverflowPendingLocked() {
+        while pendingCountLocked() > maxPendingHandlers {
+            var removedOverflowEntry = false
+            for workClass in DirectQuicAudioPayloadWorkClass.allCases.reversed() {
+                guard var heap = pendingByClass[workClass], !heap.isEmpty else { continue }
+                guard let oldestDroppableIndex = oldestOverflowIndex(in: heap, allowingMustRun: false) else {
+                    continue
+                }
+                heap.remove(at: oldestDroppableIndex)
+                heapify(&heap)
+                pendingByClass[workClass] = heap
+                removedOverflowEntry = true
+                break
+            }
+            if removedOverflowEntry {
+                continue
+            }
+            for workClass in DirectQuicAudioPayloadWorkClass.allCases.reversed() {
+                guard var heap = pendingByClass[workClass], !heap.isEmpty else { continue }
+                let oldestIndex = oldestOverflowIndex(in: heap, allowingMustRun: true)!
+                heap.remove(at: oldestIndex)
+                heapify(&heap)
+                pendingByClass[workClass] = heap
+                removedOverflowEntry = true
+                break
+            }
+            guard removedOverflowEntry else { return }
+        }
+    }
+
+    private func oldestOverflowIndex(
+        in heap: [PendingEntry],
+        allowingMustRun: Bool
+    ) -> Array<PendingEntry>.Index? {
+        heap.indices
+            .filter { allowingMustRun || heap[$0].dropPolicy != .mustRun }
+            .min { lhs, rhs in heap[lhs].sequence < heap[rhs].sequence }
+    }
+
+    private func popNextPendingLocked() -> PendingEntry? {
+        for workClass in DirectQuicAudioPayloadWorkClass.allCases {
+            guard var heap = pendingByClass[workClass], !heap.isEmpty else { continue }
+            let entry = popMin(&heap)
+            pendingByClass[workClass] = heap
+            return entry
+        }
+        return nil
+    }
+
+    private func pushPendingLocked(_ entry: PendingEntry) {
+        var heap = pendingByClass[entry.workClass] ?? []
+        push(entry, into: &heap)
+        pendingByClass[entry.workClass] = heap
+    }
+
+    private static func hasHigherPriority(_ lhs: PendingEntry, than rhs: PendingEntry) -> Bool {
+        if lhs.sortDeadlineNanoseconds != rhs.sortDeadlineNanoseconds {
+            return lhs.sortDeadlineNanoseconds < rhs.sortDeadlineNanoseconds
+        }
+        return lhs.sequence < rhs.sequence
+    }
+
+    private func push(_ entry: PendingEntry, into heap: inout [PendingEntry]) {
+        heap.append(entry)
+        siftUp(&heap, from: heap.count - 1)
+    }
+
+    private func popMin(_ heap: inout [PendingEntry]) -> PendingEntry {
+        precondition(!heap.isEmpty)
+        guard heap.count > 1 else { return heap.removeLast() }
+        let result = heap[0]
+        heap[0] = heap.removeLast()
+        siftDown(&heap, from: 0)
+        return result
+    }
+
+    private func heapify(_ heap: inout [PendingEntry]) {
+        guard heap.count > 1 else { return }
+        for index in stride(from: heap.count / 2 - 1, through: 0, by: -1) {
+            siftDown(&heap, from: index)
+        }
+    }
+
+    private func siftUp(_ heap: inout [PendingEntry], from index: Int) {
+        var child = index
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard Self.hasHigherPriority(heap[child], than: heap[parent]) else { return }
+            heap.swapAt(child, parent)
+            child = parent
+        }
+    }
+
+    private func siftDown(_ heap: inout [PendingEntry], from index: Int) {
+        var parent = index
+        while true {
+            let left = parent * 2 + 1
+            let right = left + 1
+            var candidate = parent
+            if left < heap.count,
+               Self.hasHigherPriority(heap[left], than: heap[candidate]) {
+                candidate = left
+            }
+            if right < heap.count,
+               Self.hasHigherPriority(heap[right], than: heap[candidate]) {
+                candidate = right
+            }
+            guard candidate != parent else { return }
+            heap.swapAt(parent, candidate)
+            parent = candidate
+        }
+    }
 }
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
-    private static let liveAudioMaxConcurrentIncomingHandlers = 4
+    private static let liveAudioMaxConcurrentIncomingHandlers = 1
     static let liveAudioDatagramWaitsForProcessing = false
     private static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     // Apple PTT activation can hold the first transmit/receive path for several
@@ -2998,7 +3190,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
         }
         incomingAudioPayloadQueue.enqueue(
             expiringAtNanoseconds: expirationNanoseconds,
-            expiresRunningHandler: true,
+            expiresRunningHandler: false,
             onExpired: { [weak self] in
                 guard let self else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds

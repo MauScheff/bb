@@ -225,6 +225,7 @@ extension PTTViewModel {
                 "phase": phase.rawValue,
             ]
         )
+        resetRemoteAudioReceiveRuntime(for: contactID, reason: engineSource)
 
         switch pttWakeRuntime.incomingWakeActivationState(for: contactID) {
         case .systemActivated, .appManagedFallback:

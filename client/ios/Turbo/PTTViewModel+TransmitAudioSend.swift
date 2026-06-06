@@ -2966,6 +2966,16 @@ extension PTTViewModel {
         )
     }
 
+    func canScheduleReadyChannelMediaRelayPrejoin(
+        contactID: UUID,
+        applicationState: UIApplication.State? = nil
+    ) -> Bool {
+        let applicationState = applicationState ?? currentApplicationState()
+        if applicationState == .active { return true }
+        return pttWakeRuntime.hasPendingWake(for: contactID)
+            && isPTTAudioSessionActive
+    }
+
     func shouldPrejoinReadyChannelMediaRelay(
         contactID: UUID,
         channelID: String,

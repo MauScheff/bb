@@ -2214,8 +2214,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
             return .websocketContinuity
         }
-        if mediaTransportPathState == .fastRelay,
-           mediaRuntime.receiverPrewarmRequestIsAcknowledged(for: contactID) {
+        if mediaTransportPathState == .fastRelay {
             return .fastRelayBalanced
         }
         return .websocketContinuity

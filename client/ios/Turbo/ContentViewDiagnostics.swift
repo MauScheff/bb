@@ -279,8 +279,6 @@ struct TurboDiagnosticsView: View {
                         get: { directQuic.voiceMediaCoreMode },
                         set: onSetVoiceMediaCoreMode
                     )) {
-                        Text("Legacy").tag(VoiceMediaCoreMode.legacyAdaptive)
-                        Text("Shadow").tag(VoiceMediaCoreMode.shadowLegacyScheduled)
                         Text("Swift NetEQ").tag(VoiceMediaCoreMode.swiftNetEqV1)
                     }
                     .disabled(isRunningDirectQuicDebugAction)

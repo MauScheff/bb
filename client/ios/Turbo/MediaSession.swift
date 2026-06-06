@@ -33,6 +33,7 @@ nonisolated enum MediaSessionReceivePlaybackReadiness: Equatable, Sendable {
     nonisolated enum Reason: String, Equatable, Sendable {
         case idle
         case preparing
+        case systemAudioActivation
         case recovering
         case closed
         case failed
@@ -373,7 +374,7 @@ func makeDefaultMediaSession(
     sendAudioChunk: (@Sendable (String) async throws -> Void)?,
     reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
     senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
-    outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .legacyPCM,
+    outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .opusV2,
     outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
     voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
 ) -> any MediaSession {

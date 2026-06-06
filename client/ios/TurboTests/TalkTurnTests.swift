@@ -9585,7 +9585,7 @@ struct TalkTurnTests {
         runtime.reset()
 
         #expect(runtime.voiceMediaCapabilityEvidence(for: contactID)?.capabilities.supportsOpusV2 == true)
-        let expectedPolicy: VoiceMediaPayloadFormat = OpusVoiceCodec.isAvailable() ? .opusV2 : .legacyPCM
+        let expectedPolicy: VoiceMediaPayloadFormat = .opusV2
         #expect(runtime.outboundVoiceMediaPayloadFormat(for: contactID) == expectedPolicy)
     }
 
@@ -9633,7 +9633,7 @@ struct TalkTurnTests {
             deviceID: "other-peer-device",
             channelID: "channel-1"
         )
-        let expectedPolicy: VoiceMediaPayloadFormat = OpusVoiceCodec.isAvailable() ? .opusV2 : .legacyPCM
+        let expectedPolicy: VoiceMediaPayloadFormat = .opusV2
 
         #expect(viewModel.outboundVoiceMediaPayloadFormat(for: matchingTarget) == expectedPolicy)
         #expect(viewModel.outboundVoiceMediaPayloadFormat(for: mismatchedTarget) == expectedPolicy)
@@ -9661,7 +9661,7 @@ struct TalkTurnTests {
             peerDeviceID: "peer-device",
             source: "receiver-ready"
         )
-        let expectedPolicy: VoiceMediaPayloadFormat = OpusVoiceCodec.isAvailable() ? .opusV2 : .legacyPCM
+        let expectedPolicy: VoiceMediaPayloadFormat = .opusV2
 
         #expect(viewModel.prepareMediaSessionShellIfNeeded(for: contactID, reason: "test"))
         let preparedEntry = viewModel.diagnostics.entries.last {

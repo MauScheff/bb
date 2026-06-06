@@ -1443,6 +1443,7 @@ extension PTTViewModel {
             contactID: contactID,
             reason: reason
         ) {
+            guard await canScheduleReadyChannelMediaRelayPrejoin(contactID: contactID) else { return }
             await prejoinMediaRelayForReadyChannelIfNeeded(
                 contactID: contactID,
                 channelReadiness: channelReadinessByContactID[contactID]

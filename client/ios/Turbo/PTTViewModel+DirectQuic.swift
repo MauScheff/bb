@@ -1371,7 +1371,10 @@ extension PTTViewModel {
         guard let attempt = directQuicAttempt(for: contactID, matching: attemptID) else {
             return
         }
+        let preservesRemotePlaybackDrain =
+            receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase == .drainingAudio
         if receiveExecutionCoordinator.state.remoteTransmitStoppedContactIDs.contains(contactID),
+           !preservesRemotePlaybackDrain,
            !reopenRemoteReceiveForPostLocalStopDirectQuicAudioIfNeeded(
             incomingPayload,
             contactID: contactID,

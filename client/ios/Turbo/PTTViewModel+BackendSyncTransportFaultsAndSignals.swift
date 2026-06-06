@@ -1637,21 +1637,20 @@ extension PTTViewModel {
                 incomingAudioTransport: incomingAudioTransport,
                 applicationState: applicationState
             )
-        let shouldUseForegroundPacketFastPath =
+        let shouldUseForegroundPacketExecutor =
             shouldAdmitForegroundPacketAudioBeforeSystemBootstrap(
                 incomingAudioTransport: incomingAudioTransport,
                 applicationState: applicationState
             )
-            && !shouldBufferForegroundSystemReceive
         if shouldArmLiveAudioBootstrapOnMainActor(
             contactID: contactID,
             channelID: channelID,
             fromDeviceID: fromDeviceID,
             incomingAudioTransport: incomingAudioTransport,
             applicationState: applicationState,
-            recordDiagnostic: !shouldUseForegroundPacketFastPath
+            recordDiagnostic: !shouldUseForegroundPacketExecutor
         ) {
-            guard shouldUseForegroundPacketFastPath else {
+            guard shouldUseForegroundPacketExecutor else {
                 return nil
             }
             startForegroundPacketAudioBootstrapSideEffectsIfNeeded(
@@ -1667,7 +1666,7 @@ extension PTTViewModel {
                 applicationState: applicationState,
                 incomingAudioTransport: incomingAudioTransport
             ) ? .systemActivated : .appManaged
-        if shouldUseForegroundPacketFastPath {
+        if shouldUseForegroundPacketExecutor {
             prepareForegroundPacketAudioSessionForImmediateAdmission(
                 contactID: contactID,
                 activationMode: receiveActivationMode
@@ -1696,6 +1695,32 @@ extension PTTViewModel {
         let sessionPlaybackDeadlineNanoseconds = incomingAudioTransport.isUnreliablePacketMedia
             ? nil
             : playbackDeadlineNanoseconds
+        let normalIngressPolicy = IncomingAudioIngressConfiguration(
+            mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
+            mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
+            liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
+                for: incomingAudioTransport,
+                heldForAppleAudioActivation: false
+            ),
+            liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
+                for: incomingAudioTransport,
+                heldForAppleAudioActivation: false
+            )
+        )
+        let preAudibleIngressPolicy = shouldBufferForegroundSystemReceive
+            ? IncomingAudioIngressConfiguration(
+                mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
+                mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
+                liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
+                    for: incomingAudioTransport,
+                    heldForAppleAudioActivation: true
+                ),
+                liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
+                    for: incomingAudioTransport,
+                    heldForAppleAudioActivation: true
+                )
+            )
+            : nil
         return LiveAudioReceiveContext(
             contactID: contactID,
             channelID: channelID,
@@ -1704,20 +1729,20 @@ extension PTTViewModel {
             receiveEpoch: receiveEpoch,
             session: session,
             sessionReceiveEpoch: session.currentRemoteAudioReceiveEpoch(),
-            ingressPolicy: IncomingAudioIngressConfiguration(
-                mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
-                mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
-                liveAudioBacklogExpirationNanoseconds: incomingLiveAudioBacklogExpirationNanoseconds(
-                    for: incomingAudioTransport
-                ),
-                liveAudioSenderClockExpirationMilliseconds: incomingLiveAudioSenderClockExpirationMilliseconds(
-                    for: incomingAudioTransport
-                )
-            ),
+            ingressPolicy: normalIngressPolicy,
+            preAudibleIngressPolicy: preAudibleIngressPolicy,
             playbackProfile: mediaTransportPolicy(for: incomingAudioTransport).playbackProfile,
             playbackDeadlineNanoseconds: sessionPlaybackDeadlineNanoseconds,
-            ingressExecutor: incomingAudioIngressExecutor
+            ingressExecutor: incomingAudioIngressExecutor,
+            requiresSystemAudioActivationForPlayback: shouldBufferForegroundSystemReceive,
+            isSystemAudioActive: { [weak self] in
+                await self?.isSystemReceiveAudioActiveForLivePlayback() ?? false
+            }
         )
+    }
+
+    private func isSystemReceiveAudioActiveForLivePlayback() -> Bool {
+        isPTTAudioSessionActive
     }
 
     private func shouldAdmitForegroundPacketAudioBeforeSystemBootstrap(
@@ -1894,11 +1919,124 @@ extension PTTViewModel {
         if let sequenceNumber = summary.lastSequenceNumber {
             metadata["sequenceNumber"] = String(sequenceNumber)
         }
-        diagnostics.record(
-            .media,
-            message: "Incoming audio ingress summary",
-            metadata: metadata
+        let metadataSnapshot = metadata
+        scheduleLiveAudioObservability(
+            key: "receive-summary:\(summary.contactID.uuidString):\(summary.receiveEpoch)"
+        ) { diagnostics in
+            diagnostics.record(
+                .media,
+                message: "Incoming audio ingress summary",
+                metadata: metadataSnapshot
+            )
+        }
+        recordPreservedPacketMediaDelayIfNeeded(summary)
+    }
+
+    private func recordPreservedPacketMediaDelayIfNeeded(
+        _ summary: LiveAudioReceiveDiagnosticSummary
+    ) {
+        recordPreservedPacketMediaDelayIfNeeded(
+            contactID: summary.contactID,
+            channelID: summary.channelID,
+            fromDeviceID: summary.fromDeviceID,
+            transport: summary.transport,
+            receiveEpoch: summary.receiveEpoch,
+            sequenceNumber: summary.lastSequenceNumber,
+            maxLocalQueueDelayNanoseconds: summary.maxLocalQueueDelayNanoseconds,
+            freshnessDecision: summary.lastFreshnessDecision,
+            source: "live-audio-receive-executor"
         )
+    }
+
+    private func recordPreservedPacketMediaDelayIfNeeded(
+        contactID: UUID,
+        channelID: String,
+        fromDeviceID: String,
+        transport: IncomingAudioPayloadTransport,
+        receiveEpoch: UInt64?,
+        sequenceNumber: UInt64?,
+        maxLocalQueueDelayNanoseconds: UInt64,
+        freshnessDecision: String,
+        source: String
+    ) {
+        guard transport.isUnreliablePacketMedia else { return }
+        guard freshnessDecision == "accepted" else { return }
+        let thresholdNanoseconds = incomingLiveAudioBacklogExpirationNanoseconds(
+            for: transport,
+            heldForAppleAudioActivation: false
+        )
+        guard thresholdNanoseconds > 0,
+              maxLocalQueueDelayNanoseconds >= thresholdNanoseconds else {
+            return
+        }
+        let sequenceNumberValue = sequenceNumber.map(String.init) ?? "none"
+        let contract = DiagnosticsContracts.Media.incomingAudioQueueDelay(
+            contactID: contactID,
+            channelID: channelID,
+            attemptID: source,
+            incomingTransport: transport.diagnosticsValue,
+            sequenceNumber: sequenceNumberValue,
+            localQueueDelayMilliseconds: maxLocalQueueDelayNanoseconds / 1_000_000,
+            senderClockAgeMilliseconds: "none",
+            thresholdMilliseconds: thresholdNanoseconds / 1_000_000,
+            action: "preserved-expired-live-backlog"
+        )
+        var metadata = [
+            "contactId": contactID.uuidString,
+            "channelId": channelID,
+            "fromDeviceId": fromDeviceID,
+            "incomingTransport": transport.diagnosticsValue,
+            "sequenceNumber": sequenceNumberValue,
+            "localQueueDelayMs": String(maxLocalQueueDelayNanoseconds / 1_000_000),
+            "thresholdMs": String(thresholdNanoseconds / 1_000_000),
+            "action": "preserved-expired-live-backlog",
+            "source": source,
+        ]
+        if let receiveEpoch {
+            metadata["receiveEpoch"] = String(receiveEpoch)
+        }
+        let metadataSnapshot = metadata
+        scheduleLiveAudioContractObservability { diagnostics in
+            diagnostics.recordContractViolation(contract, metadata: metadataSnapshot)
+        }
+    }
+
+    private func scheduleLiveAudioObservability(
+        key: String,
+        _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
+    ) {
+        let diagnostics = diagnostics
+        mediaRuntime.voiceObservabilityQueue.enqueue(
+            workClass: .observability,
+            dropPolicy: .aggregateByKey(key)
+        ) {
+            operation(diagnostics)
+        }
+    }
+
+    private func scheduleLiveAudioMustRecordObservability(
+        _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
+    ) {
+        let diagnostics = diagnostics
+        mediaRuntime.voiceObservabilityQueue.enqueue(
+            workClass: .observability,
+            dropPolicy: .expireAtDeadline,
+            expiringAtNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        ) {
+            operation(diagnostics)
+        }
+    }
+
+    private func scheduleLiveAudioContractObservability(
+        _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
+    ) {
+        let diagnostics = diagnostics
+        mediaRuntime.voiceObservabilityQueue.enqueue(
+            workClass: .observability,
+            dropPolicy: .mustRun
+        ) {
+            operation(diagnostics)
+        }
     }
 
     private func recordLiveAudioReceiveDropDiagnostic(
@@ -1924,60 +2062,74 @@ extension PTTViewModel {
                 Int64(Date().timeIntervalSince1970 * 1_000) - senderSentAtMilliseconds
             )
         }
+        let contractMetadataSnapshot = metadata
         if drop.shouldRecordContract {
-            diagnostics.recordContractViolation(
-                DiagnosticsContracts.Media.incomingAudioQueueDelay(
-                    contactID: drop.contactID,
-                    channelID: drop.channelID,
-                    attemptID: "live-audio-receive-executor",
-                    incomingTransport: drop.transport.diagnosticsValue,
-                    sequenceNumber: drop.sequenceNumber.map(String.init) ?? "none",
-                    localQueueDelayMilliseconds: drop.localQueueDelayNanoseconds / 1_000_000,
-                    senderClockAgeMilliseconds: metadata["senderClockAgeMs"] ?? "none",
-                    thresholdMilliseconds: (drop.thresholdNanoseconds ?? 0) / 1_000_000,
-                    action: drop.freshnessDecision
-                ),
-                metadata: metadata
+            let contract = DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                contactID: drop.contactID,
+                channelID: drop.channelID,
+                attemptID: "live-audio-receive-executor",
+                incomingTransport: drop.transport.diagnosticsValue,
+                sequenceNumber: drop.sequenceNumber.map(String.init) ?? "none",
+                localQueueDelayMilliseconds: drop.localQueueDelayNanoseconds / 1_000_000,
+                senderClockAgeMilliseconds: metadata["senderClockAgeMs"] ?? "none",
+                thresholdMilliseconds: (drop.thresholdNanoseconds ?? 0) / 1_000_000,
+                action: drop.freshnessDecision
             )
+            scheduleLiveAudioContractObservability { diagnostics in
+                diagnostics.recordContractViolation(contract, metadata: contractMetadataSnapshot)
+            }
         }
         if drop.shouldRecordSuppression {
             metadata["reason"] = "budget-exhausted"
-            diagnostics.record(
-                .media,
-                level: .notice,
-                message: "Suppressing repetitive incoming audio drop diagnostics",
-                metadata: metadata
-            )
+            let suppressionMetadataSnapshot = metadata
+            scheduleLiveAudioObservability(
+                key: "receive-drop-suppression:\(drop.contactID.uuidString):\(drop.receiveEpoch)"
+            ) { diagnostics in
+                diagnostics.record(
+                    .media,
+                    level: .notice,
+                    message: "Suppressing repetitive incoming audio drop diagnostics",
+                    metadata: suppressionMetadataSnapshot
+                )
+            }
         } else {
-            diagnostics.record(
-                .media,
-                level: .notice,
-                message: "Dropped incoming audio frame before playback",
-                metadata: metadata
-            )
+            let dropMetadataSnapshot = metadata
+            scheduleLiveAudioMustRecordObservability { diagnostics in
+                diagnostics.record(
+                    .media,
+                    level: .notice,
+                    message: "Dropped incoming audio frame before playback",
+                    metadata: dropMetadataSnapshot
+                )
+            }
         }
     }
 
     private func recordLiveAudioReceivePlaybackReadinessDiagnostic(
         _ diagnostic: LiveAudioReceivePlaybackReadinessDiagnostic
     ) {
-        diagnostics.record(
-            .media,
-            level: diagnostic.action == "held-until-playback-ready" ? .notice : .info,
-            message: "Held live audio until receive playback is ready",
-            metadata: [
-                "contactId": diagnostic.contactID.uuidString,
-                "channelId": diagnostic.channelID,
-                "fromDeviceId": diagnostic.fromDeviceID,
-                "incomingTransport": diagnostic.transport.diagnosticsValue,
-                "receiveEpoch": String(diagnostic.receiveEpoch),
-                "readiness": diagnostic.readiness.diagnosticsValue,
-                "pendingPacketCount": String(diagnostic.pendingPacketCount),
-                "maxPendingAgeMs": String(diagnostic.maxPendingAgeNanoseconds / 1_000_000),
-                "action": diagnostic.action,
-                "source": "live-audio-receive-executor",
-            ]
-        )
+        let metadata = [
+            "contactId": diagnostic.contactID.uuidString,
+            "channelId": diagnostic.channelID,
+            "fromDeviceId": diagnostic.fromDeviceID,
+            "incomingTransport": diagnostic.transport.diagnosticsValue,
+            "receiveEpoch": String(diagnostic.receiveEpoch),
+            "readiness": diagnostic.readiness.diagnosticsValue,
+            "pendingPacketCount": String(diagnostic.pendingPacketCount),
+            "maxPendingAgeMs": String(diagnostic.maxPendingAgeNanoseconds / 1_000_000),
+            "action": diagnostic.action,
+            "source": "live-audio-receive-executor",
+        ]
+        scheduleLiveAudioObservability(
+            key: "receive-readiness:\(diagnostic.contactID.uuidString):\(diagnostic.receiveEpoch)"
+        ) { diagnostics in
+            diagnostics.record(
+                .media,
+                level: diagnostic.action == "held-until-playback-ready" ? .notice : .info,
+                message: "Held live audio until receive playback is ready",
+                metadata: metadata
+            )
+        }
     }
 
     private func scheduleIncomingAudioPlaybackCompletion(
@@ -2166,6 +2318,9 @@ extension PTTViewModel {
         senderSentAtMilliseconds: Int64?,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> UInt64? {
+        guard !incomingAudioTransport.isUnreliablePacketMedia else {
+            return nil
+        }
         var deadlineNanoseconds: UInt64?
         let liveBacklogExpirationNanoseconds = incomingLiveAudioBacklogExpirationNanoseconds(
             for: incomingAudioTransport
@@ -2212,6 +2367,9 @@ extension PTTViewModel {
         senderSentAtMilliseconds: Int64?,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> IncomingAudioPlaybackDropReason? {
+        guard !incomingAudioTransport.isUnreliablePacketMedia else {
+            return nil
+        }
         let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
         let localQueueDelayNanoseconds =
             nowNanoseconds >= receivedAtNanoseconds
@@ -2891,6 +3049,17 @@ extension PTTViewModel {
             .media,
             message: "Incoming audio ingress summary",
             metadata: metadata
+        )
+        recordPreservedPacketMediaDelayIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            fromDeviceID: fromDeviceID,
+            transport: summary.transport,
+            receiveEpoch: nil,
+            sequenceNumber: summary.lastSequenceNumber,
+            maxLocalQueueDelayNanoseconds: summary.maxLocalQueueDelayNanoseconds,
+            freshnessDecision: summary.lastFreshnessDecision,
+            source: source
         )
     }
 
@@ -4222,10 +4391,12 @@ extension PTTViewModel {
                     for: contactID,
                     reason: "channel-ready"
                 )
-                await prejoinMediaRelayForReadyChannelIfNeeded(
-                    contactID: contactID,
-                    channelReadiness: effectiveChannelReadiness
-                )
+                if canScheduleReadyChannelMediaRelayPrejoin(contactID: contactID) {
+                    await prejoinMediaRelayForReadyChannelIfNeeded(
+                        contactID: contactID,
+                        channelReadiness: effectiveChannelReadiness
+                    )
+                }
                 if shouldRequestAutomaticDirectQuicProbe(for: contactID) {
                     await maybeStartAutomaticDirectQuicProbe(
                         for: contactID,

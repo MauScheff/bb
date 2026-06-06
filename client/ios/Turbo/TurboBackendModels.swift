@@ -955,7 +955,7 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
         defaults: UserDefaults = .standard,
         allowDebugOverride: Bool = allowsDebugOverridesByDefault
     ) -> VoiceMediaCoreMode {
-        guard allowDebugOverride else { return .legacyAdaptive }
+        guard allowDebugOverride else { return .swiftNetEqV1 }
         if let launchValue = launchArgumentValue(launchArgument, in: arguments),
            let parsed = parseMode(launchValue) {
             return parsed
@@ -968,7 +968,7 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
            let parsed = parseMode(storedValue) {
             return parsed
         }
-        return .legacyAdaptive
+        return .swiftNetEqV1
     }
 
     static func liveMode(
@@ -977,20 +977,20 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
         defaults: UserDefaults = .standard,
         allowDebugOverride: Bool = allowsDebugOverridesByDefault
     ) -> VoiceMediaCoreMode {
-        guard allowDebugOverride else { return .legacyAdaptive }
+        guard allowDebugOverride else { return .swiftNetEqV1 }
         if let launchValue = launchArgumentValue(launchArgument, in: arguments),
            let parsed = parseMode(launchValue) {
-            return parsed
+            return liveMode(for: parsed)
         }
         if let environmentValue = environment[environmentKey],
            let parsed = parseMode(environmentValue) {
-            return parsed
+            return liveMode(for: parsed)
         }
         if let storedLiveValue = defaults.string(forKey: liveStorageKey),
            let parsed = parseMode(storedLiveValue) {
-            return parsed
+            return liveMode(for: parsed)
         }
-        return .legacyAdaptive
+        return .swiftNetEqV1
     }
 
     static func setMode(_ mode: VoiceMediaCoreMode?, defaults: UserDefaults = .standard) {
@@ -1003,9 +1003,16 @@ nonisolated enum TurboVoiceMediaCoreDebugOverride {
 
     static func setLiveMode(_ mode: VoiceMediaCoreMode?, defaults: UserDefaults = .standard) {
         if let mode {
-            defaults.set(mode.rawValue, forKey: liveStorageKey)
+            defaults.set(liveMode(for: mode).rawValue, forKey: liveStorageKey)
         } else {
             defaults.removeObject(forKey: liveStorageKey)
+        }
+    }
+
+    private static func liveMode(for mode: VoiceMediaCoreMode) -> VoiceMediaCoreMode {
+        switch mode {
+        case .legacyAdaptive, .shadowLegacyScheduled, .swiftNetEqV1:
+            return .swiftNetEqV1
         }
     }
 
@@ -1062,7 +1069,7 @@ nonisolated enum TurboBinaryVoicePacketDebugOverride {
         defaults: UserDefaults = .standard,
         allowDebugOverride: Bool = allowsDebugOverridesByDefault
     ) -> Bool {
-        guard allowDebugOverride else { return false }
+        guard allowDebugOverride else { return true }
         if let launchValue = launchArgumentValue(launchArgument, in: arguments),
            let parsed = parseBoolean(launchValue) {
             return parsed
@@ -1073,6 +1080,9 @@ nonisolated enum TurboBinaryVoicePacketDebugOverride {
         if let environmentValue = environment[environmentKey],
            let parsed = parseBoolean(environmentValue) {
             return parsed
+        }
+        if defaults.object(forKey: storageKey) == nil {
+            return true
         }
         return defaults.bool(forKey: storageKey)
     }

@@ -77,7 +77,7 @@ nonisolated enum VoiceMediaNegotiator {
     ) -> VoiceMediaPayloadFormat {
         guard codecAvailable,
               localCapabilities.supportsOpusV2 else {
-            return .legacyPCM
+            return .opusV2
         }
         if localCapabilities.supportsBinaryVoicePacketV1,
            peerCapabilities?.supportsBinaryVoicePacketV1 == true {
@@ -1176,6 +1176,9 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
     private static let jitterSmoothingNumerator: UInt64 = 7
     private static let jitterSmoothingDenominator: UInt64 = 8
     private static let maximumJitterExtraFrames = 5
+    private static let rapidTurnJitterMemoryNanoseconds: UInt64 = 8_000_000_000
+    private static let maximumEpochExtraCushionFrames = 3
+    private static let maximumCarryoverExtraCushionFrames = 5
 
     private var bufferedPackets: [UInt64: VoicePacketV1] = [:]
     private var currentEpoch = VoiceReceiveEpochID(rawValue: 0)
@@ -1183,6 +1186,9 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
     private var startupBufferedSinceNanoseconds: UInt64?
     private var lastArrivalNanoseconds: UInt64?
     private var smoothedExcessJitterNanoseconds: UInt64 = 0
+    private var epochExtraCushionFrames = 0
+    private var carryoverExtraCushionFrames = 0
+    private var carryoverExtraCushionExpiresAtNanoseconds: UInt64?
     private(set) var phase: VoicePlayoutPhase = .idle
     private var metricsSnapshot = VoicePlayoutEngineMetrics(
         phase: .idle,
@@ -1198,12 +1204,14 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
         resyncCount: 0
     )
 
-    func reset(epoch: VoiceReceiveEpochID, nowNanoseconds _: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+    func reset(epoch: VoiceReceiveEpochID, nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds) {
         bufferedPackets.removeAll(keepingCapacity: false)
         currentEpoch = epoch
         expectedFrameIndex = nil
         startupBufferedSinceNanoseconds = nil
         lastArrivalNanoseconds = nil
+        epochExtraCushionFrames = 0
+        expireCarryoverCushionIfNeeded(nowNanoseconds: nowNanoseconds)
         phase = .buffering(epoch: epoch)
         metricsSnapshot.phase = phase
         metricsSnapshot.bufferedFrameCount = 0
@@ -1246,7 +1254,10 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
                 fecRecoveryCount: 0,
                 resynchronizedGapFrameCount: 0,
                 bufferDepthFrames: bufferedPackets.count,
-                targetCushionFrames: targetCushionFrames(for: playbackProfile),
+                targetCushionFrames: targetCushionFrames(
+                    for: playbackProfile,
+                    nowNanoseconds: nowNanoseconds
+                ),
                 interArrivalGapNanoseconds: interArrivalGap,
                 largestScheduledGapFrames: 0,
                 adaptiveCushionIncreased: false
@@ -1263,7 +1274,10 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
                 fecRecoveryCount: 0,
                 resynchronizedGapFrameCount: 0,
                 bufferDepthFrames: bufferedPackets.count,
-                targetCushionFrames: targetCushionFrames(for: playbackProfile),
+                targetCushionFrames: targetCushionFrames(
+                    for: playbackProfile,
+                    nowNanoseconds: nowNanoseconds
+                ),
                 interArrivalGapNanoseconds: interArrivalGap,
                 largestScheduledGapFrames: 0,
                 adaptiveCushionIncreased: false
@@ -1281,7 +1295,10 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
             expectedFrameIndex = lowestBufferedFrameIndex
         }
 
-        let targetCushion = targetCushionFrames(for: playbackProfile)
+        let targetCushion = targetCushionFrames(
+            for: playbackProfile,
+            nowNanoseconds: nowNanoseconds
+        )
         if phase == .buffering(epoch: epoch),
            bufferedPackets.count < targetCushion,
            !startupWaitElapsed(nowNanoseconds: nowNanoseconds) {
@@ -1314,8 +1331,14 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
             targetCushion: targetCushion,
             interArrivalGapNanoseconds: interArrivalGap
         )
-        apply(result, targetCushion: targetCushion, epoch: epoch)
-        return result
+        let adaptedResult = adaptCushionAfterPlayout(
+            result,
+            playbackProfile: playbackProfile,
+            oldTargetCushion: targetCushion,
+            nowNanoseconds: nowNanoseconds
+        )
+        apply(adaptedResult, targetCushion: adaptedResult.targetCushionFrames, epoch: epoch)
+        return adaptedResult
     }
 
     func metrics() -> VoicePlayoutEngineMetrics {
@@ -1465,7 +1488,11 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
         )
     }
 
-    private func targetCushionFrames(for playbackProfile: MediaSessionPlaybackProfile) -> Int {
+    private func targetCushionFrames(
+        for playbackProfile: MediaSessionPlaybackProfile,
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> Int {
+        expireCarryoverCushionIfNeeded(nowNanoseconds: nowNanoseconds)
         let base: Int
         switch playbackProfile {
         case .lowLatency:
@@ -1477,7 +1504,10 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
         case .wakeBackgroundContinuity:
             base = 8
         }
-        return base + jitterExtraFrames()
+        return base
+            + jitterExtraFrames()
+            + epochExtraCushionFrames
+            + carryoverExtraCushion(for: playbackProfile)
     }
 
     private func updateJitterEstimate(
@@ -1508,10 +1538,114 @@ nonisolated final class SwiftNetEqPlayoutEngine: VoicePlayoutEngine {
         )
     }
 
+    private func adaptCushionAfterPlayout(
+        _ result: VoicePlayoutInsertResult,
+        playbackProfile: MediaSessionPlaybackProfile,
+        oldTargetCushion: Int,
+        nowNanoseconds: UInt64
+    ) -> VoicePlayoutInsertResult {
+        if result.missingFrameCount > 0 {
+            epochExtraCushionFrames = min(
+                Self.maximumEpochExtraCushionFrames,
+                epochExtraCushionFrames + 1
+            )
+            rememberCarryoverCushion(
+                playbackProfile: playbackProfile,
+                extraFrames: 3,
+                nowNanoseconds: nowNanoseconds
+            )
+        } else if let interArrivalGapNanoseconds = result.interArrivalGapNanoseconds,
+                  interArrivalGapNanoseconds > excessiveJitterThresholdNanoseconds(
+                    for: playbackProfile
+                  ) {
+            let excessFrames = Int(
+                min(
+                    UInt64(Self.maximumCarryoverExtraCushionFrames),
+                    max(
+                        1,
+                        (
+                            interArrivalGapNanoseconds
+                            - excessiveJitterThresholdNanoseconds(for: playbackProfile)
+                        ) / VoiceFrameAccumulator.frameDurationNanoseconds
+                    )
+                )
+            )
+            rememberCarryoverCushion(
+                playbackProfile: playbackProfile,
+                extraFrames: max(3, excessFrames),
+                nowNanoseconds: nowNanoseconds
+            )
+        }
+
+        let updatedTargetCushion = targetCushionFrames(
+            for: playbackProfile,
+            nowNanoseconds: nowNanoseconds
+        )
+        guard updatedTargetCushion != result.targetCushionFrames
+                || updatedTargetCushion > oldTargetCushion else {
+            return result
+        }
+        return VoicePlayoutInsertResult(
+            framesToPlay: result.framesToPlay,
+            duplicateDropCount: result.duplicateDropCount,
+            lateDropCount: result.lateDropCount,
+            missingFrameCount: result.missingFrameCount,
+            plcRecoveryCount: result.plcRecoveryCount,
+            fecRecoveryCount: result.fecRecoveryCount,
+            resynchronizedGapFrameCount: result.resynchronizedGapFrameCount,
+            bufferDepthFrames: result.bufferDepthFrames,
+            targetCushionFrames: updatedTargetCushion,
+            interArrivalGapNanoseconds: result.interArrivalGapNanoseconds,
+            largestScheduledGapFrames: result.largestScheduledGapFrames,
+            adaptiveCushionIncreased: result.adaptiveCushionIncreased
+                || updatedTargetCushion > oldTargetCushion
+        )
+    }
+
+    private func rememberCarryoverCushion(
+        playbackProfile: MediaSessionPlaybackProfile,
+        extraFrames: Int,
+        nowNanoseconds: UInt64
+    ) {
+        guard playbackProfile == .fastRelayBalanced else { return }
+        carryoverExtraCushionFrames = min(
+            Self.maximumCarryoverExtraCushionFrames,
+            max(carryoverExtraCushionFrames, extraFrames)
+        )
+        carryoverExtraCushionExpiresAtNanoseconds =
+            nowNanoseconds &+ Self.rapidTurnJitterMemoryNanoseconds
+    }
+
+    private func carryoverExtraCushion(for playbackProfile: MediaSessionPlaybackProfile) -> Int {
+        playbackProfile == .fastRelayBalanced ? carryoverExtraCushionFrames : 0
+    }
+
+    private func expireCarryoverCushionIfNeeded(nowNanoseconds: UInt64) {
+        guard let expiresAt = carryoverExtraCushionExpiresAtNanoseconds else { return }
+        guard nowNanoseconds >= expiresAt else { return }
+        carryoverExtraCushionFrames = 0
+        carryoverExtraCushionExpiresAtNanoseconds = nil
+    }
+
     private func startupWaitElapsed(nowNanoseconds: UInt64) -> Bool {
         guard let startupBufferedSinceNanoseconds else { return false }
         return nowNanoseconds >= startupBufferedSinceNanoseconds
             && nowNanoseconds - startupBufferedSinceNanoseconds >= Self.startupTimeoutNanoseconds
+    }
+
+    private func excessiveJitterThresholdNanoseconds(
+        for playbackProfile: MediaSessionPlaybackProfile
+    ) -> UInt64 {
+        switch playbackProfile {
+        case .lowLatency:
+            return 120_000_000
+        case .fastRelayBalanced:
+            return 160_000_000
+        case .relayJitterBuffered:
+            return 240_000_000
+        case .wakeBackgroundContinuity:
+            return 360_000_000
+        }
     }
 
     private func shouldResync(gap: UInt64, targetCushion: Int) -> Bool {
