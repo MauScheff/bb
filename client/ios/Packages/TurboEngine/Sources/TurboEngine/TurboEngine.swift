@@ -2222,10 +2222,20 @@ private enum EngineReducer {
                 effects.append(.backend(.endTransmit(epoch.conversation.channelID, epoch.transmitID)))
                 effects.append(.ptt(.requestStopTransmit(epoch.conversation.channelID)))
             case .beginning(let attempt):
-                next.transmit = .failed(
-                    TransmitFailure(conversation: attempt.conversation, reason: .systemRejected("ended-before-system-begin"))
-                )
-                effects.append(.ptt(.requestStopTransmit(attempt.conversation.channelID)))
+                if let backendTransmitID = attempt.backendTransmitID {
+                    let epoch = TransmitEpoch(
+                        conversation: attempt.conversation,
+                        transmitID: backendTransmitID,
+                        startedAtTick: attempt.systemStartedAtTick ?? next.tick
+                    )
+                    next.transmit = .stopping(TransmitStopAttempt(epoch: epoch, reason: .userReleased))
+                    effects.append(.backend(.endTransmit(epoch.conversation.channelID, epoch.transmitID)))
+                    effects.append(.ptt(.requestStopTransmit(epoch.conversation.channelID)))
+                } else {
+                    next.transmit = .idle
+                    next.pttAudio = .inactive
+                    effects.append(.ptt(.requestStopTransmit(attempt.conversation.channelID)))
+                }
             case .idle, .failed, .stopping:
                 break
             }

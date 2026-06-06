@@ -950,6 +950,7 @@ extension PTTViewModel {
             (autoRejoinContactID != nil && autoRejoinContactID != contactID)
             || explicitLeaveWasPending
             || shouldTreatLocalSystemLeaveAsExplicitTeardown
+            || contactID.map { reconciledTeardownRequiresBackendLeave(for: $0) } == true
         let shouldTreatBackgroundSystemLeaveAsLocalInterruption =
             applicationState != .active
             && !systemLeaveWasUserInitiated

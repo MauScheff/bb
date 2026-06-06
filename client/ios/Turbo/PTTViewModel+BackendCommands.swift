@@ -1687,6 +1687,8 @@ extension PTTViewModel {
     func applyAcceptedBackendJoinProjection(for contact: Contact, backend: BackendServices) {
         guard let backendChannelId = contact.backendChannelId else { return }
 
+        backendRuntime.markBackendJoinSettling(for: contact.id)
+
         let existing = backendSyncCoordinator.state.syncState.channelStates[contact.id]
         let peerMembership = existing?.membership
         let peerJoined = peerMembership?.hasPeerMembership ?? false

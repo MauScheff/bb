@@ -4075,6 +4075,24 @@ extension PTTViewModel {
                     recoveryMessage: "Repairing missing backend membership for active local Device PTT evidence",
                     captureReason: "backend-membership:self-healed"
                 )
+            } else if shouldRecoverAbsentBackendMembershipForActiveDevicePTTEvidence(
+                contactID: contactID,
+                effectiveChannelState: effectiveChannelState,
+                effectiveChannelReadiness: effectiveChannelReadiness,
+                localDevicePTTEvidenceEstablished: localDevicePTTEvidenceEstablished
+            ) {
+                startBackendJoinRecoveryForActiveDevicePTTEvidence(
+                    contactID: contactID,
+                    backendChannelID: backendChannelId,
+                    contact: contact,
+                    invariantID: "selected.backend_absent_with_local_device_ptt_evidence",
+                    invariantScope: .backend,
+                    invariantMessage: "backend dropped durable membership while local Device PTT evidence remained active",
+                    backendStatus: effectiveChannelState.status,
+                    backendReadiness: effectiveChannelReadiness?.statusKind ?? "none",
+                    recoveryMessage: "Repairing absent backend membership for active local Device PTT evidence",
+                    captureReason: "backend-absent-membership:self-healed"
+                )
             } else if !authoritativeMembershipLoss,
                       shouldRecoverBackendIdleMembershipLossForActiveDevicePTTEvidence(
                 contactID: contactID,
@@ -4475,6 +4493,26 @@ extension PTTViewModel {
         guard !effectiveChannelState.membership.hasLocalMembership else { return false }
         guard effectiveChannelState.membership.hasPeerMembership else { return false }
         guard localDevicePTTEvidenceEstablished else { return false }
+        if pttWakeRuntime.incomingWakeActivationState(for: contactID) != nil {
+            return false
+        }
+        guard backendRuntime.signalingJoinRecoveryTask == nil else { return false }
+        guard !conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) else { return false }
+        guard !shouldUseLiveCallControlPlaneReconnectGrace(for: contactID) else { return false }
+        return !backendRuntime.isBackendJoinSettling(for: contactID)
+    }
+
+    func shouldRecoverAbsentBackendMembershipForActiveDevicePTTEvidence(
+        contactID: UUID,
+        effectiveChannelState: TurboChannelStateResponse,
+        effectiveChannelReadiness: TurboChannelReadinessResponse?,
+        localDevicePTTEvidenceEstablished: Bool
+    ) -> Bool {
+        guard selectedContactId == contactID else { return false }
+        guard localDevicePTTEvidenceEstablished else { return false }
+        guard effectiveChannelState.membership == .absent else { return false }
+        guard effectiveChannelState.conversationStatus != .idle else { return false }
+        guard effectiveChannelReadiness != nil else { return false }
         if pttWakeRuntime.incomingWakeActivationState(for: contactID) != nil {
             return false
         }

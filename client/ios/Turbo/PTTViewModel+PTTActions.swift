@@ -627,8 +627,14 @@ extension PTTViewModel {
 
     func performReconciledTeardown(for contactID: UUID) {
         let backendChannelID = contacts.first { $0.id == contactID }?.backendChannelId
-        let shouldPropagateBackendLeave =
-            conversationActionCoordinator.pendingAction.isExplicitLeaveInFlight(for: contactID)
+        let shouldPropagateBackendLeave = reconciledTeardownRequiresBackendLeave(for: contactID)
+        let backendLeaveRequest: BackendLeaveRequest? = {
+            guard shouldPropagateBackendLeave,
+                  let backendChannelID else {
+                return nil
+            }
+            return BackendLeaveRequest(contactID: contactID, backendChannelID: backendChannelID)
+        }()
         scheduleDisconnectRecovery(
             contactID: contactID,
             channelUUID: pttCoordinator.state.systemChannelUUID ?? channelUUID(for: contactID),
@@ -646,18 +652,29 @@ extension PTTViewModel {
         )
         captureDiagnosticsState("device-ptt-teardown:start")
 
+        if let backendLeaveRequest {
+            diagnostics.record(
+                .backend,
+                message: "Backend leave requested for reconciled Device PTT teardown",
+                metadata: [
+                    "contactId": backendLeaveRequest.contactID.uuidString,
+                    "channelId": backendLeaveRequest.backendChannelID,
+                    "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
+                    "backendMembership": selectedChannelSnapshot(for: contactID)
+                        .map { String(describing: $0.membership) } ?? "none",
+                ]
+            )
+            Task {
+                await ingestBackendCommandEvent(
+                    .leaveRequested(backendLeaveRequest),
+                    contactID: backendLeaveRequest.contactID,
+                    channelID: backendLeaveRequest.backendChannelID
+                )
+            }
+        }
+
         if usesLocalHTTPBackend {
             Task {
-                if shouldPropagateBackendLeave,
-                   let contact = contacts.first(where: { $0.id == contactID }),
-                   let backendChannelId = contact.backendChannelId {
-                    let request = BackendLeaveRequest(contactID: contact.id, backendChannelID: backendChannelId)
-                    await ingestBackendCommandEvent(
-                        .leaveRequested(request),
-                        contactID: contact.id,
-                        channelID: backendChannelId
-                    )
-                }
                 pttCoordinator.reset()
                 syncPTTState()
                 resetTransmitSession(closeMediaSession: false)
@@ -689,6 +706,16 @@ extension PTTViewModel {
         try? pttSystemClient.leaveChannel(channelUUID: systemChannelUUID)
         statusMessage = "Peer disconnected"
         captureDiagnosticsState("device-ptt-teardown:ptt-leave-requested")
+    }
+
+    func reconciledTeardownRequiresBackendLeave(for contactID: UUID) -> Bool {
+        if conversationActionCoordinator.pendingAction.isExplicitLeaveInFlight(for: contactID) {
+            return true
+        }
+        if isBackendLeaveCommandActive(for: contactID) {
+            return true
+        }
+        return selectedChannelSnapshot(for: contactID)?.membership.hasLocalMembership == true
     }
 
     func prepareReconciledTeardownState(for contactID: UUID) {

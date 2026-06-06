@@ -217,6 +217,12 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
         let backendActiveTransmitIdValue = backendActiveTransmitId ?? "none"
         let backendActiveTransmitterUserIdValue = backendActiveTransmitterUserId ?? "none"
         let localAppleSessionAligned = isJoined && systemSessionValue.hasPrefix("active(")
+        let pendingBeepLooksAcceptedByLocalSession =
+            localAppleSessionAligned
+            && (
+                backendJoinSettling
+                || backendSelfJoined == true
+            )
 
         var violations: [DiagnosticsInvariantViolationCandidate] = []
 
@@ -230,7 +236,8 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                 nil
             }
         if let pendingBeepExpectedPhase,
-           phase != pendingBeepExpectedPhase {
+           phase != pendingBeepExpectedPhase,
+           !pendingBeepLooksAcceptedByLocalSession {
             violations.append(
                 DiagnosticsInvariantViolationCandidate(
                     invariantID: "selected.pending_beep_dominates_live_projection",
@@ -245,6 +252,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                         "reconciliationAction": reconciliationAction,
                         "isJoined": String(isJoined),
                         "systemSession": systemSessionValue,
+                        "backendJoinSettling": String(backendJoinSettling),
                         "backendChannelStatus": backendChannelStatusValue,
                         "backendReadiness": backendReadinessValue,
                         "backendSelfJoined": boolMetadata(backendSelfJoined),
@@ -503,6 +511,15 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
         }
 
         let localDevicePTTEvidence = isJoined || systemSessionValue != "none"
+        let disconnectingTeardownInFlight =
+            phaseDetail.contains("disconnecting")
+            || pendingAction.contains("reconciledTeardown(")
+        let wakeRecoveryEvidencePresent =
+            remoteWakeCapabilityKindValue == "wake-capable"
+            || incomingWakeActivationState != nil
+        let reconnectOrWakeRecoveryInFlight =
+            controlPlaneReconnectGraceActive
+            || wakeRecoveryEvidencePresent
         let disconnectingProjection = phaseDetail.contains("disconnecting")
         let restoringDevicePTTSession = reconciliationAction.contains("restoreDevicePTTSession")
         if phase == "waitingForPeer",
@@ -613,6 +630,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
         if selectedConversationRelationship == "none",
            pendingAction == "none",
            !backendJoinSettling,
+           !reconnectOrWakeRecoveryInFlight,
            localDevicePTTEvidence,
            backendSelfJoined == false,
            backendPeerJoined == false,
@@ -646,6 +664,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                         "backendSelfJoined": boolMetadata(backendSelfJoined),
                         "backendPeerJoined": boolMetadata(backendPeerJoined),
                         "backendPeerDeviceConnected": boolMetadata(backendPeerDeviceConnected),
+                        "incomingWakeActivationState": incomingWakeActivationState ?? "none",
                     ]
                 )
             )
@@ -984,16 +1003,6 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                 )
             )
         }
-
-        let disconnectingTeardownInFlight =
-            phaseDetail.contains("disconnecting")
-            || pendingAction.contains("reconciledTeardown(")
-        let wakeRecoveryEvidencePresent =
-            remoteWakeCapabilityKindValue == "wake-capable"
-            || incomingWakeActivationState != nil
-        let reconnectOrWakeRecoveryInFlight =
-            controlPlaneReconnectGraceActive
-            || wakeRecoveryEvidencePresent
 
         if phase == "waitingForPeer",
            isJoined == true,

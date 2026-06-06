@@ -848,6 +848,34 @@ struct TurboEngineCoreTests {
         let stopped = engine.receive(.backend(.stopTransmitAccepted("tx-current")))
         #expect(stopped.state.transmit == .idle)
     }
+
+    @Test func releaseDuringTransmitBeginBeforeBackendLeaseCancelsBegin() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .fastRelay))))
+        _ = engine.send(.beginTalk)
+
+        let cancelled = engine.send(.endTalk)
+
+        #expect(cancelled.state.transmit == .idle)
+        #expect(cancelled.effects == [.ptt(.requestStopTransmit("channel-a-b"))])
+    }
+
+    @Test func releaseDuringTransmitBeginAfterBackendLeaseStopsLease() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .fastRelay))))
+        _ = engine.send(.beginTalk)
+        _ = engine.receive(.backend(.beginTransmitAccepted("tx-current")))
+
+        let stopping = engine.send(.endTalk)
+
+        if case .stopping(let stop) = stopping.state.transmit {
+            #expect(stop.epoch.transmitID == "tx-current")
+        } else {
+            Issue.record("expected release to stop the backend transmit lease")
+        }
+        #expect(stopping.effects.contains(.backend(.endTransmit("channel-a-b", "tx-current"))))
+        #expect(stopping.effects.contains(.ptt(.requestStopTransmit("channel-a-b"))))
+    }
 }
 
 @Suite("TurboEngine scenarios")

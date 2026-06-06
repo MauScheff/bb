@@ -16952,6 +16952,59 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func liveBackendReadinessWithoutMembershipTriggersDevicePTTEvidenceRecovery() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.selectedContactId = contactID
+
+        let shouldRecover = viewModel.shouldRecoverAbsentBackendMembershipForActiveDevicePTTEvidence(
+            contactID: contactID,
+            effectiveChannelState: makeChannelState(
+                status: .ready,
+                canTransmit: true,
+                selfJoined: false,
+                peerJoined: false,
+                peerDeviceConnected: false
+            ),
+            effectiveChannelReadiness: makeChannelReadiness(
+                status: .ready,
+                selfHasActiveDevice: true,
+                peerHasActiveDevice: true
+            ),
+            localDevicePTTEvidenceEstablished: true
+        )
+
+        #expect(shouldRecover)
+    }
+
+    @MainActor
+    @Test func backendJoinSettlingSuppressesAbsentMembershipDevicePTTEvidenceRecovery() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.selectedContactId = contactID
+        viewModel.backendRuntime.markBackendJoinSettling(for: contactID)
+
+        let shouldRecover = viewModel.shouldRecoverAbsentBackendMembershipForActiveDevicePTTEvidence(
+            contactID: contactID,
+            effectiveChannelState: makeChannelState(
+                status: .ready,
+                canTransmit: true,
+                selfJoined: false,
+                peerJoined: false,
+                peerDeviceConnected: false
+            ),
+            effectiveChannelReadiness: makeChannelReadiness(
+                status: .ready,
+                selfHasActiveDevice: true,
+                peerHasActiveDevice: true
+            ),
+            localDevicePTTEvidenceEstablished: true
+        )
+
+        #expect(shouldRecover == false)
+    }
+
+    @MainActor
     @Test func missingBackendMembershipRecoveryReassertsJoinForActiveDevicePTTEvidence() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -18373,6 +18426,64 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func reconciledTeardownWithBackendLocalMembershipRequestsBackendLeave() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.syncPTTState()
+
+        var capturedEffects: [BackendCommandEffect] = []
+        viewModel.backendCommandCoordinator.effectHandler = { effect in
+            capturedEffects.append(effect)
+        }
+
+        await viewModel.runSelectedConversationEffect(.teardownDevicePTTSession(contactID: contactID))
+        await Task.yield()
+        await Task.yield()
+
+        #expect(viewModel.conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID))
+        #expect(viewModel.backendCommandCoordinator.state.activeOperation == .leave(contactID: contactID))
+        #expect(
+            capturedEffects == [
+                .leave(
+                    BackendLeaveRequest(contactID: contactID, backendChannelID: "channel-1")
+                )
+            ]
+        )
+
+        viewModel.replaceDisconnectRecoveryTask(with: nil)
+    }
+
+    @MainActor
     @Test func activeSystemLeaveCallbackKeepsExplicitLeaveArmedUntilBackendLeaveConverges() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -19100,6 +19211,58 @@ struct TalkTurnTests {
         #expect(
             viewModel.diagnostics.entries.contains {
                 $0.message == "Applied accepted backend join projection"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func acceptedBackendJoinProjectionDoesNotTeardownFreshLocalJoin() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Avery",
+            handle: "@avery",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "user-avery"
+        )
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "test"
+            )
+        )
+        viewModel.syncPTTState()
+
+        guard let backend = viewModel.backendServices else {
+            Issue.record("expected backend services")
+            return
+        }
+        viewModel.applyAcceptedBackendJoinProjection(for: contact, backend: backend)
+
+        #expect(viewModel.backendRuntime.isBackendJoinSettling(for: contactID))
+        #expect(viewModel.pttCoordinator.state.isJoined)
+        #expect(viewModel.isJoined)
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Tearing down invalid Device PTT session after selected Conversation reconciliation"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Backend leave requested for reconciled Device PTT teardown"
             }
         )
     }

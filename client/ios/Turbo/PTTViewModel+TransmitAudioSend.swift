@@ -3547,8 +3547,8 @@ extension PTTViewModel {
                     await MainActor.run {
                         self.diagnostics.record(
                             .media,
-                            level: .error,
-                            message: "Transmit lease lost during renewal",
+                            level: .notice,
+                            message: "Transmit lease already ended during renewal",
                             metadata: [
                                 "contactId": target.contactID.uuidString,
                                 "channelId": target.channelID,

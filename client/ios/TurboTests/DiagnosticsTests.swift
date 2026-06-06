@@ -3225,6 +3225,43 @@ struct DiagnosticsTests {
     }
 
     @MainActor
+    @Test func diagnosticsSuppressesBackendAbsentWithLocalDevicePTTEvidenceDuringWakeRecovery() {
+        let store = DiagnosticsStore()
+        store.clear()
+
+        captureDevicePTTDiagnosticsState(store,
+            reason: "ptt-callback:token",
+            fields: [
+                "selectedContact": "@blake",
+                "selectedConversationPhase": "waitingForPeer",
+                "selectedConversationPhaseDetail": "waitingForPeer(reason: BeepBeep.SelectedConversationWaitingReason.backendConversationTransition)",
+                "selectedConversationRelationship": "none",
+                "pendingAction": "none",
+                "backendJoinSettling": "false",
+                "isJoined": "true",
+                "isTransmitting": "false",
+                "systemSession": "active(contactID: 123, channelUUID: 456)",
+                "backendChannelStatus": "ready",
+                "backendReadiness": "ready",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "false",
+                "backendPeerDeviceConnected": "false",
+                "incomingWakeActivationState": "signalBuffered",
+                "selectedConversationStatus": "Connecting..."
+            ]
+        )
+
+        let exported = store.exportText(snapshot: "selectedConversationPhase=waitingForPeer")
+
+        #expect(!exported.contains("[selected.backend_absent_with_local_device_ptt_evidence]"))
+        #expect(
+            !store.invariantViolations.contains {
+                $0.invariantID == "selected.backend_absent_with_local_device_ptt_evidence"
+            }
+        )
+    }
+
+    @MainActor
     @Test func diagnosticsSuppressesBackendIdleWithLocalDevicePTTEvidenceInvariantWithoutLocalDevicePTTEvidence() {
         let store = DiagnosticsStore()
         store.clear()

@@ -2058,6 +2058,10 @@ enum ConversationStateMachine {
             guard context.pendingAction.pendingJoinContactID != context.contactID else {
                 return nil
             }
+            guard !context.rawLocalDevicePTTEvidencePresent,
+                  !context.backendJoinSettling else {
+                return nil
+            }
             switch relationship {
             case .incomingBeep, .mutualBeep:
                 return makeState(
@@ -2716,6 +2720,7 @@ enum ConversationStateMachine {
 
         if relationship != .none,
            !context.pendingConnectAcceptedIncomingBeep,
+           !context.backendJoinSettling,
            context.pendingAction.pendingJoinContactID != context.contactID,
            context.rawLocalDevicePTTEvidencePresent,
            !explicitLeaveRequested {

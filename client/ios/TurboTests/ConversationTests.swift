@@ -1368,6 +1368,48 @@ struct ConversationTests {
         #expect(projection.reconciliationAction == .none)
     }
 
+    @Test func backendJoinSettlingSuppressesStaleBeepProjectionTeardownAfterAcceptedJoin() {
+        let contactID = UUID()
+        let channelID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .waitingForPeer,
+            relationship: .incomingBeep(requestCount: 1),
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: true,
+            activeChannelID: contactID,
+            systemSessionMatchesContact: true,
+            systemSessionState: .active(contactID: contactID, channelUUID: channelID),
+            pendingAction: .none,
+            localJoinFailure: nil,
+            backendConvergence: BackendConversationConvergenceState(
+                joinSettling: true,
+                signalingJoinRecoveryActive: false,
+                controlPlaneReconnectGraceActive: false
+            ),
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .waitingForPeer,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false,
+                    hasIncomingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .incomingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase == .waitingForPeer)
+        #expect(projection.reconciliationAction == .none)
+    }
+
     @Test func pendingOutgoingBeepDominatesPeerReadyBackendProjection() {
         let contactID = UUID()
         let context = ConversationDerivationContext(

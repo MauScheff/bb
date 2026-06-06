@@ -2450,6 +2450,7 @@ extension PTTViewModel {
         )
         transmitTaskCoordinator.send(.renewalCancelled)
         transmitTaskRuntime.cancelCaptureReassertionTask()
+        syncEngineEndTalkIntent(reason: "\(source)-late-lease-after-release")
         await mediaServices.session()?.abortSendingAudio()
         if backend.supportsWebSocket && backend.isWebSocketConnected {
             try? await backend.sendSignal(
