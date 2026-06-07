@@ -17337,6 +17337,22 @@ struct ConnectionTests {
         #expect(elapsedNanoseconds < 50_000_000)
     }
 
+    @Test func receiveEpochSnapshotDoesNotBlockBehindReceivePlaybackLock() {
+        let session = PCMWebSocketMediaSession(sendAudioChunk: nil)
+        defer { session.close(deactivateAudioSession: false) }
+        #expect(session.currentRemoteAudioReceiveEpoch() == 0)
+
+        session.lockReceivePlaybackForTesting()
+        defer { session.unlockReceivePlaybackForTesting() }
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let epoch = session.currentRemoteAudioReceiveEpoch()
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startedAt
+
+        #expect(epoch == 0)
+        #expect(elapsedNanoseconds < 50_000_000)
+    }
+
     @Test func batchedOpusPayloadDurationIncludesEveryFrame() throws {
         let frames = try (0..<5).map { index in
             try #require(

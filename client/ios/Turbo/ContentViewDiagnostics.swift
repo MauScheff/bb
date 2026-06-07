@@ -28,6 +28,7 @@ struct TurboDiagnosticsView: View {
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
     let onSetAudioPacketDiagnosticsEnabled: (Bool) -> Void
+    let onSetLiveAudioDiagnosticsEnabled: (Bool) -> Void
     let onSetVoiceMediaCoreMode: (VoiceMediaCoreMode) -> Void
     let onSetBinaryVoicePacketV1Enabled: (Bool) -> Void
     let onForceDirectQuicProbe: () -> Void
@@ -187,6 +188,7 @@ struct TurboDiagnosticsView: View {
                     diagnosticsRow("Media relay configured", directQuic.mediaRelayConfigured ? "yes" : "no")
                     diagnosticsRow("Media relay active", directQuic.mediaRelayActive ? "yes" : "no")
                     diagnosticsRow("Audio packet metadata", directQuic.audioPacketDiagnosticsEnabled ? "on" : "off")
+                    diagnosticsRow("Live audio diagnostics", (directQuic.liveAudioDiagnosticsEnabled ?? true) ? "on" : "off")
                     diagnosticsRow("Voice media core", directQuic.voiceMediaCoreMode.rawValue)
                     diagnosticsRow("Binary packet v1", directQuic.binaryVoicePacketV1Enabled ? "on" : "off")
                     diagnosticsRow("Media relay host", directQuic.mediaRelayHost ?? "none")
@@ -271,6 +273,15 @@ struct TurboDiagnosticsView: View {
                         isOn: Binding(
                             get: { directQuic.audioPacketDiagnosticsEnabled },
                             set: onSetAudioPacketDiagnosticsEnabled
+                        )
+                    )
+                    .disabled(isRunningDirectQuicDebugAction)
+
+                    Toggle(
+                        "Live audio diagnostics",
+                        isOn: Binding(
+                            get: { directQuic.liveAudioDiagnosticsEnabled ?? true },
+                            set: onSetLiveAudioDiagnosticsEnabled
                         )
                     )
                     .disabled(isRunningDirectQuicDebugAction)
@@ -589,6 +600,7 @@ struct TurboDiagnosticsSheet: View {
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
     let onSetAudioPacketDiagnosticsEnabled: (Bool) -> Void
+    let onSetLiveAudioDiagnosticsEnabled: (Bool) -> Void
     let onSetVoiceMediaCoreMode: (VoiceMediaCoreMode) -> Void
     let onSetBinaryVoicePacketV1Enabled: (Bool) -> Void
     let onForceDirectQuicProbe: () -> Void
@@ -631,6 +643,7 @@ struct TurboDiagnosticsSheet: View {
                 onSetMediaRelayForced: onSetMediaRelayForced,
                 onSetMediaRelayConfig: onSetMediaRelayConfig,
                 onSetAudioPacketDiagnosticsEnabled: onSetAudioPacketDiagnosticsEnabled,
+                onSetLiveAudioDiagnosticsEnabled: onSetLiveAudioDiagnosticsEnabled,
                 onSetVoiceMediaCoreMode: onSetVoiceMediaCoreMode,
                 onSetBinaryVoicePacketV1Enabled: onSetBinaryVoicePacketV1Enabled,
                 onForceDirectQuicProbe: onForceDirectQuicProbe,

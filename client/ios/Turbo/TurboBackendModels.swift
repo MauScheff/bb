@@ -844,6 +844,9 @@ nonisolated enum TurboAudioDiagnosticsDebugOverride {
     static let packetMetadataStorageKey = "TurboDebugAudioPacketMetadataDiagnostics"
     static let packetMetadataLaunchArgument = "-TurboDebugAudioPacketMetadataDiagnostics"
     static let packetMetadataEnvironmentKey = "TURBO_DEBUG_AUDIO_PACKET_METADATA_DIAGNOSTICS"
+    static let liveAudioStorageKey = "TurboDebugLiveAudioDiagnostics"
+    static let liveAudioLaunchArgument = "-TurboDebugLiveAudioDiagnostics"
+    static let liveAudioEnvironmentKey = "TURBO_DEBUG_LIVE_AUDIO_DIAGNOSTICS"
     static var allowsDebugOverridesByDefault: Bool {
         #if DEBUG
         true
@@ -888,6 +891,44 @@ nonisolated enum TurboAudioDiagnosticsDebugOverride {
 
     static func setPacketMetadataEnabled(_ isEnabled: Bool, defaults: UserDefaults = .standard) {
         defaults.set(isEnabled, forKey: packetMetadataStorageKey)
+    }
+
+    static func isLiveAudioDiagnosticsEnabled(
+        processInfo: ProcessInfo = .processInfo,
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> Bool {
+        isLiveAudioDiagnosticsEnabled(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowDebugOverride: allowDebugOverride
+        )
+    }
+
+    static func isLiveAudioDiagnosticsEnabled(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowDebugOverride: Bool = allowsDebugOverridesByDefault
+    ) -> Bool {
+        guard allowDebugOverride else { return false }
+        if let launchArgumentValue = launchArgumentValue(liveAudioLaunchArgument, in: arguments),
+           let parsed = parseBoolean(launchArgumentValue) {
+            return parsed
+        }
+        if arguments.contains(liveAudioLaunchArgument) {
+            return true
+        }
+        if let environmentValue = environment[liveAudioEnvironmentKey],
+           let parsed = parseBoolean(environmentValue) {
+            return parsed
+        }
+        return defaults.object(forKey: liveAudioStorageKey) as? Bool ?? true
+    }
+
+    static func setLiveAudioDiagnosticsEnabled(_ isEnabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(isEnabled, forKey: liveAudioStorageKey)
     }
 
     private static func launchArgumentValue(_ launchArgument: String, in arguments: [String]) -> String? {

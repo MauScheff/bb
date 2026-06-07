@@ -1748,6 +1748,7 @@ extension PTTViewModel {
         fromDeviceID: String,
         timingMetadata: [String: String]
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let detailedReportLimit = incomingAudioDiagnosticDetailedReportLimit()
         switch mediaRuntime.consumeDirectQuicIncomingAudioDiagnosticDisposition(
             for: contactID,
@@ -1795,6 +1796,7 @@ extension PTTViewModel {
         thresholdNanoseconds: UInt64,
         action: String
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let detailedReportLimit = incomingAudioDiagnosticDetailedReportLimit()
         switch mediaRuntime.consumeDirectQuicIncomingAudioQueueDelayDiagnosticDisposition(
             for: contactID,
@@ -1849,6 +1851,7 @@ extension PTTViewModel {
         timingMetadata: [String: String],
         thresholdNanoseconds: UInt64
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let detailedReportLimit = incomingAudioDiagnosticDetailedReportLimit()
         switch mediaRuntime.consumeDirectQuicIncomingAudioQueueDelayDiagnosticDisposition(
             for: contactID,

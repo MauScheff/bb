@@ -1886,6 +1886,7 @@ extension PTTViewModel {
     private func recordLiveAudioReceiveSummary(
         _ summary: LiveAudioReceiveDiagnosticSummary
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         var metadata = [
             "contactId": summary.contactID.uuidString,
             "channelId": summary.channelID,
@@ -1992,6 +1993,7 @@ extension PTTViewModel {
         key: String,
         _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let diagnostics = diagnostics
         mediaRuntime.voiceObservabilityQueue.enqueue(
             workClass: .observability,
@@ -2004,6 +2006,7 @@ extension PTTViewModel {
     private func scheduleLiveAudioMustRecordObservability(
         _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let diagnostics = diagnostics
         mediaRuntime.voiceObservabilityQueue.enqueue(
             workClass: .observability,
@@ -2017,6 +2020,7 @@ extension PTTViewModel {
     private func scheduleLiveAudioContractObservability(
         _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let diagnostics = diagnostics
         mediaRuntime.voiceObservabilityQueue.enqueue(
             workClass: .observability,
@@ -2029,6 +2033,7 @@ extension PTTViewModel {
     private func recordLiveAudioReceiveDropDiagnostic(
         _ drop: LiveAudioReceiveDropDiagnostic
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         var metadata = [
             "contactId": drop.contactID.uuidString,
             "channelId": drop.channelID,
@@ -2095,6 +2100,7 @@ extension PTTViewModel {
     private func recordLiveAudioReceivePlaybackReadinessDiagnostic(
         _ diagnostic: LiveAudioReceivePlaybackReadinessDiagnostic
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let metadata = [
             "contactId": diagnostic.contactID.uuidString,
             "channelId": diagnostic.channelID,
@@ -2428,22 +2434,24 @@ extension PTTViewModel {
             metadata["reason"] = "expired-live-backlog"
             metadata["localQueueDelayMs"] = String(expiredLocalQueueDelayNanoseconds / 1_000_000)
             metadata["thresholdMs"] = String(thresholdNanoseconds / 1_000_000)
-            diagnostics.recordContractViolation(
-                DiagnosticsContracts.Media.incomingAudioQueueDelay(
-                    contactID: contactID,
-                    channelID: channelID,
-                    attemptID: ingressSource,
-                    incomingTransport: incomingAudioTransport.diagnosticsValue,
-                    sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
-                    localQueueDelayMilliseconds: expiredLocalQueueDelayNanoseconds / 1_000_000,
-                    senderClockAgeMilliseconds: senderSentAtMilliseconds.map {
-                        String(Int64(Date().timeIntervalSince1970 * 1_000) - $0)
-                    } ?? "none",
-                    thresholdMilliseconds: thresholdNanoseconds / 1_000_000,
-                    action: "dropped-expired-live-backlog"
-                ),
-                metadata: metadata
-            )
+            if TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() {
+                diagnostics.recordContractViolation(
+                    DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                        contactID: contactID,
+                        channelID: channelID,
+                        attemptID: ingressSource,
+                        incomingTransport: incomingAudioTransport.diagnosticsValue,
+                        sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
+                        localQueueDelayMilliseconds: expiredLocalQueueDelayNanoseconds / 1_000_000,
+                        senderClockAgeMilliseconds: senderSentAtMilliseconds.map {
+                            String(Int64(Date().timeIntervalSince1970 * 1_000) - $0)
+                        } ?? "none",
+                        thresholdMilliseconds: thresholdNanoseconds / 1_000_000,
+                        action: "dropped-expired-live-backlog"
+                    ),
+                    metadata: metadata
+                )
+            }
             handleExpiredLiveAudioDrop(
                 contactID: contactID,
                 channelID: channelID,
@@ -2457,20 +2465,22 @@ extension PTTViewModel {
             metadata["reason"] = "expired-sender-clock-age"
             metadata["senderClockAgeMs"] = String(senderClockAgeMilliseconds)
             metadata["thresholdMs"] = String(thresholdMilliseconds)
-            diagnostics.recordContractViolation(
-                DiagnosticsContracts.Media.incomingAudioQueueDelay(
-                    contactID: contactID,
-                    channelID: channelID,
-                    attemptID: ingressSource,
-                    incomingTransport: incomingAudioTransport.diagnosticsValue,
-                    sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
-                    localQueueDelayMilliseconds: localQueueDelayNanoseconds / 1_000_000,
-                    senderClockAgeMilliseconds: String(senderClockAgeMilliseconds),
-                    thresholdMilliseconds: UInt64(max(0, thresholdMilliseconds)),
-                    action: "dropped-expired-sender-clock-age"
-                ),
-                metadata: metadata
-            )
+            if TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() {
+                diagnostics.recordContractViolation(
+                    DiagnosticsContracts.Media.incomingAudioQueueDelay(
+                        contactID: contactID,
+                        channelID: channelID,
+                        attemptID: ingressSource,
+                        incomingTransport: incomingAudioTransport.diagnosticsValue,
+                        sequenceNumber: playbackSequenceNumber.map(String.init) ?? "none",
+                        localQueueDelayMilliseconds: localQueueDelayNanoseconds / 1_000_000,
+                        senderClockAgeMilliseconds: String(senderClockAgeMilliseconds),
+                        thresholdMilliseconds: UInt64(max(0, thresholdMilliseconds)),
+                        action: "dropped-expired-sender-clock-age"
+                    ),
+                    metadata: metadata
+                )
+            }
             handleExpiredLiveAudioDrop(
                 contactID: contactID,
                 channelID: channelID,
@@ -2485,12 +2495,14 @@ extension PTTViewModel {
         if let action {
             metadata["action"] = action
         }
-        diagnostics.record(
-            .media,
-            level: .notice,
-            message: "Dropped asynchronous incoming audio playback after freshness deadline",
-            metadata: metadata
-        )
+        if TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped asynchronous incoming audio playback after freshness deadline",
+                metadata: metadata
+            )
+        }
     }
 
     private func recordStaleAsyncIncomingAudioPlaybackDrop(
@@ -2517,21 +2529,23 @@ extension PTTViewModel {
             playbackAccepted: false,
             source: ingressSource
         )
-        diagnostics.record(
-            .media,
-            level: .notice,
-            message: "Dropped asynchronous incoming audio playback after receive epoch changed",
-            metadata: [
-                "contactId": contactID.uuidString,
-                "channelId": channelID,
-                "fromDeviceId": fromDeviceID,
-                "incomingTransport": incomingAudioTransport.diagnosticsValue,
-                "sequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
-                "expectedReceiveEpoch": String(expectedReceiveEpoch),
-                "currentReceiveEpoch": String(mediaRuntime.incomingAudioReceiveEpoch(for: contactID)),
-                "stage": stage,
-            ]
-        )
+        if TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Dropped asynchronous incoming audio playback after receive epoch changed",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                    "sequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
+                    "expectedReceiveEpoch": String(expectedReceiveEpoch),
+                    "currentReceiveEpoch": String(mediaRuntime.incomingAudioReceiveEpoch(for: contactID)),
+                    "stage": stage,
+                ]
+            )
+        }
     }
 
     private func dropIncomingAudioAfterExpiredBackendTransmitLeaseIfNeeded(
@@ -2987,6 +3001,7 @@ extension PTTViewModel {
         playbackAccepted: Bool,
         source: String
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         guard let summary = mediaRuntime.observeIncomingAudioIngress(
             contactID: contactID,
             transport: incomingAudioTransport,
@@ -3177,6 +3192,7 @@ extension PTTViewModel {
         contactID: UUID,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let detailedReportLimit = incomingAudioDiagnosticDetailedReportLimit()
         switch mediaRuntime.consumeIncomingRelayAudioDiagnosticDisposition(
             for: contactID,

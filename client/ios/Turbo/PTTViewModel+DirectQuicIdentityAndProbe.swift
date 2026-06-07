@@ -1715,6 +1715,30 @@ extension PTTViewModel {
         captureDiagnosticsState("media-audio:packet-diagnostics")
     }
 
+    func setLiveAudioDiagnosticsEnabledForDebug(_ isEnabled: Bool) {
+        let previousValue = TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled()
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(isEnabled)
+        if let selectedContactId {
+            mediaRuntime.resetIncomingRelayAudioDiagnostics(
+                for: selectedContactId,
+                detailedReportLimit: incomingAudioDiagnosticDetailedReportLimit()
+            )
+            mediaRuntime.resetDirectQuicIncomingAudioQueueDelayDiagnostics(for: selectedContactId)
+        }
+
+        diagnostics.record(
+            .media,
+            message: "Live audio diagnostics updated",
+            metadata: [
+                "selectedContact": selectedContact?.handle ?? "none",
+                "previousValue": String(previousValue),
+                "newValue": String(isEnabled),
+            ]
+        )
+        statusMessage = isEnabled ? "Live audio diagnostics enabled" : "Live audio diagnostics disabled"
+        captureDiagnosticsState("media-audio:live-diagnostics")
+    }
+
     func setVoiceMediaCoreModeForDebug(_ mode: VoiceMediaCoreMode) {
         let previousValue = TurboVoiceMediaCoreDebugOverride.liveMode()
         TurboVoiceMediaCoreDebugOverride.setLiveMode(mode)

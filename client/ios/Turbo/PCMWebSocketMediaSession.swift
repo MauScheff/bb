@@ -1110,6 +1110,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     )
     private let stateLock = NSLock()
     private let receivePlaybackLock = NSLock()
+    private let receiveEpochLock = NSLock()
     private let mediaEncodingLock = NSLock()
     private let targetFormat: AVAudioFormat
     private var captureConverter: AVAudioConverter?
@@ -1130,6 +1131,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     private var pendingRemoteAudioChunks: [PendingRemoteAudioChunk] = []
     private var scheduledPlaybackBufferCount = 0
     private var remoteAudioReceiveEpoch: UInt64 = 0
+    private var remoteAudioReceiveEpochSnapshot: UInt64 = 0
     private var opusPlayoutReportBudget = 8
     private var opusPlayoutInvariantBudget = 4
     private var playbackStartTask: Task<Void, Never>?
@@ -1386,6 +1388,18 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         return try body()
     }
 
+    private nonisolated func withReceiveEpochLock<T>(_ body: () throws -> T) rethrows -> T {
+        receiveEpochLock.lock()
+        defer { receiveEpochLock.unlock() }
+        return try body()
+    }
+
+    private nonisolated func updateRemoteAudioReceiveEpochSnapshot(_ epoch: UInt64) {
+        withReceiveEpochLock {
+            remoteAudioReceiveEpochSnapshot = epoch
+        }
+    }
+
 #if DEBUG
     func lockReceivePlaybackForTesting() {
         receivePlaybackLock.lock()
@@ -1485,6 +1499,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     func beginRemoteAudioReceiveEpoch() {
         withReceivePlaybackLock {
             remoteAudioReceiveEpoch &+= 1
+            updateRemoteAudioReceiveEpochSnapshot(remoteAudioReceiveEpoch)
             playbackStartTask?.cancel()
             playbackStartTask = nil
             playbackCushionTask?.cancel()
@@ -1511,7 +1526,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     }
 
     nonisolated func currentRemoteAudioReceiveEpoch() -> UInt64 {
-        withReceivePlaybackLock { remoteAudioReceiveEpoch }
+        withReceiveEpochLock { remoteAudioReceiveEpochSnapshot }
     }
 
     @discardableResult
@@ -1913,6 +1928,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         frame: VoiceOpusFramePayload,
         playbackProfile: MediaSessionPlaybackProfile
     ) {
+        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let shouldReport =
             result.missingFrameCount > 0
             || result.duplicateDropCount > 0

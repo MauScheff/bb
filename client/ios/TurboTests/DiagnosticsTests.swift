@@ -812,6 +812,73 @@ struct DiagnosticsTests {
         )
     }
 
+    @Test func liveAudioDiagnosticsDebugOverrideSupportsStoredLaunchAndEnvironmentFlags() throws {
+        let suiteName = "TurboTests.live-audio-diagnostics-override.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        #expect(
+            TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(false, defaults: defaults)
+        #expect(
+            !TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [
+                    TurboAudioDiagnosticsDebugOverride.liveAudioLaunchArgument,
+                    "true",
+                ],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            !TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [],
+                environment: [
+                    TurboAudioDiagnosticsDebugOverride.liveAudioEnvironmentKey: "false",
+                ],
+                defaults: defaults
+            )
+        )
+    }
+
+    @Test func liveAudioDiagnosticsDebugOverrideIsIgnoredForProductionLikeBuilds() throws {
+        let suiteName = "TurboTests.live-audio-diagnostics-production-like.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(true, defaults: defaults)
+
+        #expect(
+            !TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [TurboAudioDiagnosticsDebugOverride.liveAudioLaunchArgument],
+                environment: [
+                    TurboAudioDiagnosticsDebugOverride.liveAudioEnvironmentKey: "true",
+                ],
+                defaults: defaults,
+                allowDebugOverride: false
+            )
+        )
+    }
+
     @Test func callScreenStatisticsVisibilityRecognizesTestFlightReceipt() {
         #expect(
             TurboCallScreenStatisticsVisibilityFlag.isTestFlightReceipt(

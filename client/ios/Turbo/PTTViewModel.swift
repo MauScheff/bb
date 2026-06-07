@@ -1052,6 +1052,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             mediaRelayTcpPort: mediaRelayConfig.map { Int($0.tcpPort) },
             mediaRelayActive: mediaRuntime.mediaRelayClient != nil,
             audioPacketDiagnosticsEnabled: TurboAudioDiagnosticsDebugOverride.isPacketMetadataEnabled(),
+            liveAudioDiagnosticsEnabled: TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(),
             voiceMediaCoreMode: TurboVoiceMediaCoreDebugOverride.liveMode(),
             binaryVoicePacketV1Enabled: TurboBinaryVoicePacketDebugOverride.isEnabled(),
             backendAdvertisesUpgrade: backendAdvertisesDirectQuicUpgrade,
@@ -1580,6 +1581,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
                 selectedConversationCoordinator.state.senderAutoJoinOnBeepAcceptanceArmed
             ),
             "audioPacketDiagnostics": TurboAudioDiagnosticsDebugOverride.isPacketMetadataEnabled()
+                ? "enabled"
+                : "off",
+            "liveAudioDiagnostics": TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled()
                 ? "enabled"
                 : "off",
             "hadConnectedDevicePTTContinuity": String(selectedConversation.hadConnectedDevicePTTContinuity),

@@ -362,6 +362,7 @@ struct ContentView: View {
                 onSetMediaRelayForced: setMediaRelayForced,
                 onSetMediaRelayConfig: setMediaRelayConfig,
                 onSetAudioPacketDiagnosticsEnabled: setAudioPacketDiagnosticsEnabled,
+                onSetLiveAudioDiagnosticsEnabled: setLiveAudioDiagnosticsEnabled,
                 onSetVoiceMediaCoreMode: setVoiceMediaCoreMode,
                 onSetBinaryVoicePacketV1Enabled: setBinaryVoicePacketV1Enabled,
                 onForceDirectQuicProbe: forceDirectQuicProbeFromDiagnostics,
@@ -1557,6 +1558,10 @@ struct ContentView: View {
 
     private func setAudioPacketDiagnosticsEnabled(_ isEnabled: Bool) {
         viewModel.setAudioPacketDiagnosticsEnabledForDebug(isEnabled)
+    }
+
+    private func setLiveAudioDiagnosticsEnabled(_ isEnabled: Bool) {
+        viewModel.setLiveAudioDiagnosticsEnabledForDebug(isEnabled)
     }
 
     private func setVoiceMediaCoreMode(_ mode: VoiceMediaCoreMode) {
