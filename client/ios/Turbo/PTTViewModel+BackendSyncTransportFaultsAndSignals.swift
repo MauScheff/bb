@@ -765,16 +765,11 @@ extension PTTViewModel {
 
     func incomingLiveAudioBacklogExpirationNanoseconds(
         for incomingAudioTransport: IncomingAudioPayloadTransport,
-        heldForAppleAudioActivation: Bool
+        heldForAppleAudioActivation _: Bool
     ) -> UInt64 {
-        let configured = incomingLiveAudioBacklogExpirationNanoseconds(
+        incomingLiveAudioBacklogExpirationNanoseconds(
             for: incomingAudioTransport
         )
-        guard heldForAppleAudioActivation,
-              incomingAudioTransport.isUnreliablePacketMedia else {
-            return configured
-        }
-        return max(configured, appleGatedAudioActivationTimeoutNanoseconds)
     }
 
     func recordIncomingAudioSequenceContractIfNeeded(
@@ -1687,14 +1682,6 @@ extension PTTViewModel {
             selectedContactId = contactID
         }
         let receiveEpoch = expectedReceiveEpoch ?? mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
-        let playbackDeadlineNanoseconds = incomingAudioAsyncPlaybackDeadlineNanoseconds(
-            receivedAtNanoseconds: ingressContext.receivedAtNanoseconds,
-            senderSentAtMilliseconds: ingressContext.sentAtMilliseconds,
-            incomingAudioTransport: incomingAudioTransport
-        )
-        let sessionPlaybackDeadlineNanoseconds = incomingAudioTransport.isUnreliablePacketMedia
-            ? nil
-            : playbackDeadlineNanoseconds
         let normalIngressPolicy = IncomingAudioIngressConfiguration(
             mediaEncryptionRequired: mediaEncryptionIsRequired(for: contactID),
             mediaEncryptionSession: mediaRuntime.mediaEncryptionSession(for: contactID),
@@ -1732,7 +1719,6 @@ extension PTTViewModel {
             ingressPolicy: normalIngressPolicy,
             preAudibleIngressPolicy: preAudibleIngressPolicy,
             playbackProfile: mediaTransportPolicy(for: incomingAudioTransport).playbackProfile,
-            playbackDeadlineNanoseconds: sessionPlaybackDeadlineNanoseconds,
             ingressExecutor: incomingAudioIngressExecutor,
             requiresSystemAudioActivationForPlayback: shouldBufferForegroundSystemReceive,
             isSystemAudioActive: { [weak self] in
@@ -1912,6 +1898,7 @@ extension PTTViewModel {
             "playbackAcceptedCount": String(summary.playbackAcceptedCount),
             "playbackRejectedCount": String(summary.playbackRejectedCount),
             "maxLocalQueueDelayMs": String(summary.maxLocalQueueDelayNanoseconds / 1_000_000),
+            "lastLocalQueueDelayMs": String(summary.lastLocalQueueDelayNanoseconds / 1_000_000),
             "freshnessDecision": summary.lastFreshnessDecision,
             "playbackDecision": summary.lastPlaybackDecision,
             "source": "live-audio-receive-executor",
@@ -1942,7 +1929,7 @@ extension PTTViewModel {
             transport: summary.transport,
             receiveEpoch: summary.receiveEpoch,
             sequenceNumber: summary.lastSequenceNumber,
-            maxLocalQueueDelayNanoseconds: summary.maxLocalQueueDelayNanoseconds,
+            localQueueDelayNanoseconds: summary.lastLocalQueueDelayNanoseconds,
             freshnessDecision: summary.lastFreshnessDecision,
             source: "live-audio-receive-executor"
         )
@@ -1955,7 +1942,7 @@ extension PTTViewModel {
         transport: IncomingAudioPayloadTransport,
         receiveEpoch: UInt64?,
         sequenceNumber: UInt64?,
-        maxLocalQueueDelayNanoseconds: UInt64,
+        localQueueDelayNanoseconds: UInt64,
         freshnessDecision: String,
         source: String
     ) {
@@ -1966,7 +1953,7 @@ extension PTTViewModel {
             heldForAppleAudioActivation: false
         )
         guard thresholdNanoseconds > 0,
-              maxLocalQueueDelayNanoseconds >= thresholdNanoseconds else {
+              localQueueDelayNanoseconds >= thresholdNanoseconds else {
             return
         }
         let sequenceNumberValue = sequenceNumber.map(String.init) ?? "none"
@@ -1976,10 +1963,10 @@ extension PTTViewModel {
             attemptID: source,
             incomingTransport: transport.diagnosticsValue,
             sequenceNumber: sequenceNumberValue,
-            localQueueDelayMilliseconds: maxLocalQueueDelayNanoseconds / 1_000_000,
+            localQueueDelayMilliseconds: localQueueDelayNanoseconds / 1_000_000,
             senderClockAgeMilliseconds: "none",
             thresholdMilliseconds: thresholdNanoseconds / 1_000_000,
-            action: "preserved-expired-live-backlog"
+            action: "accepted-expired-live-backlog"
         )
         var metadata = [
             "contactId": contactID.uuidString,
@@ -1987,9 +1974,9 @@ extension PTTViewModel {
             "fromDeviceId": fromDeviceID,
             "incomingTransport": transport.diagnosticsValue,
             "sequenceNumber": sequenceNumberValue,
-            "localQueueDelayMs": String(maxLocalQueueDelayNanoseconds / 1_000_000),
+            "localQueueDelayMs": String(localQueueDelayNanoseconds / 1_000_000),
             "thresholdMs": String(thresholdNanoseconds / 1_000_000),
-            "action": "preserved-expired-live-backlog",
+            "action": "accepted-expired-live-backlog",
             "source": source,
         ]
         if let receiveEpoch {
@@ -2180,7 +2167,7 @@ extension PTTViewModel {
             : playbackDeadlineNanoseconds
         mediaRuntime.incomingAudioPlaybackQueue.enqueue(
             expiringAtNanoseconds: playbackQueueExpirationNanoseconds,
-            expiresRunningHandler: incomingAudioTransport.isUnreliablePacketMedia,
+            expiresRunningHandler: false,
             onExpired: { [weak self] in
                 guard let self,
                       let dropReason = await self.incomingAudioAsyncPlaybackDropReason(
@@ -2318,9 +2305,6 @@ extension PTTViewModel {
         senderSentAtMilliseconds: Int64?,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> UInt64? {
-        guard !incomingAudioTransport.isUnreliablePacketMedia else {
-            return nil
-        }
         var deadlineNanoseconds: UInt64?
         let liveBacklogExpirationNanoseconds = incomingLiveAudioBacklogExpirationNanoseconds(
             for: incomingAudioTransport
@@ -2367,9 +2351,6 @@ extension PTTViewModel {
         senderSentAtMilliseconds: Int64?,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) -> IncomingAudioPlaybackDropReason? {
-        guard !incomingAudioTransport.isUnreliablePacketMedia else {
-            return nil
-        }
         let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
         let localQueueDelayNanoseconds =
             nowNanoseconds >= receivedAtNanoseconds
@@ -2773,19 +2754,11 @@ extension PTTViewModel {
 
     func incomingLiveAudioSenderClockExpirationMilliseconds(
         for incomingAudioTransport: IncomingAudioPayloadTransport,
-        heldForAppleAudioActivation: Bool
+        heldForAppleAudioActivation _: Bool
     ) -> Int64 {
-        let configured = incomingLiveAudioSenderClockExpirationMilliseconds(
+        incomingLiveAudioSenderClockExpirationMilliseconds(
             for: incomingAudioTransport
         )
-        guard heldForAppleAudioActivation,
-              incomingAudioTransport.isUnreliablePacketMedia else {
-            return configured
-        }
-        let activationTimeoutMilliseconds = Int64(
-            appleGatedAudioActivationTimeoutNanoseconds / 1_000_000
-        )
-        return max(configured, activationTimeoutMilliseconds)
     }
 
     private func completeIncomingAudioPlayback(
@@ -3033,6 +3006,7 @@ extension PTTViewModel {
             "playbackAcceptedCount": String(summary.playbackAcceptedCount),
             "playbackRejectedCount": String(summary.playbackRejectedCount),
             "maxLocalQueueDelayMs": String(summary.maxLocalQueueDelayNanoseconds / 1_000_000),
+            "lastLocalQueueDelayMs": String(summary.lastLocalQueueDelayNanoseconds / 1_000_000),
             "freshnessDecision": summary.lastFreshnessDecision,
             "playbackDecision": summary.lastPlaybackDecision,
             "source": source,
@@ -3057,7 +3031,7 @@ extension PTTViewModel {
             transport: summary.transport,
             receiveEpoch: nil,
             sequenceNumber: summary.lastSequenceNumber,
-            maxLocalQueueDelayNanoseconds: summary.maxLocalQueueDelayNanoseconds,
+            localQueueDelayNanoseconds: summary.lastLocalQueueDelayNanoseconds,
             freshnessDecision: summary.lastFreshnessDecision,
             source: source
         )

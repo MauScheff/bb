@@ -1254,7 +1254,6 @@ nonisolated struct LiveAudioReceiveContext: @unchecked Sendable {
     let ingressPolicy: IncomingAudioIngressConfiguration
     var preAudibleIngressPolicy: IncomingAudioIngressConfiguration? = nil
     let playbackProfile: MediaSessionPlaybackProfile
-    let playbackDeadlineNanoseconds: UInt64?
     let ingressExecutor: IncomingAudioIngressExecutor
     var requiresSystemAudioActivationForPlayback = false
     var isSystemAudioActive: (@Sendable () async -> Bool)?
@@ -1273,9 +1272,17 @@ private extension IncomingAudioPayloadTransport {
             return 3
         }
     }
+}
 
-    nonisolated var usesPacketPrePlaybackReadinessGrace: Bool {
-        isUnreliablePacketMedia
+private struct IncomingAudioLivePolicy: Sendable {
+    let appliesAdmissionFreshnessGate: Bool
+    let poisonsPlaybackGateAfterFreshnessExpiry: Bool
+
+    nonisolated static func live(for transport: IncomingAudioPayloadTransport) -> IncomingAudioLivePolicy {
+        IncomingAudioLivePolicy(
+            appliesAdmissionFreshnessGate: true,
+            poisonsPlaybackGateAfterFreshnessExpiry: !transport.isUnreliablePacketMedia
+        )
     }
 }
 
@@ -1291,6 +1298,7 @@ nonisolated struct LiveAudioReceiveDiagnosticSummary: Equatable, Sendable {
     let playbackAcceptedCount: Int
     let playbackRejectedCount: Int
     let maxLocalQueueDelayNanoseconds: UInt64
+    let lastLocalQueueDelayNanoseconds: UInt64
     let lastSequenceNumber: UInt64?
     let lastFreshnessDecision: String
     let lastPlaybackDecision: String
@@ -1341,6 +1349,7 @@ actor LiveMediaDiagnosticsSink {
         var playbackAcceptedCount = 0
         var playbackRejectedCount = 0
         var maxLocalQueueDelayNanoseconds: UInt64 = 0
+        var lastLocalQueueDelayNanoseconds: UInt64 = 0
         var lastSequenceNumber: UInt64?
         var lastFreshnessDecision = "none"
         var lastPlaybackDecision = "none"
@@ -1385,6 +1394,7 @@ actor LiveMediaDiagnosticsSink {
         state.sampleCount += 1
         state.samplesSinceLastReport += 1
         state.lastSequenceNumber = sequenceNumber
+        state.lastLocalQueueDelayNanoseconds = localQueueDelayNanoseconds
         state.maxLocalQueueDelayNanoseconds = max(
             state.maxLocalQueueDelayNanoseconds,
             localQueueDelayNanoseconds
@@ -1429,6 +1439,7 @@ actor LiveMediaDiagnosticsSink {
             playbackAcceptedCount: state.playbackAcceptedCount,
             playbackRejectedCount: state.playbackRejectedCount,
             maxLocalQueueDelayNanoseconds: state.maxLocalQueueDelayNanoseconds,
+            lastLocalQueueDelayNanoseconds: state.lastLocalQueueDelayNanoseconds,
             lastSequenceNumber: state.lastSequenceNumber,
             lastFreshnessDecision: state.lastFreshnessDecision,
             lastPlaybackDecision: state.lastPlaybackDecision
@@ -1469,6 +1480,7 @@ actor LiveAudioReceiveExecutor {
         let packet: LiveAudioReceivePacket
         let context: LiveAudioReceiveContext
         let admissionPolicy: IncomingAudioIngressConfiguration
+        let playbackDeadlineNanoseconds: UInt64?
         let diagnosticsSink: LiveMediaDiagnosticsSink
         let onFirstPlaybackAccepted: @Sendable (IncomingAudioIngressAcceptedPacket) async -> Void
         let onDiagnosticSummary: @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void
@@ -1485,7 +1497,6 @@ actor LiveAudioReceiveExecutor {
     private static let receiveAuthorityFreshnessLeaseNanoseconds: UInt64 = 300_000_000
     private static let maximumPendingPlaybackPacketsPerKey = 96
     private static let playbackReadinessPollNanoseconds: UInt64 = 20_000_000
-    private static let packetPrePlaybackReadinessGraceNanoseconds: UInt64 = 2_000_000_000
 
     private var contextsByKey: [ContextKey: LiveAudioReceiveContext] = [:]
     private var playbackExecutorsByKey: [ContextKey: LiveAudioPlaybackExecutor] = [:]
@@ -1805,6 +1816,10 @@ actor LiveAudioReceiveExecutor {
             packet: packet,
             context: context,
             admissionPolicy: admissionPolicy,
+            playbackDeadlineNanoseconds: playbackDeadlineNanoseconds(
+                for: admittedPacket,
+                admissionPolicy: admissionPolicy
+            ),
             diagnosticsSink: diagnosticsSink,
             onFirstPlaybackAccepted: onFirstPlaybackAccepted,
             onDiagnosticSummary: onDiagnosticSummary,
@@ -1978,9 +1993,6 @@ actor LiveAudioReceiveExecutor {
         nowMilliseconds: Int64,
         heldForPlaybackReadiness: Bool
     ) -> IncomingAudioPlaybackDecision? {
-        guard !pendingPacket.packet.transport.isUnreliablePacketMedia else {
-            return nil
-        }
         let localQueueDelayNanoseconds = pendingLocalQueueDelayNanoseconds(
             pendingPacket,
             nowNanoseconds: nowNanoseconds
@@ -2020,27 +2032,16 @@ actor LiveAudioReceiveExecutor {
 
     private func pendingPlaybackExpirationNanoseconds(
         for pendingPacket: PendingPlaybackPacket,
-        heldForPlaybackReadiness: Bool
+        heldForPlaybackReadiness _: Bool
     ) -> UInt64 {
-        let configured = pendingPacket.admissionPolicy.liveAudioBacklogExpirationNanoseconds
-        guard heldForPlaybackReadiness,
-              pendingPacket.packet.transport.usesPacketPrePlaybackReadinessGrace else {
-            return configured
-        }
-        return max(configured, Self.packetPrePlaybackReadinessGraceNanoseconds)
+        pendingPacket.admissionPolicy.liveAudioBacklogExpirationNanoseconds
     }
 
     private func pendingPlaybackSenderClockExpirationMilliseconds(
         for pendingPacket: PendingPlaybackPacket,
-        heldForPlaybackReadiness: Bool
+        heldForPlaybackReadiness _: Bool
     ) -> Int64 {
-        let configured = pendingPacket.admissionPolicy.liveAudioSenderClockExpirationMilliseconds
-        guard heldForPlaybackReadiness,
-              pendingPacket.packet.transport.usesPacketPrePlaybackReadinessGrace else {
-            return configured
-        }
-        let graceMilliseconds = Int64(Self.packetPrePlaybackReadinessGraceNanoseconds / 1_000_000)
-        return max(configured, graceMilliseconds)
+        pendingPacket.admissionPolicy.liveAudioSenderClockExpirationMilliseconds
     }
 
     private func pendingLocalQueueDelayNanoseconds(
@@ -2113,11 +2114,34 @@ actor LiveAudioReceiveExecutor {
             let postAdmissionExecutor = postAdmissionExecutor(
                 for: receiveAuthorityKey(for: pendingPacket.packet, context: pendingPacket.context)
             )
+            if let decision = expiredPendingPlaybackDecision(
+                pendingPacket,
+                nowNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                heldForPlaybackReadiness: false
+            ) {
+                scheduleDropDiagnostic(
+                    decision: decision,
+                    sequenceNumber: pendingPacket.admittedPacket.sequenceNumber,
+                    senderSentAtMilliseconds: pendingPacket.admittedPacket.senderSentAtMilliseconds,
+                    localQueueDelayNanoseconds: pendingLocalQueueDelayNanoseconds(
+                        pendingPacket,
+                        nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+                    ),
+                    packet: pendingPacket.packet,
+                    context: pendingPacket.context,
+                    diagnosticsSink: pendingPacket.diagnosticsSink,
+                    onDiagnosticSummary: pendingPacket.onDiagnosticSummary,
+                    onDropDiagnostic: pendingPacket.onDropDiagnostic
+                )
+                continue
+            }
             if pendingPacket.packet.transport.isUnreliablePacketMedia {
                 Task.detached(priority: .userInitiated) { [pendingPacket, playbackExecutor, postAdmissionExecutor] in
                     let playbackAccepted = await playbackExecutor.play(
                         pendingPacket.admittedPacket,
-                        context: pendingPacket.context
+                        context: pendingPacket.context,
+                        playbackDeadlineNanoseconds: nil
                     )
                     await postAdmissionExecutor.enqueueAcceptedPacketPlayback(
                         pendingPacket.admittedPacket,
@@ -2133,7 +2157,8 @@ actor LiveAudioReceiveExecutor {
             }
             let playbackAccepted = await playbackExecutor.play(
                 pendingPacket.admittedPacket,
-                context: pendingPacket.context
+                context: pendingPacket.context,
+                playbackDeadlineNanoseconds: pendingPacket.playbackDeadlineNanoseconds
             )
             await postAdmissionExecutor.enqueueAcceptedPacketPlayback(
                 pendingPacket.admittedPacket,
@@ -2174,6 +2199,50 @@ actor LiveAudioReceiveExecutor {
                 onDropDiagnostic: onDropDiagnostic
             )
         }
+    }
+
+    private func playbackDeadlineNanoseconds(
+        for admittedPacket: IncomingAudioIngressAcceptedPacket,
+        admissionPolicy: IncomingAudioIngressConfiguration
+    ) -> UInt64? {
+        var deadlineNanoseconds: UInt64?
+        let liveBacklogExpirationNanoseconds = admissionPolicy.liveAudioBacklogExpirationNanoseconds
+        if liveBacklogExpirationNanoseconds > 0 {
+            deadlineNanoseconds = saturatingNanosecondDeadline(
+                base: admittedPacket.ingressReceivedAtNanoseconds,
+                interval: liveBacklogExpirationNanoseconds
+            )
+        }
+
+        guard let senderSentAtMilliseconds = admittedPacket.senderSentAtMilliseconds else {
+            return deadlineNanoseconds
+        }
+        let senderClockExpirationMilliseconds = admissionPolicy.liveAudioSenderClockExpirationMilliseconds
+        guard senderClockExpirationMilliseconds > 0 else { return deadlineNanoseconds }
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        let nowMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        let (senderDeadlineMilliseconds, overflow) = senderSentAtMilliseconds.addingReportingOverflow(
+            senderClockExpirationMilliseconds
+        )
+        guard !overflow else { return deadlineNanoseconds }
+        let senderDeadlineNanoseconds: UInt64
+        if senderDeadlineMilliseconds <= nowMilliseconds {
+            senderDeadlineNanoseconds = nowNanoseconds
+        } else {
+            let remainingMilliseconds = UInt64(senderDeadlineMilliseconds - nowMilliseconds)
+            let (remainingNanoseconds, multipliedOverflow) =
+                remainingMilliseconds.multipliedReportingOverflow(by: 1_000_000)
+            senderDeadlineNanoseconds = multipliedOverflow
+                ? UInt64.max
+                : saturatingNanosecondDeadline(base: nowNanoseconds, interval: remainingNanoseconds)
+        }
+        return deadlineNanoseconds.map { min($0, senderDeadlineNanoseconds) }
+            ?? senderDeadlineNanoseconds
+    }
+
+    private func saturatingNanosecondDeadline(base: UInt64, interval: UInt64) -> UInt64 {
+        let (deadline, overflow) = base.addingReportingOverflow(interval)
+        return overflow ? UInt64.max : deadline
     }
 }
 
@@ -2339,19 +2408,21 @@ private actor LiveAudioReceivePostAdmissionExecutor {
             )
         )
     }
+
 }
 
 private actor LiveAudioPlaybackExecutor {
     nonisolated func play(
         _ admittedPacket: IncomingAudioIngressAcceptedPacket,
-        context: LiveAudioReceiveContext
+        context: LiveAudioReceiveContext,
+        playbackDeadlineNanoseconds: UInt64?
     ) async -> Bool {
         if let arrivalAwareSession = context.session as? any TransportArrivalAwareMediaSession {
             return await arrivalAwareSession.receiveRemoteAudioChunk(
                 admittedPacket.audioPayload,
                 playbackProfile: context.playbackProfile,
                 expectedReceiveEpoch: context.sessionReceiveEpoch,
-                playbackDeadlineNanoseconds: context.playbackDeadlineNanoseconds,
+                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds,
                 transportReceivedAtNanoseconds: admittedPacket.ingressReceivedAtNanoseconds
             )
         }
@@ -2359,7 +2430,7 @@ private actor LiveAudioPlaybackExecutor {
             admittedPacket.audioPayload,
             playbackProfile: context.playbackProfile,
             expectedReceiveEpoch: context.sessionReceiveEpoch,
-            playbackDeadlineNanoseconds: context.playbackDeadlineNanoseconds
+            playbackDeadlineNanoseconds: playbackDeadlineNanoseconds
         )
     }
 }
@@ -2701,13 +2772,13 @@ actor IncomingAudioIngressExecutor {
     private func shouldPoisonPlaybackGateAfterFreshnessExpiry(
         for transport: IncomingAudioPayloadTransport
     ) -> Bool {
-        !transport.isUnreliablePacketMedia
+        IncomingAudioLivePolicy.live(for: transport).poisonsPlaybackGateAfterFreshnessExpiry
     }
 
     private func shouldApplyAdmissionFreshnessGate(
         for transport: IncomingAudioPayloadTransport
     ) -> Bool {
-        !transport.isUnreliablePacketMedia
+        IncomingAudioLivePolicy.live(for: transport).appliesAdmissionFreshnessGate
     }
 
     private func poisonedPlaybackGateRejection(
@@ -2977,6 +3048,7 @@ struct IncomingAudioIngressSummary: Equatable {
     let playbackAcceptedCount: Int
     let playbackRejectedCount: Int
     let maxLocalQueueDelayNanoseconds: UInt64
+    let lastLocalQueueDelayNanoseconds: UInt64
     let lastSequenceNumber: UInt64?
     let lastFreshnessDecision: String
     let lastPlaybackDecision: String
@@ -2995,6 +3067,7 @@ private struct IncomingAudioIngressSummaryState {
     var playbackAcceptedCount: Int = 0
     var playbackRejectedCount: Int = 0
     var maxLocalQueueDelayNanoseconds: UInt64 = 0
+    var lastLocalQueueDelayNanoseconds: UInt64 = 0
     var lastSequenceNumber: UInt64?
     var lastFreshnessDecision: String = "none"
     var lastPlaybackDecision: String = "none"
@@ -4607,6 +4680,7 @@ final class MediaRuntimeState {
             state.maxLocalQueueDelayNanoseconds,
             localQueueDelayNanoseconds
         )
+        state.lastLocalQueueDelayNanoseconds = localQueueDelayNanoseconds
         state.lastSequenceNumber = sequenceNumber
         state.lastFreshnessDecision = freshnessDecision
         state.lastPlaybackDecision = playbackAccepted ? "accepted" : "rejected"
@@ -4646,6 +4720,7 @@ final class MediaRuntimeState {
             playbackAcceptedCount: state.playbackAcceptedCount,
             playbackRejectedCount: state.playbackRejectedCount,
             maxLocalQueueDelayNanoseconds: state.maxLocalQueueDelayNanoseconds,
+            lastLocalQueueDelayNanoseconds: state.lastLocalQueueDelayNanoseconds,
             lastSequenceNumber: state.lastSequenceNumber,
             lastFreshnessDecision: state.lastFreshnessDecision,
             lastPlaybackDecision: state.lastPlaybackDecision
