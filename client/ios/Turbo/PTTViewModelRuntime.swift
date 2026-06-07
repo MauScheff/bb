@@ -2085,6 +2085,24 @@ actor LiveAudioReceiveExecutor {
             let postAdmissionExecutor = postAdmissionExecutor(
                 for: receiveAuthorityKey(for: pendingPacket.packet, context: pendingPacket.context)
             )
+            if pendingPacket.packet.transport.isUnreliablePacketMedia {
+                Task {
+                    let playbackAccepted = await playbackExecutor.play(
+                        pendingPacket.admittedPacket,
+                        context: pendingPacket.context
+                    )
+                    await postAdmissionExecutor.enqueueAcceptedPacketPlayback(
+                        pendingPacket.admittedPacket,
+                        packet: pendingPacket.packet,
+                        context: pendingPacket.context,
+                        playbackAccepted: playbackAccepted,
+                        diagnosticsSink: pendingPacket.diagnosticsSink,
+                        onFirstPlaybackAccepted: pendingPacket.onFirstPlaybackAccepted,
+                        onDiagnosticSummary: pendingPacket.onDiagnosticSummary
+                    )
+                }
+                continue
+            }
             let playbackAccepted = await playbackExecutor.play(
                 pendingPacket.admittedPacket,
                 context: pendingPacket.context
