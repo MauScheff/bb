@@ -1063,7 +1063,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
-    static let liveAudioMaxConcurrentIncomingHandlers = 4
+    static let liveAudioMaxConcurrentIncomingHandlers = 16
     static let liveAudioMaxPendingIncomingHandlers = 96
     static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     private static let maximumReceiveChunkLength = 65_536
@@ -2690,7 +2690,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
-    private static let liveAudioMaxConcurrentIncomingHandlers = 4
+    private static let liveAudioMaxConcurrentIncomingHandlers = 16
     static let liveAudioDatagramWaitsForProcessing = false
     private static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     // Apple PTT activation can hold the first transmit/receive path for several

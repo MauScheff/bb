@@ -4284,7 +4284,7 @@ struct ConnectionTests {
             }
         }
 
-        let burstCount = 4
+        let burstCount = 16
         let controller = DirectQuicProbeController()
         let recorder = Recorder()
         let gate = Gate()
@@ -4455,7 +4455,7 @@ struct ConnectionTests {
             }
         }
 
-        let burstCount = 4
+        let burstCount = 16
         let recorder = Recorder()
         let gate = Gate()
         let client = TurboMediaRelayClient(
