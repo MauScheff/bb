@@ -4240,7 +4240,91 @@ struct ConnectionTests {
         #expect(Set(await recorder.snapshot()) == Set(0..<burstCount))
     }
 
-    @Test func turboMediaRelayClientPreservesIncomingAudioOrderWhenFirstPayloadBlocks() async {
+    @Test func directQuicProbeControllerDefaultPacketIngressDoesNotHeadOfLineBlock() async throws {
+        actor Recorder {
+            private var values: [Int] = []
+
+            func append(_ value: Int) {
+                values.append(value)
+            }
+
+            func waitForCount(
+                _ count: Int,
+                timeoutNanoseconds: UInt64 = 500_000_000
+            ) async -> Bool {
+                let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+                while DispatchTime.now().uptimeNanoseconds < deadline {
+                    if values.count >= count { return true }
+                    try? await Task.sleep(nanoseconds: 10_000_000)
+                }
+                return values.count >= count
+            }
+
+            func snapshot() -> [Int] {
+                values
+            }
+        }
+
+        actor Gate {
+            private var isOpen = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    waiters.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiters = self.waiters
+                self.waiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+
+        let burstCount = 4
+        let controller = DirectQuicProbeController()
+        let recorder = Recorder()
+        let gate = Gate()
+        controller.installVerifiedNominatedPathForTesting(
+            makeDirectQuicNominatedPath(attemptID: "attempt-1"),
+            peerCertificateFingerprint: "peer-fingerprint"
+        )
+        try await controller.activateMediaTransport(
+            onIncomingAudioPayload: { payload in
+                let sequenceNumber = Int(payload.sequenceNumber ?? UInt64.max)
+                await recorder.append(sequenceNumber)
+                if sequenceNumber == 0 {
+                    await gate.wait()
+                }
+            },
+            onPathLost: { _ in }
+        )
+
+        for index in 0..<burstCount {
+            controller.injectIncomingAudioPayloadForTesting(
+                DirectQuicIncomingAudioPayload(
+                    payload: "payload-\(index)",
+                    datagramReceivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                    sequenceNumber: UInt64(index),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+        }
+
+        #expect(await recorder.waitForCount(1))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let startedWhileFirstPayloadBlocked = await recorder.snapshot()
+        #expect(startedWhileFirstPayloadBlocked.contains(0))
+        #expect(startedWhileFirstPayloadBlocked.count > 1)
+        await gate.open()
+        #expect(await recorder.waitForCount(burstCount))
+        #expect(Set(await recorder.snapshot()) == Set(0..<burstCount))
+    }
+
+    @Test func turboMediaRelayClientPreservesTcpOrderedIncomingAudioOrderWhenFirstPayloadBlocks() async {
         actor Recorder {
             private var values: [Int] = []
 
@@ -4310,7 +4394,7 @@ struct ConnectionTests {
             client.injectIncomingAudioPayloadForTesting(
                 TurboMediaRelayIncomingAudioPayload(
                     payload: "payload-\(index)",
-                    mediaMode: .quicDatagram,
+                    mediaMode: .tcpOrdered,
                     sequenceNumber: UInt64(index),
                     sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
                     receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
@@ -4324,6 +4408,95 @@ struct ConnectionTests {
         await gate.open()
         #expect(await recorder.waitForCount(burstCount))
         #expect(await recorder.snapshot() == Array(0..<burstCount))
+        client.close()
+    }
+
+    @Test func turboMediaRelayClientDefaultDatagramIngressDoesNotHeadOfLineBlock() async {
+        actor Recorder {
+            private var values: [Int] = []
+
+            func append(_ value: Int) {
+                values.append(value)
+            }
+
+            func waitForCount(
+                _ count: Int,
+                timeoutNanoseconds: UInt64 = 500_000_000
+            ) async -> Bool {
+                let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+                while DispatchTime.now().uptimeNanoseconds < deadline {
+                    if values.count >= count { return true }
+                    try? await Task.sleep(nanoseconds: 10_000_000)
+                }
+                return values.count >= count
+            }
+
+            func snapshot() -> [Int] {
+                values
+            }
+        }
+
+        actor Gate {
+            private var isOpen = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                guard !isOpen else { return }
+                await withCheckedContinuation { continuation in
+                    waiters.append(continuation)
+                }
+            }
+
+            func open() {
+                isOpen = true
+                let waiters = self.waiters
+                self.waiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
+
+        let burstCount = 4
+        let recorder = Recorder()
+        let gate = Gate()
+        let client = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: "channel-1",
+            localDeviceId: "local-device",
+            peerDeviceId: "peer-device",
+            onIncomingAudioPayload: { payload in
+                let sequenceNumber = Int(payload.sequenceNumber ?? UInt64.max)
+                await recorder.append(sequenceNumber)
+                if sequenceNumber == 0 {
+                    await gate.wait()
+                }
+            }
+        )
+
+        for index in 0..<burstCount {
+            client.injectIncomingAudioPayloadForTesting(
+                TurboMediaRelayIncomingAudioPayload(
+                    payload: "payload-\(index)",
+                    mediaMode: .quicDatagram,
+                    sequenceNumber: UInt64(index),
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                    receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
+                )
+            )
+        }
+
+        #expect(await recorder.waitForCount(1))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let startedWhileFirstPayloadBlocked = await recorder.snapshot()
+        #expect(startedWhileFirstPayloadBlocked.contains(0))
+        #expect(startedWhileFirstPayloadBlocked.count > 1)
+        await gate.open()
+        #expect(await recorder.waitForCount(burstCount))
+        #expect(Set(await recorder.snapshot()) == Set(0..<burstCount))
         client.close()
     }
 
@@ -5471,7 +5644,7 @@ struct ConnectionTests {
         #expect(TurboMediaRelayClient.datagramJoinWaitsForProcessing)
         #expect(TurboMediaRelayClient.datagramJoinArmsReceiveBeforeSend)
         #expect(!TurboMediaRelayClient.livePacketAudioWaitsForProcessing)
-        #expect(TurboMediaRelayClient.liveAudioMaxConcurrentIncomingHandlers == 1)
+        #expect(TurboMediaRelayClient.liveAudioMaxConcurrentIncomingHandlers == 4)
         #expect(TurboMediaRelayClient.liveAudioMaxPendingIncomingHandlers == 96)
         #expect(TurboMediaRelayClient.liveAudioIncomingHandlerExpirationNanoseconds == 2_000_000_000)
         #expect(

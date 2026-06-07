@@ -1063,7 +1063,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
-    static let liveAudioMaxConcurrentIncomingHandlers = 1
+    static let liveAudioMaxConcurrentIncomingHandlers = 4
     static let liveAudioMaxPendingIncomingHandlers = 96
     static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     private static let maximumReceiveChunkLength = 65_536
@@ -2315,8 +2315,9 @@ nonisolated enum DirectQuicAudioPayloadDropPolicy: Sendable, Equatable {
 
 nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     // The default is serial for explicit ordering tests and ordered fallback-style
-    // use. Direct packet media controllers opt into bounded concurrency because
-    // Opus playout is keyed by frame index and can absorb packet reordering.
+    // use. Direct/Fast packet media controllers opt into bounded concurrency
+    // because Opus playout is keyed by frame index and can absorb packet
+    // reordering. Ordered fallback lanes keep their own serial queue.
     static let defaultMaxConcurrentHandlers = 1
     static let defaultMaxPendingHandlers = 64
 
@@ -2689,7 +2690,7 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
 
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
-    private static let liveAudioMaxConcurrentIncomingHandlers = 1
+    private static let liveAudioMaxConcurrentIncomingHandlers = 4
     static let liveAudioDatagramWaitsForProcessing = false
     private static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
     // Apple PTT activation can hold the first transmit/receive path for several
