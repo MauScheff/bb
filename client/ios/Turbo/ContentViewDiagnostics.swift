@@ -188,7 +188,7 @@ struct TurboDiagnosticsView: View {
                     diagnosticsRow("Media relay configured", directQuic.mediaRelayConfigured ? "yes" : "no")
                     diagnosticsRow("Media relay active", directQuic.mediaRelayActive ? "yes" : "no")
                     diagnosticsRow("Audio packet metadata", directQuic.audioPacketDiagnosticsEnabled ? "on" : "off")
-                    diagnosticsRow("Live audio diagnostics", (directQuic.liveAudioDiagnosticsEnabled ?? true) ? "on" : "off")
+                    diagnosticsRow("Live audio diagnostics", (directQuic.liveAudioDiagnosticsEnabled ?? false) ? "on" : "off")
                     diagnosticsRow("Voice media core", directQuic.voiceMediaCoreMode.rawValue)
                     diagnosticsRow("Binary packet v1", directQuic.binaryVoicePacketV1Enabled ? "on" : "off")
                     diagnosticsRow("Media relay host", directQuic.mediaRelayHost ?? "none")
@@ -280,7 +280,7 @@ struct TurboDiagnosticsView: View {
                     Toggle(
                         "Live audio diagnostics",
                         isOn: Binding(
-                            get: { directQuic.liveAudioDiagnosticsEnabled ?? true },
+                            get: { directQuic.liveAudioDiagnosticsEnabled ?? false },
                             set: onSetLiveAudioDiagnosticsEnabled
                         )
                     )

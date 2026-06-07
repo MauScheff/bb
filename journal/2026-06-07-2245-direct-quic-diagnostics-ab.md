@@ -20,11 +20,13 @@ Foreground Direct QUIC became flawless after disabling live audio diagnostics on
 - Per-packet live diagnostics can be too invasive for physical audio testing. They are useful when investigating a failure, but they must not be treated as free.
 - Turning diagnostics off did not require changing the media protocol, lane selection, or SwiftNetEq policy, which makes diagnostics pressure the best current explanation for the intermittent word loss.
 - The stale-live guard remains valuable: it tells us when current speech became stale locally. The product fix is to prevent the delay, not to widen the stale window and play old speech.
+- TestFlight and production still need diagnostics, but not live packet diagnostics by default. Their useful signal is control-plane, lane state, lifecycle, and shake-report context; live audio packet diagnostics are a scoped Debug-only tool.
 
 ## Design formulation
 
 - Live media work has priority over observability. Diagnostics must never be able to make a current speech turn late.
-- High-volume audio diagnostics belong behind an explicit debug switch and should default off for realistic physical audio quality testing.
+- High-volume audio diagnostics belong behind an explicit Debug switch and should default off for realistic physical audio quality testing.
+- Release/TestFlight builds must not allow stored preferences, launch arguments, or environment variables to enable live audio diagnostics.
 - Production telemetry should prefer low-volume summaries, sampled counters, and post-turn aggregation over per-packet hot-path recording.
 - A clean physical A/B is more authoritative than reading more noisy packet logs once the invariant already points to local queue delay.
 
@@ -34,6 +36,7 @@ Foreground Direct QUIC became flawless after disabling live audio diagnostics on
 - Prior commit `55074e5` added the `Live audio diagnostics` toggle.
 - Prior commit `55074e5` gated high-volume receive, ingress, drop, queue-delay, and Opus playout diagnostics behind that toggle.
 - This entry records the first successful physical Direct QUIC A/B result with that toggle off.
+- Follow-up policy change: live audio diagnostics now default off even in Debug, and remain impossible to enable in production-like builds.
 
 ## What worked
 

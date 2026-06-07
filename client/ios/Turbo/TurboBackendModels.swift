@@ -924,7 +924,7 @@ nonisolated enum TurboAudioDiagnosticsDebugOverride {
            let parsed = parseBoolean(environmentValue) {
             return parsed
         }
-        return defaults.object(forKey: liveAudioStorageKey) as? Bool ?? true
+        return defaults.object(forKey: liveAudioStorageKey) as? Bool ?? false
     }
 
     static func setLiveAudioDiagnosticsEnabled(_ isEnabled: Bool, defaults: UserDefaults = .standard) {

@@ -821,6 +821,15 @@ struct DiagnosticsTests {
         }
 
         #expect(
+            !TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(true, defaults: defaults)
+        #expect(
             TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled(
                 arguments: [],
                 environment: [:],
