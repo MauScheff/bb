@@ -2300,7 +2300,16 @@ private actor LiveAudioPlaybackExecutor {
         _ admittedPacket: IncomingAudioIngressAcceptedPacket,
         context: LiveAudioReceiveContext
     ) async -> Bool {
-        await context.session.receiveRemoteAudioChunk(
+        if let arrivalAwareSession = context.session as? any TransportArrivalAwareMediaSession {
+            return await arrivalAwareSession.receiveRemoteAudioChunk(
+                admittedPacket.audioPayload,
+                playbackProfile: context.playbackProfile,
+                expectedReceiveEpoch: context.sessionReceiveEpoch,
+                playbackDeadlineNanoseconds: context.playbackDeadlineNanoseconds,
+                transportReceivedAtNanoseconds: admittedPacket.ingressReceivedAtNanoseconds
+            )
+        }
+        return await context.session.receiveRemoteAudioChunk(
             admittedPacket.audioPayload,
             playbackProfile: context.playbackProfile,
             expectedReceiveEpoch: context.sessionReceiveEpoch,

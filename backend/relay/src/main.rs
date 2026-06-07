@@ -22,7 +22,10 @@ use tracing::{info, warn};
 
 use relay::{
     auth::{validate_id, validate_join_token},
-    protocol::{MAX_RELAY_LINE_LENGTH, RelayFrame, RelayTransport, relay_lines_codec},
+    protocol::{
+        MAX_RELAY_LINE_LENGTH, RelayFrame, RelayTransport, parse_relay_datagram_frame,
+        relay_lines_codec,
+    },
     relay_state::{RelayPeer, RelaySession, RelayState as GenericRelayState},
     state::JoinedPeer,
     transport_quic,
@@ -424,7 +427,7 @@ async fn process_quiche_datagrams(
     while let Ok(datagram) = connection.conn.dgram_recv_buf() {
         let datagram = Bytes::copy_from_slice(datagram.as_ref());
         let frame: RelayFrame =
-            serde_json::from_slice(datagram.as_ref()).context("datagram was not JSON")?;
+            parse_relay_datagram_frame(datagram.as_ref()).map_err(anyhow::Error::msg)?;
 
         if let Some(joined) = connection.datagram_joined.clone() {
             if joined.matches_datagram_join(&frame) {
@@ -997,15 +1000,22 @@ async fn handle_datagram_frame(
     state: &RelayState,
     joined: &JoinedPeer,
 ) -> Result<()> {
-    let RelayFrame::PacketAudio {
-        session_id,
-        sender_device_id,
-        sequence_number: _,
-        sent_at_ms: _,
-        payload: _,
-    } = &frame
-    else {
-        return Ok(());
+    let (session_id, sender_device_id) = match &frame {
+        RelayFrame::PacketAudio {
+            session_id,
+            sender_device_id,
+            sequence_number: _,
+            sent_at_ms: _,
+            payload: _,
+        }
+        | RelayFrame::BinaryPacketAudio {
+            session_id,
+            sender_device_id,
+            sequence_number: _,
+            sent_at_ms: _,
+            payload: _,
+        } => (session_id, sender_device_id),
+        _ => return Ok(()),
     };
 
     if !joined.matches_sender(session_id, sender_device_id) {

@@ -326,18 +326,19 @@ final class RecordingMediaSession: MediaSession {
     }
 }
 
-final class BlockingPlaybackMediaSession: MediaSession {
+nonisolated final class BlockingPlaybackMediaSession: TransportArrivalAwareMediaSession {
     weak var delegate: MediaSessionDelegate?
     private let lock = NSLock()
     private let blockingNanoseconds: UInt64
     private let suspendsDuringPlayback: Bool
-    private var chunks: [String] = []
-    private var threadIsMain: [Bool] = []
-    var receivePlaybackReadinessOverride: MediaSessionReceivePlaybackReadiness?
+    private nonisolated(unsafe) var chunks: [String] = []
+    private nonisolated(unsafe) var threadIsMain: [Bool] = []
+    private nonisolated(unsafe) var transportReceivedAtValues: [UInt64?] = []
+    nonisolated(unsafe) var receivePlaybackReadinessOverride: MediaSessionReceivePlaybackReadiness?
 
-    private(set) var state: MediaConnectionState = .connected
+    nonisolated(unsafe) private(set) var state: MediaConnectionState = .connected
 
-    var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
+    nonisolated var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
         receivePlaybackReadinessOverride ?? .ready
     }
 
@@ -346,12 +347,16 @@ final class BlockingPlaybackMediaSession: MediaSession {
         self.suspendsDuringPlayback = suspendsDuringPlayback
     }
 
-    var receivedRemoteAudioChunks: [String] {
+    nonisolated var receivedRemoteAudioChunks: [String] {
         lock.withLock { chunks }
     }
 
-    var receivedOnMainThread: [Bool] {
+    nonisolated var receivedOnMainThread: [Bool] {
         lock.withLock { threadIsMain }
+    }
+
+    nonisolated var receivedTransportArrivalNanoseconds: [UInt64?] {
+        lock.withLock { transportReceivedAtValues }
     }
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {}
@@ -363,7 +368,9 @@ final class BlockingPlaybackMediaSession: MediaSession {
         startupMode _: MediaSessionStartupMode
     ) async throws {
         state = .connected
-        delegate?.mediaSession(self, didChange: .connected)
+        await MainActor.run {
+            delegate?.mediaSession(self, didChange: .connected)
+        }
     }
 
     func startSendingAudio() async throws {}
@@ -377,9 +384,27 @@ final class BlockingPlaybackMediaSession: MediaSession {
         _ payload: String,
         playbackProfile _: MediaSessionPlaybackProfile
     ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: .lowLatency,
+            expectedReceiveEpoch: nil,
+            playbackDeadlineNanoseconds: nil,
+            transportReceivedAtNanoseconds: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile _: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch _: UInt64?,
+        playbackDeadlineNanoseconds _: UInt64?,
+        transportReceivedAtNanoseconds: UInt64?
+    ) async -> Bool {
         lock.withLock {
             chunks.append(payload)
             threadIsMain.append(Thread.isMainThread)
+            transportReceivedAtValues.append(transportReceivedAtNanoseconds)
         }
         if blockingNanoseconds > 0 {
             if suspendsDuringPlayback {
@@ -391,7 +416,7 @@ final class BlockingPlaybackMediaSession: MediaSession {
         return true
     }
 
-    private func blockCurrentThread(for nanoseconds: UInt64) {
+    nonisolated private func blockCurrentThread(for nanoseconds: UInt64) {
         Thread.sleep(forTimeInterval: Double(nanoseconds) / 1_000_000_000)
     }
 
@@ -417,7 +442,10 @@ final class BlockingPlaybackMediaSession: MediaSession {
 
     func close(deactivateAudioSession _: Bool) {
         state = .closed
-        delegate?.mediaSession(self, didChange: .closed)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            delegate?.mediaSession(self, didChange: .closed)
+        }
     }
 }
 

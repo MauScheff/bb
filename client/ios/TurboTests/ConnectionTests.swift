@@ -5474,6 +5474,41 @@ struct ConnectionTests {
         #expect(payload == "encrypted-payload")
     }
 
+    @Test func mediaRelayDatagramCodecRoundTripsBinaryPacketAudioFrame() throws {
+        let packet = try VoicePacketV1(frameIndex: 9, opusPayload: Data([4, 3, 2, 1]))
+        let packetData = VoicePacketV1Codec.encode(packet)
+        let encoded = try TurboMediaRelayDatagramCodec.encode(
+            .binaryPacketAudio(
+                sessionId: "channel-1",
+                senderDeviceId: "device-a",
+                sequenceNumber: 42,
+                sentAtMs: 123_456,
+                payload: packetData
+            )
+        )
+        let legacyEncoded = try TurboMediaRelayDatagramCodec.encode(
+            .packetAudio(
+                sessionId: "channel-1",
+                senderDeviceId: "device-a",
+                sequenceNumber: 42,
+                sentAtMs: 123_456,
+                payload: VoiceAudioFramePayloadCodec.encodeBinaryOpus(packet)
+            )
+        )
+
+        let decoded = try TurboMediaRelayDatagramCodec.decode(encoded)
+
+        #expect(encoded.first == 0x54)
+        #expect(encoded.count < legacyEncoded.count)
+        #expect(decoded == .binaryPacketAudio(
+            sessionId: "channel-1",
+            senderDeviceId: "device-a",
+            sequenceNumber: 42,
+            sentAtMs: 123_456,
+            payload: packetData
+        ))
+    }
+
     @Test func mediaRelayCodecRoundTripsTcpAudioFrame() throws {
         let encoded = try TurboMediaRelayCodec.encode(
             .tcpAudio(
@@ -5620,14 +5655,58 @@ struct ConnectionTests {
         #expect(decoded == .packetAudio(payload: "encrypted-payload"))
     }
 
+    @Test func directQuicDatagramCodecRoundTripsBinaryPacketAudioFrame() throws {
+        let packet = try VoicePacketV1(frameIndex: 7, opusPayload: Data([1, 2, 3, 4]))
+        let packetData = VoicePacketV1Codec.encode(packet)
+        let encoded = try DirectQuicMediaDatagramCodec.encode(
+            .binaryPacketAudio(
+                payload: packetData,
+                sequenceNumber: 42,
+                sentAtMilliseconds: 123_456
+            )
+        )
+
+        let decoded = try DirectQuicMediaDatagramCodec.decode(encoded)
+        let legacyEncoded = try DirectQuicMediaDatagramCodec.encode(
+            .packetAudio(
+                payload: VoiceAudioFramePayloadCodec.encodeBinaryOpus(packet),
+                sequenceNumber: 42,
+                sentAtMilliseconds: 123_456
+            )
+        )
+
+        #expect(encoded.first == 0x54)
+        #expect(encoded.count < legacyEncoded.count)
+        #expect(decoded == .binaryPacketAudio(
+            payload: packetData,
+            sequenceNumber: 42,
+            sentAtMilliseconds: 123_456
+        ))
+    }
+
     @Test func directQuicMediaMessageCodecAcceptsPacketAndControlPayloads() throws {
         let encodedPacket = try DirectQuicMediaDatagramCodec.encode(
             .packetAudio(payload: "encrypted-payload")
+        )
+        let packet = try VoicePacketV1(frameIndex: 2, opusPayload: Data([8, 9, 10]))
+        let encodedBinaryPacket = try DirectQuicMediaDatagramCodec.encode(
+            .binaryPacketAudio(
+                payload: VoicePacketV1Codec.encode(packet),
+                sequenceNumber: 2,
+                sentAtMilliseconds: 333
+            )
         )
         let encodedControl = try DirectQuicWireCodec.encode(.consentAck("ping-1"))
 
         #expect(try DirectQuicMediaMessageCodec.decode(encodedPacket) == .packet(
             .packetAudio(payload: "encrypted-payload")
+        ))
+        #expect(try DirectQuicMediaMessageCodec.decode(encodedBinaryPacket) == .packet(
+            .binaryPacketAudio(
+                payload: VoicePacketV1Codec.encode(packet),
+                sequenceNumber: 2,
+                sentAtMilliseconds: 333
+            )
         ))
         #expect(try DirectQuicMediaMessageCodec.decode(encodedControl) == .control([
             .consentAck("ping-1")
@@ -17315,6 +17394,7 @@ struct ConnectionTests {
         let encoded = VoiceAudioFramePayloadCodec.encodeBinaryOpus(packet)
         let frames = try #require(VoiceAudioFramePayloadCodec.decodeTransportFrames(encoded))
 
+        #expect(VoiceAudioFramePayloadCodec.mayContainOpusFrame(encoded))
         #expect(frames == [.binaryOpusV1(packet)])
     }
 
@@ -17587,6 +17667,35 @@ struct ConnectionTests {
         #expect(lateArrival.interArrivalGapNanoseconds == 140_000_000)
         #expect(lateArrival.targetCushionFrames == 5)
         #expect(engine.metrics().targetDelayMilliseconds == 100)
+    }
+
+    @Test func swiftNetEqPlayoutEngineKeepsBaseDelayForSteadyTransportArrivals() throws {
+        let engine = SwiftNetEqPlayoutEngine()
+        let epoch = VoiceReceiveEpochID(rawValue: 12)
+        let pcm = Data(repeating: 4, count: VoiceFrameAccumulator.bytesPerFrame)
+        let plc = Data(repeating: 0, count: VoiceFrameAccumulator.bytesPerFrame)
+        func packet(_ index: UInt64) throws -> VoicePacketV1 {
+            try VoicePacketV1(frameIndex: index, opusPayload: Data([UInt8(index & 0xFF), 0xAA]))
+        }
+
+        let transportStart = 1_000_000_000 as UInt64
+        engine.reset(epoch: epoch, nowNanoseconds: transportStart)
+        for index in 0...5 {
+            _ = try engine.insert(
+                packet: packet(UInt64(index)),
+                epoch: epoch,
+                playbackProfile: .lowLatency,
+                decode: { _ in pcm },
+                decodeFEC: { _ in pcm },
+                plc: { plc },
+                nowNanoseconds: transportStart + UInt64(index) * VoiceFrameAccumulator.frameDurationNanoseconds
+            )
+        }
+
+        let metrics = engine.metrics()
+        #expect(metrics.targetDelayMilliseconds == 80)
+        #expect(metrics.latePacketCount == 0)
+        #expect(metrics.resyncCount == 0)
     }
 
     @Test func swiftNetEqPlayoutEngineCarriesFastRelayJitterDebtAcrossRapidReceiveEpochs() throws {
@@ -22178,6 +22287,65 @@ struct ConnectionTests {
                     && $0.lastPlaybackDecision == "accepted"
             }
         )
+    }
+
+    @MainActor
+    @Test func liveAudioReceiveExecutorPassesTransportArrivalTimeToPlayback() async throws {
+        let executor = LiveAudioReceiveExecutor()
+        let diagnosticsSink = LiveMediaDiagnosticsSink(reportEverySamples: 1)
+        let ingressExecutor = IncomingAudioIngressExecutor()
+        let recorder = LiveAudioReceiveTestRecorder()
+        let contactID = UUID()
+        let session = BlockingPlaybackMediaSession(blockingNanoseconds: 0)
+        let transportReceivedAtNanoseconds: UInt64 = 1_234_000_000
+        let context = LiveAudioReceiveContext(
+            contactID: contactID,
+            channelID: "channel-123",
+            fromDeviceID: "peer-device",
+            transport: .directQuic,
+            receiveEpoch: 1,
+            session: session,
+            sessionReceiveEpoch: session.currentRemoteAudioReceiveEpoch(),
+            ingressPolicy: IncomingAudioIngressConfiguration(
+                mediaEncryptionRequired: false,
+                mediaEncryptionSession: nil,
+                liveAudioBacklogExpirationNanoseconds: 1_000_000_000,
+                liveAudioSenderClockExpirationMilliseconds: 1_000
+            ),
+            playbackProfile: .lowLatency,
+            playbackDeadlineNanoseconds: nil,
+            ingressExecutor: ingressExecutor
+        )
+
+        await executor.receive(
+            LiveAudioReceivePacket(
+                payload: "fresh-direct-packet",
+                channelID: "channel-123",
+                fromUserID: "peer-user",
+                fromDeviceID: "peer-device",
+                contactID: contactID,
+                transport: .directQuic,
+                transportSequenceNumber: 1,
+                ingressContext: IncomingAudioIngressContext(
+                    receivedAtNanoseconds: transportReceivedAtNanoseconds,
+                    sequenceNumber: 1,
+                    sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                    source: "executor-test"
+                )
+            ),
+            diagnosticsSink: diagnosticsSink,
+            makeContext: { context },
+            fallbackToMainActorReceive: { await recorder.recordFallback() },
+            onFirstPlaybackAccepted: { await recorder.recordAck($0) },
+            onDiagnosticSummary: { await recorder.recordSummary($0) },
+            onDropDiagnostic: { await recorder.recordDrop($0) }
+        )
+
+        #expect(await session.waitForReceivedChunkCount(1))
+        #expect(session.receivedRemoteAudioChunks == ["fresh-direct-packet"])
+        #expect(session.receivedTransportArrivalNanoseconds == [transportReceivedAtNanoseconds])
+        #expect(await recorder.fallbackCount == 0)
+        #expect(await recorder.drops.isEmpty)
     }
 
     @MainActor

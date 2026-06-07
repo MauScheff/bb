@@ -48,6 +48,7 @@ nonisolated private struct PendingRemoteAudioPayload {
     let payload: String
     let playbackProfile: MediaSessionPlaybackProfile
     let playbackDeadlineNanoseconds: UInt64?
+    let transportReceivedAtNanoseconds: UInt64?
 }
 
 nonisolated private struct DecodedCanonicalPCMChunk {
@@ -1038,7 +1039,7 @@ nonisolated enum CaptureSendState: Equatable {
     }
 }
 
-nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @unchecked Sendable {
+nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareMediaSession, @unchecked Sendable {
     static let playbackCompletionCallbackType: AVAudioPlayerNodeCompletionCallbackType = .dataPlayedBack
 
     weak var delegate: MediaSessionDelegate?
@@ -1546,6 +1547,23 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
         expectedReceiveEpoch: UInt64?,
         playbackDeadlineNanoseconds: UInt64?
     ) async -> Bool {
+        await receiveRemoteAudioChunk(
+            payload,
+            playbackProfile: playbackProfile,
+            expectedReceiveEpoch: expectedReceiveEpoch,
+            playbackDeadlineNanoseconds: playbackDeadlineNanoseconds,
+            transportReceivedAtNanoseconds: nil
+        )
+    }
+
+    @discardableResult
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds: UInt64?,
+        transportReceivedAtNanoseconds: UInt64?
+    ) async -> Bool {
         var decodedPayload = true
         var queuedPendingPayloadCount: Int?
         var queuedPendingChunkCount: Int?
@@ -1577,7 +1595,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             PendingRemoteAudioPayload(
                                 payload: payload,
                                 playbackProfile: playbackProfile,
-                                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds
+                                playbackDeadlineNanoseconds: playbackDeadlineNanoseconds,
+                                transportReceivedAtNanoseconds: transportReceivedAtNanoseconds
                             )
                         )
                         queuedPendingPayloadCount = pendingRemoteAudioPayloadCount()
@@ -1587,7 +1606,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                 }
                 guard let decodedResult = decodedCanonicalPCMChunks(
                     from: payload,
-                    playbackProfile: playbackProfile
+                    playbackProfile: playbackProfile,
+                    transportReceivedAtNanoseconds: transportReceivedAtNanoseconds
                 ) else {
                     decodedPayload = false
                     return
@@ -1735,7 +1755,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
 
     private nonisolated func decodedCanonicalPCMChunks(
         from payload: String,
-        playbackProfile: MediaSessionPlaybackProfile
+        playbackProfile: MediaSessionPlaybackProfile,
+        transportReceivedAtNanoseconds: UInt64?
     ) -> DecodedRemoteAudioPayload? {
         guard let frames = VoiceAudioFramePayloadCodec.decodeTransportFrames(payload) else {
             return nil
@@ -1767,7 +1788,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                         decode: { frame in try opusCodec.decode(frame.packet) },
                         decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
                         plc: { opusCodec.decodePLC() },
-                        nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+                        nowNanoseconds: transportReceivedAtNanoseconds
+                            ?? DispatchTime.now().uptimeNanoseconds
                     )
                     reportOpusPlayoutResultIfNeeded(
                         result,
@@ -1782,7 +1804,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             DecodedCanonicalPCMChunk(
                                 data: $0.pcmData,
                                 playbackProfile: playbackProfile,
-                                cushionPolicy: .applySchedulerStartupCushion
+                                cushionPolicy: .alreadyCushioned
                             )
                         }
                     )
@@ -1817,7 +1839,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                         decode: { frame in try opusCodec.decode(frame.packet) },
                         decodeFEC: { frame in try opusCodec.decodeFEC(from: frame.packet) },
                         plc: { opusCodec.decodePLC() },
-                        nowNanoseconds: DispatchTime.now().uptimeNanoseconds
+                        nowNanoseconds: transportReceivedAtNanoseconds
+                            ?? DispatchTime.now().uptimeNanoseconds
                     )
                     reportOpusPlayoutResultIfNeeded(
                         result,
@@ -1832,7 +1855,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
                             DecodedCanonicalPCMChunk(
                                 data: frame.pcmData,
                                 playbackProfile: playbackProfile,
-                                cushionPolicy: .applySchedulerStartupCushion
+                                cushionPolicy: .alreadyCushioned
                             )
                         }
                     )
@@ -3017,7 +3040,8 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: MediaSession, @uncheck
             }
             guard let decodedResult = decodedCanonicalPCMChunks(
                 from: payload.payload,
-                playbackProfile: payload.playbackProfile
+                playbackProfile: payload.playbackProfile,
+                transportReceivedAtNanoseconds: payload.transportReceivedAtNanoseconds
             ) else {
                 Task {
                     await report(

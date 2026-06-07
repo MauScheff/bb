@@ -660,6 +660,11 @@ nonisolated enum DirectQuicMediaDatagramFrame: Codable, Equatable, Sendable {
         sequenceNumber: UInt64? = nil,
         sentAtMilliseconds: Int64? = nil
     )
+    case binaryPacketAudio(
+        payload: Data,
+        sequenceNumber: UInt64,
+        sentAtMilliseconds: Int64
+    )
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -680,6 +685,11 @@ nonisolated enum DirectQuicMediaDatagramFrame: Codable, Equatable, Sendable {
             try container.encode(payload, forKey: .payload)
             try container.encodeIfPresent(sequenceNumber, forKey: .sequenceNumber)
             try container.encodeIfPresent(sentAtMilliseconds, forKey: .sentAtMilliseconds)
+        case .binaryPacketAudio(let payload, let sequenceNumber, let sentAtMilliseconds):
+            try container.encode(FrameType.packetAudio, forKey: .type)
+            try container.encode(payload.base64EncodedString(), forKey: .payload)
+            try container.encode(sequenceNumber, forKey: .sequenceNumber)
+            try container.encode(sentAtMilliseconds, forKey: .sentAtMilliseconds)
         }
     }
 
@@ -717,13 +727,128 @@ nonisolated struct DirectQuicIncomingAudioPayload: Equatable, Sendable {
 
 nonisolated enum DirectQuicMediaDatagramCodec {
     static let maximumDatagramFrameSize = 4_096
+    private static let binaryMagic = Data([0x54, 0x51, 0x44, 0x31])
+    private static let binaryVersion: UInt8 = 1
+    private static let binaryPacketAudioType: UInt8 = 1
+    private static let binaryHeaderLength = 28
 
     static func encode(_ frame: DirectQuicMediaDatagramFrame) throws -> Data {
-        try JSONEncoder().encode(frame)
+        if case .binaryPacketAudio(let payload, let sequenceNumber, let sentAtMilliseconds) = frame {
+            return try encodeBinaryPacketAudio(
+                payload: payload,
+                sequenceNumber: sequenceNumber,
+                sentAtMilliseconds: sentAtMilliseconds
+            )
+        }
+        return try JSONEncoder().encode(frame)
     }
 
     static func decode(_ data: Data) throws -> DirectQuicMediaDatagramFrame {
-        try JSONDecoder().decode(DirectQuicMediaDatagramFrame.self, from: data)
+        if data.prefix(binaryMagic.count) == binaryMagic {
+            return try decodeBinaryPacketAudio(data)
+        }
+        return try JSONDecoder().decode(DirectQuicMediaDatagramFrame.self, from: data)
+    }
+
+    private static func encodeBinaryPacketAudio(
+        payload: Data,
+        sequenceNumber: UInt64,
+        sentAtMilliseconds: Int64
+    ) throws -> Data {
+        guard payload.count <= UInt16.max else {
+            throw DirectQuicProbeError.proofFailed(
+                "direct QUIC binary packet payload exceeded UInt16 length: \(payload.count)"
+            )
+        }
+        var data = Data()
+        data.reserveCapacity(binaryHeaderLength + payload.count)
+        data.append(binaryMagic)
+        data.append(binaryVersion)
+        data.append(binaryPacketAudioType)
+        data.appendDirectQuicBigEndian(UInt16(binaryHeaderLength))
+        data.appendDirectQuicBigEndian(sequenceNumber)
+        data.appendDirectQuicBigEndian(UInt64(bitPattern: sentAtMilliseconds))
+        data.appendDirectQuicBigEndian(UInt16(payload.count))
+        data.append(contentsOf: [0, 0])
+        data.append(payload)
+        return data
+    }
+
+    private static func decodeBinaryPacketAudio(_ data: Data) throws -> DirectQuicMediaDatagramFrame {
+        guard data.count >= binaryHeaderLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "direct QUIC binary datagram too short: \(data.count)"
+            )
+        }
+        let version = data[directQuicRelativeOffset: 4]
+        guard version == binaryVersion else {
+            throw DirectQuicProbeError.proofFailed(
+                "unsupported direct QUIC binary datagram version: \(version)"
+            )
+        }
+        let frameType = data[directQuicRelativeOffset: 5]
+        guard frameType == binaryPacketAudioType else {
+            throw DirectQuicProbeError.proofFailed(
+                "unsupported direct QUIC binary datagram type: \(frameType)"
+            )
+        }
+        let headerLength = Int(data.readDirectQuicUInt16BigEndian(at: 6))
+        guard headerLength == binaryHeaderLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "invalid direct QUIC binary datagram header length: \(headerLength)"
+            )
+        }
+        let sequenceNumber = data.readDirectQuicUInt64BigEndian(at: 8)
+        let sentAtMilliseconds = Int64(bitPattern: data.readDirectQuicUInt64BigEndian(at: 16))
+        let payloadLength = Int(data.readDirectQuicUInt16BigEndian(at: 24))
+        guard data[directQuicRelativeOffset: 26] == 0,
+              data[directQuicRelativeOffset: 27] == 0 else {
+            throw DirectQuicProbeError.proofFailed(
+                "direct QUIC binary datagram reserved bytes must be zero"
+            )
+        }
+        let actualPayloadLength = data.count - binaryHeaderLength
+        guard payloadLength == actualPayloadLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "direct QUIC binary datagram payload length mismatch: \(payloadLength) != \(actualPayloadLength)"
+            )
+        }
+        return .binaryPacketAudio(
+            payload: Data(data.suffix(actualPayloadLength)),
+            sequenceNumber: sequenceNumber,
+            sentAtMilliseconds: sentAtMilliseconds
+        )
+    }
+}
+
+private extension Data {
+    nonisolated subscript(directQuicRelativeOffset relativeOffset: Int) -> UInt8 {
+        self[index(startIndex, offsetBy: relativeOffset)]
+    }
+
+    nonisolated mutating func appendDirectQuicBigEndian(_ value: UInt16) {
+        append(UInt8((value >> 8) & 0xFF))
+        append(UInt8(value & 0xFF))
+    }
+
+    nonisolated mutating func appendDirectQuicBigEndian(_ value: UInt64) {
+        for shift in stride(from: 56, through: 0, by: -8) {
+            append(UInt8((value >> shift) & 0xFF))
+        }
+    }
+
+    nonisolated func readDirectQuicUInt16BigEndian(at relativeOffset: Int) -> UInt16 {
+        let high = UInt16(self[directQuicRelativeOffset: relativeOffset])
+        let low = UInt16(self[directQuicRelativeOffset: relativeOffset + 1])
+        return (high << 8) | low
+    }
+
+    nonisolated func readDirectQuicUInt64BigEndian(at relativeOffset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for offset in relativeOffset ..< relativeOffset + 8 {
+            value = (value << 8) | UInt64(self[directQuicRelativeOffset: offset])
+        }
+        return value
     }
 }
 
@@ -843,6 +968,13 @@ nonisolated enum TurboMediaRelayFrame: Codable, Equatable, Sendable {
         sentAtMs: Int64,
         payload: String
     )
+    case binaryPacketAudio(
+        sessionId: String,
+        senderDeviceId: String,
+        sequenceNumber: UInt64,
+        sentAtMs: Int64,
+        payload: Data
+    )
     case tcpAudio(
         sessionId: String,
         senderDeviceId: String,
@@ -918,6 +1050,13 @@ nonisolated enum TurboMediaRelayFrame: Codable, Equatable, Sendable {
             try container.encode(sequenceNumber, forKey: .sequenceNumber)
             try container.encode(sentAtMs, forKey: .sentAtMs)
             try container.encode(payload, forKey: .payload)
+        case .binaryPacketAudio(let sessionId, let senderDeviceId, let sequenceNumber, let sentAtMs, let payload):
+            try container.encode(FrameType.packetAudio, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(senderDeviceId, forKey: .senderDeviceId)
+            try container.encode(sequenceNumber, forKey: .sequenceNumber)
+            try container.encode(sentAtMs, forKey: .sentAtMs)
+            try container.encode(payload.base64EncodedString(), forKey: .payload)
         case .tcpAudio(let sessionId, let senderDeviceId, let sequenceNumber, let sentAtMs, let payload):
             try container.encode(FrameType.tcpAudio, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
@@ -1027,13 +1166,131 @@ nonisolated enum TurboMediaRelayCodec {
 
 nonisolated enum TurboMediaRelayDatagramCodec {
     static let maximumDatagramFrameSize = 4_096
+    private static let binaryMagic = Data([0x54, 0x52, 0x44, 0x31])
+    private static let binaryVersion: UInt8 = 1
+    private static let binaryPacketAudioType: UInt8 = 1
+    private static let binaryHeaderLength = 32
 
     static func encode(_ frame: TurboMediaRelayFrame) throws -> Data {
-        try JSONEncoder().encode(frame)
+        if case .binaryPacketAudio(
+            let sessionId,
+            let senderDeviceId,
+            let sequenceNumber,
+            let sentAtMs,
+            let payload
+        ) = frame {
+            return try encodeBinaryPacketAudio(
+                sessionId: sessionId,
+                senderDeviceId: senderDeviceId,
+                sequenceNumber: sequenceNumber,
+                sentAtMs: sentAtMs,
+                payload: payload
+            )
+        }
+        return try JSONEncoder().encode(frame)
     }
 
     static func decode(_ data: Data) throws -> TurboMediaRelayFrame {
-        try JSONDecoder().decode(TurboMediaRelayFrame.self, from: data)
+        if data.prefix(binaryMagic.count) == binaryMagic {
+            return try decodeBinaryPacketAudio(data)
+        }
+        return try JSONDecoder().decode(TurboMediaRelayFrame.self, from: data)
+    }
+
+    private static func encodeBinaryPacketAudio(
+        sessionId: String,
+        senderDeviceId: String,
+        sequenceNumber: UInt64,
+        sentAtMs: Int64,
+        payload: Data
+    ) throws -> Data {
+        guard let sessionData = sessionId.data(using: .utf8),
+              let senderData = senderDeviceId.data(using: .utf8) else {
+            throw DirectQuicProbeError.proofFailed("media relay binary packet identity was not UTF-8")
+        }
+        guard sessionData.count <= UInt16.max,
+              senderData.count <= UInt16.max,
+              payload.count <= UInt16.max else {
+            throw DirectQuicProbeError.proofFailed(
+                "media relay binary packet field exceeded UInt16 length"
+            )
+        }
+        var data = Data()
+        data.reserveCapacity(binaryHeaderLength + sessionData.count + senderData.count + payload.count)
+        data.append(binaryMagic)
+        data.append(binaryVersion)
+        data.append(binaryPacketAudioType)
+        data.appendDirectQuicBigEndian(UInt16(binaryHeaderLength))
+        data.appendDirectQuicBigEndian(sequenceNumber)
+        data.appendDirectQuicBigEndian(UInt64(bitPattern: sentAtMs))
+        data.appendDirectQuicBigEndian(UInt16(sessionData.count))
+        data.appendDirectQuicBigEndian(UInt16(senderData.count))
+        data.appendDirectQuicBigEndian(UInt16(payload.count))
+        data.append(contentsOf: [0, 0])
+        data.append(sessionData)
+        data.append(senderData)
+        data.append(payload)
+        return data
+    }
+
+    private static func decodeBinaryPacketAudio(_ data: Data) throws -> TurboMediaRelayFrame {
+        guard data.count >= binaryHeaderLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "media relay binary datagram too short: \(data.count)"
+            )
+        }
+        let version = data[directQuicRelativeOffset: 4]
+        guard version == binaryVersion else {
+            throw DirectQuicProbeError.proofFailed(
+                "unsupported media relay binary datagram version: \(version)"
+            )
+        }
+        let frameType = data[directQuicRelativeOffset: 5]
+        guard frameType == binaryPacketAudioType else {
+            throw DirectQuicProbeError.proofFailed(
+                "unsupported media relay binary datagram type: \(frameType)"
+            )
+        }
+        let headerLength = Int(data.readDirectQuicUInt16BigEndian(at: 6))
+        guard headerLength == binaryHeaderLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "invalid media relay binary datagram header length: \(headerLength)"
+            )
+        }
+        let sequenceNumber = data.readDirectQuicUInt64BigEndian(at: 8)
+        let sentAtMs = Int64(bitPattern: data.readDirectQuicUInt64BigEndian(at: 16))
+        let sessionLength = Int(data.readDirectQuicUInt16BigEndian(at: 24))
+        let senderLength = Int(data.readDirectQuicUInt16BigEndian(at: 26))
+        let payloadLength = Int(data.readDirectQuicUInt16BigEndian(at: 28))
+        guard data[directQuicRelativeOffset: 30] == 0,
+              data[directQuicRelativeOffset: 31] == 0 else {
+            throw DirectQuicProbeError.proofFailed(
+                "media relay binary datagram reserved bytes must be zero"
+            )
+        }
+        let expectedLength = binaryHeaderLength + sessionLength + senderLength + payloadLength
+        guard data.count == expectedLength else {
+            throw DirectQuicProbeError.proofFailed(
+                "media relay binary datagram length mismatch: \(data.count) != \(expectedLength)"
+            )
+        }
+        var offset = binaryHeaderLength
+        let sessionData = data.subdata(in: offset ..< offset + sessionLength)
+        offset += sessionLength
+        let senderData = data.subdata(in: offset ..< offset + senderLength)
+        offset += senderLength
+        let payload = data.subdata(in: offset ..< offset + payloadLength)
+        guard let sessionId = String(data: sessionData, encoding: .utf8),
+              let senderDeviceId = String(data: senderData, encoding: .utf8) else {
+            throw DirectQuicProbeError.proofFailed("media relay binary packet identity was not UTF-8")
+        }
+        return .binaryPacketAudio(
+            sessionId: sessionId,
+            senderDeviceId: senderDeviceId,
+            sequenceNumber: sequenceNumber,
+            sentAtMs: sentAtMs,
+            payload: payload
+        )
     }
 }
 
@@ -1179,13 +1436,24 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     func sendAudioPayload(_ payload: String) async throws -> TurboMediaRelayMediaMode {
         let sequenceNumber = nextSequenceNumber()
         let sentAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
-        let packetFrame = TurboMediaRelayFrame.packetAudio(
-            sessionId: sessionId,
-            senderDeviceId: localDeviceId,
-            sequenceNumber: sequenceNumber,
-            sentAtMs: sentAtMs,
-            payload: payload
-        )
+        let packetFrame: TurboMediaRelayFrame
+        if let binaryPacketPayload = VoiceAudioFramePayloadCodec.singleBinaryOpusPacketData(payload) {
+            packetFrame = .binaryPacketAudio(
+                sessionId: sessionId,
+                senderDeviceId: localDeviceId,
+                sequenceNumber: sequenceNumber,
+                sentAtMs: sentAtMs,
+                payload: binaryPacketPayload
+            )
+        } else {
+            packetFrame = .packetAudio(
+                sessionId: sessionId,
+                senderDeviceId: localDeviceId,
+                sequenceNumber: sequenceNumber,
+                sentAtMs: sentAtMs,
+                payload: payload
+            )
+        }
         let tcpFrame = TurboMediaRelayFrame.tcpAudio(
             sessionId: sessionId,
             senderDeviceId: localDeviceId,
@@ -1993,6 +2261,32 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                         self.enqueueIncomingAudioPayload(
                             TurboMediaRelayIncomingAudioPayload(
                                 payload: payload,
+                                mediaMode: .quicDatagram,
+                                sequenceNumber: sequenceNumber,
+                                sentAtMilliseconds: sentAtMs,
+                                receivedAtNanoseconds: receivedAtNanoseconds
+                            )
+                        )
+                    case .binaryPacketAudio(_, let senderDeviceId, let sequenceNumber, let sentAtMs, let payload):
+                        guard senderDeviceId == self.peerDeviceId else {
+                            Task {
+                                await self.report(
+                                    "Ignored media relay binary packet audio from unexpected peer",
+                                    metadata: self.baseMetadata().merging(
+                                        [
+                                            "senderDeviceId": senderDeviceId,
+                                            "sequenceNumber": String(sequenceNumber),
+                                        ],
+                                        uniquingKeysWith: { _, new in new }
+                                    )
+                                )
+                            }
+                            break
+                        }
+                        self.clearPeerUnavailable()
+                        self.enqueueIncomingAudioPayload(
+                            TurboMediaRelayIncomingAudioPayload(
+                                payload: VoiceAudioFramePayloadCodec.encodeBinaryOpusData(payload),
                                 mediaMode: .quicDatagram,
                                 sequenceNumber: sequenceNumber,
                                 sentAtMilliseconds: sentAtMs,
@@ -3071,12 +3365,22 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
         }
         let sequenceNumber = nextDirectAudioSequenceNumber()
         let sentAtMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
-        try await sendLiveAudioDatagram(
-            .packetAudio(
+        let frame: DirectQuicMediaDatagramFrame
+        if let binaryPacketPayload = VoiceAudioFramePayloadCodec.singleBinaryOpusPacketData(payload) {
+            frame = .binaryPacketAudio(
+                payload: binaryPacketPayload,
+                sequenceNumber: sequenceNumber,
+                sentAtMilliseconds: sentAtMilliseconds
+            )
+        } else {
+            frame = .packetAudio(
                 payload: payload,
                 sequenceNumber: sequenceNumber,
                 sentAtMilliseconds: sentAtMilliseconds
-            ),
+            )
+        }
+        try await sendLiveAudioDatagram(
+            frame,
             on: connection,
             waitsForProcessing: Self.liveAudioDatagramWaitsForProcessing
         )
@@ -3990,6 +4294,15 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
                         self.notifyLivenessConfirmed("packet-audio-received")
                         let incomingPayload = DirectQuicIncomingAudioPayload(
                             payload: payload,
+                            datagramReceivedAtNanoseconds: datagramReceivedAtNanoseconds,
+                            sequenceNumber: sequenceNumber,
+                            sentAtMilliseconds: sentAtMilliseconds
+                        )
+                        self.enqueueIncomingAudioPayload(incomingPayload)
+                    case .packet(.binaryPacketAudio(let payload, let sequenceNumber, let sentAtMilliseconds)):
+                        self.notifyLivenessConfirmed("binary-packet-audio-received")
+                        let incomingPayload = DirectQuicIncomingAudioPayload(
+                            payload: VoiceAudioFramePayloadCodec.encodeBinaryOpusData(payload),
                             datagramReceivedAtNanoseconds: datagramReceivedAtNanoseconds,
                             sequenceNumber: sequenceNumber,
                             sentAtMilliseconds: sentAtMilliseconds

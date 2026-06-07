@@ -366,6 +366,20 @@ nonisolated enum VoiceAudioFramePayloadCodec {
         VoicePacketV1Codec.encode(packet).base64EncodedString()
     }
 
+    static func encodeBinaryOpusData(_ data: Data) -> String {
+        data.base64EncodedString()
+    }
+
+    static func singleBinaryOpusPacketData(_ payload: String) -> Data? {
+        let chunks = AudioChunkPayloadCodec.decode(payload)
+        guard chunks.count == 1,
+              let data = Data(base64Encoded: chunks[0]),
+              (try? VoicePacketV1Codec.decode(data)) != nil else {
+            return nil
+        }
+        return data
+    }
+
     static func decode(_ payload: String) -> VoiceOpusFramePayload? {
         guard payload.first == "{",
               let data = payload.data(using: .utf8),
@@ -389,7 +403,18 @@ nonisolated enum VoiceAudioFramePayloadCodec {
     }
 
     static func mayContainOpusFrame(_ payload: String) -> Bool {
-        payload.contains(kind) && payload.contains(VoiceMediaCapabilities.opusCodec)
+        for chunk in AudioChunkPayloadCodec.decode(payload) {
+            if decode(chunk) != nil {
+                return true
+            }
+            guard let data = Data(base64Encoded: chunk) else {
+                continue
+            }
+            if (try? VoicePacketV1Codec.decode(data)) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     static func decodeTransportFrames(_ payload: String) -> [VoiceAudioTransportFrame]? {

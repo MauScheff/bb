@@ -296,6 +296,18 @@ protocol MediaSession: AnyObject {
     func close(deactivateAudioSession: Bool)
 }
 
+protocol TransportArrivalAwareMediaSession: MediaSession {
+    @discardableResult
+    nonisolated
+    func receiveRemoteAudioChunk(
+        _ payload: String,
+        playbackProfile: MediaSessionPlaybackProfile,
+        expectedReceiveEpoch: UInt64?,
+        playbackDeadlineNanoseconds: UInt64?,
+        transportReceivedAtNanoseconds: UInt64?
+    ) async -> Bool
+}
+
 extension MediaSession {
     nonisolated var receivePlaybackReadiness: MediaSessionReceivePlaybackReadiness {
         switch state {
