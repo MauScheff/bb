@@ -24310,7 +24310,7 @@ struct ConnectionTests {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
-        let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 350_000_000)
+        let mediaSession = BlockingPlaybackMediaSession(blockingNanoseconds: 700_000_000)
         viewModel.applicationStateOverride = .active
         viewModel.isPTTAudioSessionActive = true
         viewModel.directQuicIncomingAudioQueueDelayViolationNanoseconds = 250_000_000
@@ -24374,7 +24374,7 @@ struct ConnectionTests {
             )
         )
 
-        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 300_000_000))
+        #expect(await mediaSession.waitForReceivedChunkCount(2, timeoutNanoseconds: 250_000_000))
         #expect(mediaSession.receivedRemoteAudioChunks == ["AQI=", "AwQ="])
         #expect(mediaSession.receivedOnMainThread == [false, false])
         #expect(

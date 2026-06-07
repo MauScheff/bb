@@ -2314,7 +2314,7 @@ private actor LiveAudioReceivePostAdmissionExecutor {
 }
 
 private actor LiveAudioPlaybackExecutor {
-    func play(
+    nonisolated func play(
         _ admittedPacket: IncomingAudioIngressAcceptedPacket,
         context: LiveAudioReceiveContext
     ) async -> Bool {
