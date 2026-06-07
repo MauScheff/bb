@@ -1396,10 +1396,7 @@ extension PTTViewModel {
                                 let deliveredTransport = IncomingAudioPayloadTransport(
                                     mediaRelayMediaMode: mediaMode
                                 ).diagnosticsValue
-                                let expectedAckTransports =
-                                    mediaMode == .tcpOrdered
-                                    ? [deliveredTransport, "relay-websocket"]
-                                    : [deliveredTransport]
+                                let expectedAckTransports = [deliveredTransport, "relay-websocket"]
                                 scheduleLocalAudioCapturedSync(transportPayload)
                                 await MainActor.run {
                                     _ = self.noteFirstOutboundAudioPayloadQueuedIfNeeded(
@@ -1408,18 +1405,19 @@ extension PTTViewModel {
                                         deliveredTransports: expectedAckTransports
                                     )
                                 }
-                                if mediaMode == .tcpOrdered {
-                                    do {
-                                        try await relaySend()
-                                    } catch is CancellationError {
-                                        throw CancellationError()
-                                    } catch {
-                                        recordMediaRelayTcpContinuityFailure(
-                                            "Media relay TCP WebSocket continuity send failed",
-                                            "forced-media-relay-tcp",
-                                            error
-                                        )
-                                    }
+                                do {
+                                    try await relaySend()
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch {
+                                    let reason = mediaMode == .tcpOrdered
+                                        ? "forced-media-relay-tcp"
+                                        : "forced-media-relay-packet"
+                                    recordMediaRelayTcpContinuityFailure(
+                                        "Media relay WebSocket continuity send failed",
+                                        reason,
+                                        error
+                                    )
                                 }
                                 return
                             } catch is CancellationError {
@@ -1477,7 +1475,7 @@ extension PTTViewModel {
 
                 var deliveredTransports: [String] = []
                 var deliveryFailures: [(transport: String, error: Error)] = []
-                var shouldShadowMediaRelayTcpOverWebSocket = false
+                var shouldShadowMediaRelayOverWebSocket = false
                 let directTransport = directTransportForAudioSend
                 var prearmedDirectAckExpectation = false
                 var directAckPrearmTask: Task<Void, Never>?
@@ -1631,7 +1629,8 @@ extension PTTViewModel {
                                 mediaRelayMediaMode: mediaMode
                             ).diagnosticsValue
                             deliveredTransports.append(deliveredTransport)
-                            shouldShadowMediaRelayTcpOverWebSocket = mediaMode == .tcpOrdered
+                            shouldShadowMediaRelayOverWebSocket =
+                                mediaMode == .tcpOrdered || mediaMode == .quicDatagram
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
@@ -1710,7 +1709,7 @@ extension PTTViewModel {
                 if !deliveredTransports.isEmpty {
                     let expectedAckTransportsSnapshot: [String] = {
                         var transports = deliveredTransports
-                        if shouldShadowMediaRelayTcpOverWebSocket,
+                        if shouldShadowMediaRelayOverWebSocket,
                            !transports.contains("relay-websocket") {
                             transports.append("relay-websocket")
                         }
@@ -1734,15 +1733,18 @@ extension PTTViewModel {
                             )
                         }
                     }
-                    if shouldShadowMediaRelayTcpOverWebSocket {
+                    if shouldShadowMediaRelayOverWebSocket {
                         do {
                             try await relaySend()
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
+                            let reason = deliveredTransports.contains("media-relay-tcp")
+                                ? "media-relay-tcp-standby"
+                                : "media-relay-packet-standby"
                             recordMediaRelayTcpContinuityFailure(
-                                "Media relay TCP WebSocket continuity send failed",
-                                "media-relay-tcp-standby",
+                                "Media relay WebSocket continuity send failed",
+                                reason,
                                 error
                             )
                         }
