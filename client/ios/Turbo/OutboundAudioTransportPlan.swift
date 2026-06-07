@@ -10,12 +10,10 @@ nonisolated enum OutboundAudioTransportLane: String, Equatable, Sendable {
 nonisolated enum OutboundAudioDirectQuicRole: String, Equatable, Sendable {
     case verifiedPrimary
     case unverifiedPrimary
-    case shadowAfterStandbyRelay
 }
 
 nonisolated enum OutboundAudioMediaRelayRole: String, Equatable, Sendable {
     case primary
-    case primaryBeforeUnverifiedDirect
     case standbyAfterUnverifiedDirect
     case tcpContinuity
 }
@@ -31,7 +29,7 @@ nonisolated enum OutboundAudioTransportAttempt: Equatable, Sendable {
             return .directQuic
         case .mediaRelay(let role):
             switch role {
-            case .primary, .primaryBeforeUnverifiedDirect, .standbyAfterUnverifiedDirect:
+            case .primary, .standbyAfterUnverifiedDirect:
                 return .mediaRelayPacket
             case .tcpContinuity:
                 return .mediaRelayTcp
@@ -44,13 +42,6 @@ nonisolated enum OutboundAudioTransportAttempt: Equatable, Sendable {
 
 nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
     let attempts: [OutboundAudioTransportAttempt]
-
-    var startsWithStandbyRelayBeforeUnverifiedDirect: Bool {
-        attempts.prefix(2) == [
-            .mediaRelay(.primaryBeforeUnverifiedDirect),
-            .directQuic(.shadowAfterStandbyRelay),
-        ]
-    }
 
     var attemptsDirectQuic: Bool {
         attempts.contains {
@@ -87,8 +78,8 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
            !standbyRelayIsTCPContinuity,
            !legacyPCMRequiresWebSocketRelay {
             return OutboundAudioTransportPlan(attempts: [
-                .mediaRelay(.primaryBeforeUnverifiedDirect),
-                .directQuic(.shadowAfterStandbyRelay),
+                .directQuic(.unverifiedPrimary),
+                .mediaRelay(.standbyAfterUnverifiedDirect),
                 .relayWebSocketFallback,
             ])
         }

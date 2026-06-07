@@ -391,15 +391,20 @@ extension PTTViewModel {
             )
             return
         }
+        let channelID = attempt.channelID
+        let fromDeviceID = attempt.peerDeviceID ?? "direct-quic"
+        let fromUserID = contacts.first(where: { $0.id == contactID })?.remoteUserId ?? ""
 
         do {
             try await controller.activateMediaTransport(
                 onIncomingAudioPayload: { [weak self] payload in
                     guard let self, !Task.isCancelled else { return }
-                    await self.handleIncomingDirectQuicAudioPayload(
+                    await self.handleIncomingDirectQuicPacketAudioPayload(
                         payload,
                         contactID: contactID,
-                        attemptID: attemptID
+                        channelID: channelID,
+                        fromUserID: fromUserID,
+                        fromDeviceID: fromDeviceID
                     )
                 },
                 onExpiredIncomingAudioPayload: { [weak self] payload, localQueueDelayNanoseconds, thresholdNanoseconds in
@@ -407,8 +412,8 @@ extension PTTViewModel {
                     await self.handleExpiredDirectQuicIncomingAudioPayloadBeforeAppHandler(
                         payload,
                         contactID: contactID,
-                        channelID: attempt.channelID,
-                        peerDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                        channelID: channelID,
+                        peerDeviceID: fromDeviceID,
                         localQueueDelayNanoseconds: localQueueDelayNanoseconds,
                         thresholdNanoseconds: thresholdNanoseconds
                     )
@@ -1362,6 +1367,33 @@ extension PTTViewModel {
         )
     }
 
+    nonisolated func handleIncomingDirectQuicPacketAudioPayload(
+        _ incomingPayload: DirectQuicIncomingAudioPayload,
+        contactID: UUID,
+        channelID: String,
+        fromUserID: String,
+        fromDeviceID: String,
+        expectedReceiveEpoch: UInt64? = nil
+    ) async {
+        guard !Task.isCancelled else { return }
+        await handleIncomingLiveAudioPayload(
+            incomingPayload.payload,
+            channelID: channelID,
+            fromUserID: fromUserID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingAudioTransport: .directQuic,
+            transportSequenceNumber: incomingPayload.sequenceNumber,
+            expectedReceiveEpoch: expectedReceiveEpoch,
+            ingressContext: IncomingAudioIngressContext(
+                receivedAtNanoseconds: incomingPayload.datagramReceivedAtNanoseconds,
+                sequenceNumber: incomingPayload.sequenceNumber,
+                sentAtMilliseconds: incomingPayload.sentAtMilliseconds,
+                source: "direct-quic"
+            )
+        )
+    }
+
     func handleIncomingDirectQuicAudioPayload(
         _ incomingPayload: DirectQuicIncomingAudioPayload,
         contactID: UUID,
@@ -1431,43 +1463,42 @@ extension PTTViewModel {
             directQuicIncomingAudioLiveBacklogDropNanoseconds,
             incomingLiveAudioBacklogExpirationNanoseconds
         )
-        let payloadContainsOpusFrame = VoiceAudioFramePayloadCodec
-            .mayContainOpusFrame(incomingPayload.payload)
         if liveBacklogDropThresholdNanoseconds > 0,
-           localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds,
-           !payloadContainsOpusFrame {
-            recordDirectQuicIncomingAudioQueueDelayIfNeeded(
-                contactID: contactID,
-                channelID: attempt.channelID,
-                attemptID: attemptID,
-                timingMetadata: timingMetadata,
-                thresholdNanoseconds: liveBacklogDropThresholdNanoseconds,
-                action: "dropped-expired-live-backlog"
-            )
-            recordIncomingAudioIngressSummaryIfNeeded(
-                contactID: contactID,
-                channelID: attempt.channelID,
-                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
-                incomingAudioTransport: .directQuic,
-                sequenceNumber: incomingPayload.sequenceNumber,
-                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
-                senderSentAtMilliseconds: incomingPayload.sentAtMilliseconds,
-                freshnessDecision: "dropped-expired-live-backlog",
-                playbackAccepted: false,
-                source: "direct-quic"
-            )
-            resetDirectQuicReceiveEpochAfterExpiredLiveBacklogIfNeeded(
-                contactID: contactID,
-                channelID: attempt.channelID,
-                attemptID: attemptID,
-                fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
-                sequenceNumber: incomingPayload.sequenceNumber,
-                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
-                thresholdNanoseconds: liveBacklogDropThresholdNanoseconds
-            )
-            return
-        } else if liveBacklogDropThresholdNanoseconds > 0,
-                  localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
+           localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
+            let payloadContainsOpusFrame = VoiceAudioFramePayloadCodec
+                .mayContainOpusFrame(incomingPayload.payload)
+            guard payloadContainsOpusFrame else {
+                recordDirectQuicIncomingAudioQueueDelayIfNeeded(
+                    contactID: contactID,
+                    channelID: attempt.channelID,
+                    attemptID: attemptID,
+                    timingMetadata: timingMetadata,
+                    thresholdNanoseconds: liveBacklogDropThresholdNanoseconds,
+                    action: "dropped-expired-live-backlog"
+                )
+                recordIncomingAudioIngressSummaryIfNeeded(
+                    contactID: contactID,
+                    channelID: attempt.channelID,
+                    fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                    incomingAudioTransport: .directQuic,
+                    sequenceNumber: incomingPayload.sequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    senderSentAtMilliseconds: incomingPayload.sentAtMilliseconds,
+                    freshnessDecision: "dropped-expired-live-backlog",
+                    playbackAccepted: false,
+                    source: "direct-quic"
+                )
+                resetDirectQuicReceiveEpochAfterExpiredLiveBacklogIfNeeded(
+                    contactID: contactID,
+                    channelID: attempt.channelID,
+                    attemptID: attemptID,
+                    fromDeviceID: attempt.peerDeviceID ?? "direct-quic",
+                    sequenceNumber: incomingPayload.sequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    thresholdNanoseconds: liveBacklogDropThresholdNanoseconds
+                )
+                return
+            }
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(
                 contactID: contactID,
                 channelID: attempt.channelID,

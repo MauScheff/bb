@@ -181,6 +181,10 @@ extension PTTViewModel {
 
     func shouldUseDirectQuicAudioTransport(for contactID: UUID) -> Bool {
         guard shouldUseDirectQuicTransport(for: contactID) else { return false }
+        if currentApplicationState() == .active,
+           selectedChannelSnapshot(for: contactID)?.remoteAudioReadyForLiveTransmit == true {
+            return true
+        }
         let maximumAge = TimeInterval(directQuicAudioFreshnessMilliseconds) / 1_000
         return mediaRuntime.receiverPrewarmRequestIsAcknowledged(
             for: contactID,

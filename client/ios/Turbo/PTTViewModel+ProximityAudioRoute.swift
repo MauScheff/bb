@@ -97,6 +97,14 @@ extension PTTViewModel {
 
     func applyAutomaticAudioRouteForProximity(reason: String) {
         guard proximityMonitoringIsActive else { return }
+        guard !shouldDeferAutomaticAudioRouteForLiveReceive() else {
+            recordDeferredLiveReceiveAudioRouteRefresh(
+                source: "automatic-proximity",
+                contactID: selectedContactId,
+                reason: reason
+            )
+            return
+        }
 
         if isPhoneNearEar {
             if automaticAudioRouteBasePreference == nil {
@@ -120,5 +128,20 @@ extension PTTViewModel {
             persist: false,
             reason: "proximity-away:\(reason)"
         )
+    }
+
+    func shouldDeferAutomaticAudioRouteForLiveReceive() -> Bool {
+        receiveExecutionCoordinator.state.remoteActivityByContactID.values.contains { activityState in
+            switch activityState.phase {
+            case .prepared, .awaitingFirstAudioChunk, .receivingAudio, .drainingAudio:
+                return true
+            }
+        }
+    }
+
+    func reconcileAutomaticAudioRouteAfterLiveReceiveIfNeeded(reason: String) {
+        guard proximityMonitoringIsActive else { return }
+        guard !shouldDeferAutomaticAudioRouteForLiveReceive() else { return }
+        applyAutomaticAudioRouteForProximity(reason: "live-receive-ended:\(reason)")
     }
 }

@@ -2246,7 +2246,10 @@ private enum EngineReducer {
         case .event(.backend(.joined(let joined))):
             next.conversation = .joined(joined)
             next.transport = transportPhase(for: joined.readiness)
-            next.transportSelection = TransportSelection(legacyPhase: next.transport)
+            next.transportSelection = TransportSelection(
+                legacyPhase: next.transport,
+                networkPathGeneration: next.transportSelection.networkPathGeneration
+            )
             applyReceiverAddressability(
                 joined.receiverAddressability,
                 state: &next,

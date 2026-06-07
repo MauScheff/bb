@@ -1453,6 +1453,7 @@ actor LiveAudioReceiveExecutor {
 
     private struct ReceiveAuthorityState {
         var transport: IncomingAudioPayloadTransport
+        var lastAcceptedAtNanoseconds: UInt64
     }
 
     private struct PendingPlaybackKey: Hashable {
@@ -1481,6 +1482,7 @@ actor LiveAudioReceiveExecutor {
         case standby(authoritativeTransport: IncomingAudioPayloadTransport)
     }
 
+    private static let receiveAuthorityFreshnessLeaseNanoseconds: UInt64 = 300_000_000
     private static let maximumPendingPlaybackPacketsPerKey = 96
     private static let playbackReadinessPollNanoseconds: UInt64 = 20_000_000
     private static let packetPrePlaybackReadinessGraceNanoseconds: UInt64 = 2_000_000_000
@@ -1702,17 +1704,43 @@ actor LiveAudioReceiveExecutor {
     ) -> ReceiveAuthorityDecision {
         let key = receiveAuthorityKey(for: packet, context: context)
         guard let existing = receiveAuthorityByKey[key] else {
-            receiveAuthorityByKey[key] = ReceiveAuthorityState(transport: packet.transport)
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(
+                transport: packet.transport,
+                lastAcceptedAtNanoseconds: packet.ingressContext.receivedAtNanoseconds
+            )
             return .authoritative
         }
         guard existing.transport != packet.transport else {
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(
+                transport: packet.transport,
+                lastAcceptedAtNanoseconds: packet.ingressContext.receivedAtNanoseconds
+            )
             return .authoritative
         }
         if packet.transport.liveReceiveAuthorityRank > existing.transport.liveReceiveAuthorityRank {
-            receiveAuthorityByKey[key] = ReceiveAuthorityState(transport: packet.transport)
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(
+                transport: packet.transport,
+                lastAcceptedAtNanoseconds: packet.ingressContext.receivedAtNanoseconds
+            )
+            return .authoritative
+        }
+        if receiveAuthorityLeaseExpired(existing, by: packet.ingressContext.receivedAtNanoseconds) {
+            receiveAuthorityByKey[key] = ReceiveAuthorityState(
+                transport: packet.transport,
+                lastAcceptedAtNanoseconds: packet.ingressContext.receivedAtNanoseconds
+            )
             return .authoritative
         }
         return .standby(authoritativeTransport: existing.transport)
+    }
+
+    private func receiveAuthorityLeaseExpired(
+        _ state: ReceiveAuthorityState,
+        by receivedAtNanoseconds: UInt64
+    ) -> Bool {
+        guard receivedAtNanoseconds > state.lastAcceptedAtNanoseconds else { return false }
+        return receivedAtNanoseconds - state.lastAcceptedAtNanoseconds
+            >= Self.receiveAuthorityFreshnessLeaseNanoseconds
     }
 
     private func contextKey(for packet: LiveAudioReceivePacket) -> ContextKey {
@@ -2086,7 +2114,7 @@ actor LiveAudioReceiveExecutor {
                 for: receiveAuthorityKey(for: pendingPacket.packet, context: pendingPacket.context)
             )
             if pendingPacket.packet.transport.isUnreliablePacketMedia {
-                Task {
+                Task.detached(priority: .userInitiated) { [pendingPacket, playbackExecutor, postAdmissionExecutor] in
                     let playbackAccepted = await playbackExecutor.play(
                         pendingPacket.admittedPacket,
                         context: pendingPacket.context

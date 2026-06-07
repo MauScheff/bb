@@ -15,11 +15,10 @@ struct OutboundAudioTransportPlanTests {
         #expect(plan.attempts == [
             .directQuic(.verifiedPrimary),
         ])
-        #expect(!plan.startsWithStandbyRelayBeforeUnverifiedDirect)
         #expect(!plan.attemptsStandbyRelayAfterUnverifiedDirect)
     }
 
-    @Test func unverifiedDirectQuicIsShadowAfterStandbyPacketRelay() {
+    @Test func unverifiedDirectQuicIsPrimaryBeforeStandbyPacketRelay() {
         let plan = OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
@@ -29,11 +28,11 @@ struct OutboundAudioTransportPlanTests {
         )
 
         #expect(plan.attempts == [
-            .mediaRelay(.primaryBeforeUnverifiedDirect),
-            .directQuic(.shadowAfterStandbyRelay),
+            .directQuic(.unverifiedPrimary),
+            .mediaRelay(.standbyAfterUnverifiedDirect),
             .relayWebSocketFallback,
         ])
-        #expect(plan.startsWithStandbyRelayBeforeUnverifiedDirect)
+        #expect(plan.attemptsStandbyRelayAfterUnverifiedDirect)
         #expect(plan.attemptsDirectQuic)
     }
 
@@ -66,7 +65,6 @@ struct OutboundAudioTransportPlanTests {
             .mediaRelay(.tcpContinuity),
             .relayWebSocketFallback,
         ])
-        #expect(!plan.startsWithStandbyRelayBeforeUnverifiedDirect)
         #expect(plan.usesTcpContinuityRelay)
     }
 

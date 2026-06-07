@@ -2205,6 +2205,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         if shouldUseWakeBackgroundContinuityForOutgoingAudio(for: contactID) {
             return .wakeBackgroundContinuity
         }
+        if shouldUseDirectQuicAudioTransport(for: contactID) {
+            return .directLowLatency
+        }
         if shouldUseDirectQuicTransport(for: contactID) {
             if hasConfiguredOutgoingAudioContinuityFallback() {
                 return .fastRelayBalanced
@@ -2230,6 +2233,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     func shouldUseWakeBackgroundContinuityForOutgoingAudio(for contactID: UUID) -> Bool {
         if currentApplicationState() != .active {
             return true
+        }
+        if shouldUseDirectQuicAudioTransport(for: contactID) {
+            return false
         }
         guard let channel = selectedChannelSnapshot(for: contactID),
               !channel.remoteAudioReadyForLiveTransmit else {

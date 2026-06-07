@@ -1603,6 +1603,14 @@ struct DeviceTests {
             ) == false
         )
         #expect(
+            viewModel.shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: "channel-123",
+                incomingAudioTransport: .directQuic,
+                applicationState: .active
+            ) == false
+        )
+        #expect(
             viewModel.prefersForegroundAppManagedReceivePlayback(
                 for: contactID,
                 applicationState: .active,
@@ -1617,6 +1625,14 @@ struct DeviceTests {
             ) == false
         )
         #expect(
+            viewModel.shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: "channel-123",
+                incomingAudioTransport: .mediaRelayPacket,
+                applicationState: .active
+            ) == false
+        )
+        #expect(
             viewModel.prefersForegroundAppManagedReceivePlayback(
                 for: contactID,
                 applicationState: .active,
@@ -1628,6 +1644,14 @@ struct DeviceTests {
                 for: contactID,
                 applicationState: .active,
                 incomingAudioTransport: .mediaRelayTcp
+            ) == false
+        )
+        #expect(
+            viewModel.shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: "channel-123",
+                incomingAudioTransport: .mediaRelayTcp,
+                applicationState: .active
             ) == false
         )
         #expect(
@@ -1645,6 +1669,14 @@ struct DeviceTests {
                 incomingAudioTransport: .relayWebSocket
             ) == false
         )
+        #expect(
+            viewModel.shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: "channel-123",
+                incomingAudioTransport: .relayWebSocket,
+                applicationState: .active
+            )
+        )
         viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
         #expect(
             viewModel.prefersForegroundAppManagedReceivePlayback(
@@ -1658,6 +1690,14 @@ struct DeviceTests {
                 for: contactID,
                 applicationState: .active,
                 incomingAudioTransport: .relayWebSocket
+            ) == false
+        )
+        #expect(
+            viewModel.shouldBufferForegroundSystemReceiveAudioUntilPTTActivation(
+                for: contactID,
+                channelID: "channel-123",
+                incomingAudioTransport: .relayWebSocket,
+                applicationState: .active
             ) == false
         )
         #expect(

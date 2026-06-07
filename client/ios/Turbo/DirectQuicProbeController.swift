@@ -2982,6 +2982,11 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     }
 }
 
+enum DirectQuicActivationConnectionSlot: String, Equatable {
+    case outboundConnection
+    case inboundConnection
+}
+
 nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private static let consentIntervalNanoseconds: UInt64 = 1_000_000_000
     private static let liveAudioMaxConcurrentIncomingHandlers = 16
@@ -3025,6 +3030,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
     private var nextAudioSequenceNumber: UInt64 = 0
 #if DEBUG
     private var testActivationOverride: (@Sendable () async throws -> Void)?
+    private var testMediaTransportActivated = false
 #endif
 
     init(
@@ -3300,6 +3306,26 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 #if DEBUG
         let testActivationOverride = withLockedState { self.testActivationOverride }
         if let testActivationOverride {
+            let reusedActiveTransport = withLockedState {
+                guard testMediaTransportActivated else { return false }
+                self.onIncomingAudioPayload = onIncomingAudioPayload
+                self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
+                self.onReceiverPrewarmRequest = onReceiverPrewarmRequest
+                self.onReceiverPrewarmAck = onReceiverPrewarmAck
+                self.onPathClosing = onPathClosing
+                self.onWarmPong = onWarmPong
+                self.onAudioPlaybackStarted = onAudioPlaybackStarted
+                self.onLivenessConfirmed = onLivenessConfirmed
+                self.onPathLost = onPathLost
+                return true
+            }
+            if reusedActiveTransport {
+                await report(
+                    "Reused active Direct QUIC media transport",
+                    metadata: ["mode": "test"]
+                )
+                return
+            }
             try await testActivationOverride()
             withLockedState {
                 suppressPathLostCallback = false
@@ -3315,6 +3341,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
                 activeReceiveBuffer.removeAll(keepingCapacity: false)
                 outstandingConsentID = nil
                 outstandingConsentSentAt = nil
+                testMediaTransportActivated = true
             }
             incomingAudioPayloadQueue.reset()
             await report(
@@ -3324,12 +3351,46 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
             return
         }
 #endif
-        let connection = withLockedState { outboundConnection ?? inboundConnection }
-        guard let connection else {
-            throw DirectQuicProbeError.connectionFailed("no verified direct QUIC connection")
+        let selectedConnection = withLockedState { () -> (
+            connection: NWConnection?,
+            slot: DirectQuicActivationConnectionSlot?,
+            nominatedPathSource: DirectQuicNominatedPathSource?
+        ) in
+            let nominatedPathSource = nominatedPath?.source
+            let slot = Self.activationConnectionSlot(
+                nominatedPathSource: nominatedPathSource,
+                outboundAvailable: outboundConnection != nil,
+                inboundAvailable: inboundConnection != nil
+            )
+            switch slot {
+            case .outboundConnection:
+                return (outboundConnection, slot, nominatedPathSource)
+            case .inboundConnection:
+                return (inboundConnection, slot, nominatedPathSource)
+            case nil:
+                return (nil, nil, nominatedPathSource)
+            }
+        }
+        guard let connection = selectedConnection.connection else {
+            let source = selectedConnection.nominatedPathSource?.rawValue ?? "none"
+            throw DirectQuicProbeError.connectionFailed(
+                "no verified direct QUIC connection for nominated path source \(source)"
+            )
         }
 
-        withLockedState {
+        let reusedActiveConnection = withLockedState {
+            guard activeMediaConnection !== connection else {
+                self.onIncomingAudioPayload = onIncomingAudioPayload
+                self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
+                self.onReceiverPrewarmRequest = onReceiverPrewarmRequest
+                self.onReceiverPrewarmAck = onReceiverPrewarmAck
+                self.onPathClosing = onPathClosing
+                self.onWarmPong = onWarmPong
+                self.onAudioPlaybackStarted = onAudioPlaybackStarted
+                self.onLivenessConfirmed = onLivenessConfirmed
+                self.onPathLost = onPathLost
+                return true
+            }
             suppressPathLostCallback = false
             self.onIncomingAudioPayload = onIncomingAudioPayload
             self.onExpiredIncomingAudioPayload = onExpiredIncomingAudioPayload
@@ -3344,6 +3405,17 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
             activeReceiveBuffer.removeAll(keepingCapacity: false)
             outstandingConsentID = nil
             outstandingConsentSentAt = nil
+            return false
+        }
+        if reusedActiveConnection {
+            await report(
+                "Reused active Direct QUIC media transport",
+                metadata: [
+                    "connectionSlot": selectedConnection.slot?.rawValue ?? "none",
+                    "nominatedPathSource": selectedConnection.nominatedPathSource?.rawValue ?? "none",
+                ]
+            )
+            return
         }
         incomingAudioPayloadQueue.reset()
         receiveMediaMessages(on: connection)
@@ -3352,8 +3424,28 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 
         await report(
             "Activated direct QUIC media transport",
-            metadata: [:]
+            metadata: [
+                "connectionSlot": selectedConnection.slot?.rawValue ?? "none",
+                "nominatedPathSource": selectedConnection.nominatedPathSource?.rawValue ?? "none",
+            ]
         )
+    }
+
+    static func activationConnectionSlot(
+        nominatedPathSource: DirectQuicNominatedPathSource?,
+        outboundAvailable: Bool,
+        inboundAvailable: Bool
+    ) -> DirectQuicActivationConnectionSlot? {
+        switch nominatedPathSource {
+        case .outboundProbe:
+            return outboundAvailable ? .outboundConnection : nil
+        case .inboundConnection:
+            return inboundAvailable ? .inboundConnection : nil
+        case nil:
+            if outboundAvailable { return .outboundConnection }
+            if inboundAvailable { return .inboundConnection }
+            return nil
+        }
     }
 
     func sendAudioPayload(_ payload: String) async throws {
@@ -3556,6 +3648,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
             outstandingConsentSentAt = nil
 #if DEBUG
             testActivationOverride = nil
+            testMediaTransportActivated = false
 #endif
             let resources = (listener, inboundConnection, outboundConnection, consentTask)
             listener = nil

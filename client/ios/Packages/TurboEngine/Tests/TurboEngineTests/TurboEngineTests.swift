@@ -742,6 +742,26 @@ struct TurboEngineCoreTests {
         }
     }
 
+    @Test func backendJoinRefreshPreservesTransportNetworkGeneration() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .relayWebSocket))))
+        _ = engine.receive(.transport(.networkChanged(.wifi)))
+
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .relayWebSocket))))
+
+        let transition = engine.receive(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(lane: .fastRelayQuic, networkPathGeneration: 1)
+                )
+            )
+        )
+
+        #expect(transition.state.transportSelection.networkPathGeneration == 1)
+        #expect(transition.state.transportSelection.currentLane == .fastRelayQuic)
+        #expect(!transition.diagnostics.contains { $0.message == "Ignored stale transport lane availability" })
+    }
+
     @Test func staleDirectAvailabilityFromOldNetworkGenerationIsIgnored() {
         var engine = TurboEngine(localDeviceID: "sender-device")
         _ = engine.receive(.backend(.joined(joinedEvidence(transport: .directQuic))))

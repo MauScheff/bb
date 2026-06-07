@@ -511,6 +511,11 @@ extension PTTViewModel {
             for: contactID,
             channelID: channelID
         ) else { return false }
+        guard !prefersForegroundAppManagedReceivePlayback(
+            for: contactID,
+            applicationState: applicationState,
+            incomingAudioTransport: incomingAudioTransport
+        ) else { return false }
         guard pttWakeRuntime.pendingIncomingPush == nil else { return false }
         guard let channelUUID = channelUUID(for: contactID) else { return false }
         return pttCoordinator.state.systemChannelUUID == channelUUID
@@ -677,6 +682,7 @@ extension PTTViewModel {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
         }
+        reconcileAutomaticAudioRouteAfterLiveReceiveIfNeeded(reason: "remote-transmit-stopped")
     }
 
     func markRemoteTransmitStoppedPreservingPlaybackDrain(for contactID: UUID) {

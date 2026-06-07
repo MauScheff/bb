@@ -255,6 +255,7 @@ extension PTTViewModel {
             updateStatusForSelectedContact()
             captureDiagnosticsState("remote-audio:cleared")
         }
+        reconcileAutomaticAudioRouteAfterLiveReceiveIfNeeded(reason: engineSource)
     }
 
     private func synthesizeMissingRemoteTransmitStopFromAudioSilenceTimeoutIfNeeded(
