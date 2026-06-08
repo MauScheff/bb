@@ -1716,7 +1716,7 @@ mod tests {
                     "type": "presence-command",
                     "requestId": "presence-1",
                     "sessionId": "0",
-                    "commandKind": "presence-heartbeat",
+                    "commandKind": "presence-keepalive",
                     "deviceId": "device-a"
                 })
                 .to_string(),
@@ -1767,7 +1767,7 @@ mod tests {
                     "type": "presence-command",
                     "requestId": "presence-1",
                     "sessionId": "0",
-                    "commandKind": "presence-heartbeat",
+                    "commandKind": "presence-keepalive",
                     "deviceId": "device-a"
                 })
                 .to_string(),

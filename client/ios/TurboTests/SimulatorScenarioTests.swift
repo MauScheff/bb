@@ -559,7 +559,7 @@ struct SimulatorScenarioPlannerTests {
             )
 
             try await recordHostedBackendClientProbeRequest(
-                name: "presence/heartbeat:initial",
+                name: "presence/keepalive:initial",
                 into: &auxiliaryRequests
             ) {
                 _ = try await client.heartbeatPresence()
@@ -594,7 +594,7 @@ struct SimulatorScenarioPlannerTests {
 
                 if runtime.heartbeatIntervalNanoseconds > 0, now >= nextHeartbeatAt {
                     try await recordHostedBackendClientProbeRequest(
-                        name: "presence/heartbeat",
+                        name: "presence/keepalive",
                         into: &auxiliaryRequests
                     ) {
                         _ = try await client.heartbeatPresence()

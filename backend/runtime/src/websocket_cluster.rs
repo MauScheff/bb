@@ -483,7 +483,7 @@ mod tests {
                     "type": "control-command",
                     "requestId": "still-bound",
                     "deviceId": "device-a",
-                    "commandKind": "presence-heartbeat"
+                    "commandKind": "presence-keepalive"
                 })
                 .to_string(),
             )
@@ -575,7 +575,7 @@ mod tests {
                     "type": "control-command",
                     "requestId": "same-owner-record",
                     "deviceId": "device-a",
-                    "commandKind": "presence-heartbeat"
+                    "commandKind": "presence-keepalive"
                 })
                 .to_string(),
             )

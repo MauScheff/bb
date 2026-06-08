@@ -281,8 +281,30 @@ where
         channel_id: Option<&str>,
         payload: Option<&str>,
     ) {
-        let Some(channel_id) = channel_id else { return };
         let handle = handle_for_user_id(participant_id);
+        match command_kind {
+            "presence-foreground" => {
+                self.record_presence(&handle, "online", Some(device_id.to_owned()));
+                return;
+            }
+            "presence-keepalive" => {
+                self.record_presence_command(&handle, "online", Some(command_kind), device_id);
+                return;
+            }
+            "presence-background" => {
+                self.record_presence(&handle, "background", Some(device_id.to_owned()));
+                self.mark_joined_handle_wake_disconnected(&handle, device_id);
+                return;
+            }
+            "presence-offline" => {
+                self.record_presence(&handle, "offline", Some(device_id.to_owned()));
+                self.mark_joined_handle_wake_disconnected(&handle, device_id);
+                return;
+            }
+            _ => {}
+        }
+
+        let Some(channel_id) = channel_id else { return };
         match command_kind {
             "join-channel" => self.join_channel(channel_id, &handle, device_id),
             "leave-channel" => self.leave_channel(channel_id, &handle, Some(device_id)),
@@ -650,10 +672,15 @@ where
                 }),
             });
         }
-        if let Some(presence_status) = presence_status_path(&request.path) {
+        if let Some((presence_status, command_kind)) = presence_status_path(&request.path) {
             let handle = request_handle(&request);
             let device_id = required_string(&body, &["deviceId"], "deviceId")?.to_owned();
-            self.record_presence(handle, presence_status, Some(device_id.clone()));
+            let recorded_status = self.record_presence_command(
+                handle,
+                presence_status,
+                Some(command_kind),
+                &device_id,
+            );
             match presence_status {
                 "background" | "offline" => {
                     self.mark_joined_handle_wake_disconnected(handle, &device_id)
@@ -665,7 +692,7 @@ where
                 body: serde_json::json!({
                     "deviceId": device_id,
                     "userId": user_id_for_handle(handle),
-                    "status": presence_status
+                    "status": recorded_status
                 }),
             });
         }
@@ -2248,6 +2275,37 @@ where
         );
     }
 
+    fn record_presence_command(
+        &mut self,
+        handle: &str,
+        status: &str,
+        command_kind: Option<&str>,
+        device_id: &str,
+    ) -> String {
+        if status != "online" {
+            self.record_presence(handle, status, Some(device_id.to_owned()));
+            return status.to_owned();
+        }
+
+        if command_kind != Some("presence-keepalive") {
+            self.record_presence(handle, "online", Some(device_id.to_owned()));
+            return "online".to_owned();
+        }
+
+        let current_status = self
+            .state
+            .presence_by_handle
+            .get(&normalize_handle(handle))
+            .map(|presence| presence.status.clone());
+        match current_status.as_deref() {
+            None | Some("online") => {
+                self.record_presence(handle, "online", Some(device_id.to_owned()));
+                "online".to_owned()
+            }
+            Some(existing) => existing.to_owned(),
+        }
+    }
+
     fn handle_is_online(&self, handle: &str) -> bool {
         self.state
             .presence_by_handle
@@ -2569,11 +2627,12 @@ fn is_device_register_path(path: &str) -> bool {
     control_plane_path_parts(path).as_slice() == ["v1", "devices", "register"]
 }
 
-fn presence_status_path(path: &str) -> Option<&'static str> {
+fn presence_status_path(path: &str) -> Option<(&'static str, &'static str)> {
     match control_plane_path_parts(path).as_slice() {
-        ["v1", "presence", "heartbeat"] => Some("online"),
-        ["v1", "presence", "offline"] => Some("offline"),
-        ["v1", "presence", "background"] => Some("background"),
+        ["v1", "presence", "foreground"] => Some(("online", "presence-foreground")),
+        ["v1", "presence", "keepalive"] => Some(("online", "presence-keepalive")),
+        ["v1", "presence", "offline"] => Some(("offline", "presence-offline")),
+        ["v1", "presence", "background"] => Some(("background", "presence-background")),
         _ => None,
     }
 }
@@ -3622,7 +3681,7 @@ mod tests {
     ) {
         let response = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
             body: serde_json::to_vec(&serde_json::json!({
                 "deviceId": device_id
@@ -3665,7 +3724,7 @@ mod tests {
         let mut service = service();
         let heartbeat = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
             body: serde_json::to_vec(&serde_json::json!({
                 "deviceId": "device-b"
@@ -3809,6 +3868,135 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_repeat_beep_sends_alert_after_background_even_if_stale_keepalive_arrives() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("worker listener should bind");
+        let worker_address = listener.local_addr().expect("worker address should exist");
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("worker should accept request");
+            let mut request = vec![0_u8; 8192];
+            let read = stream
+                .read(&mut request)
+                .expect("worker should read request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("POST /apns/send HTTP/1.1"));
+            assert!(request.contains("alert-token-b"));
+            assert!(request.contains("\"event\":\"beep\""));
+            assert!(request.contains("\"fromHandle\":\"@avery\""));
+            assert!(request.contains("\"requestCount\":2"));
+            let body = br#"{"ok":true,"result":"sent","status":200,"reason":null}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("worker should write response");
+        });
+
+        let mut service = service_with_config(RuntimeHttpConfig {
+            apns_worker: Some(RuntimeApnsWorkerConfig {
+                base_url: format!("http://{worker_address}"),
+                secret: "secret".to_owned(),
+                bundle_id: "com.rounded.Turbo".to_owned(),
+                use_sandbox: true,
+                timeout_ms: 1_000,
+            }),
+            ..RuntimeHttpConfig::default()
+        });
+        let register = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/devices/register".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "deviceLabel": "Blake Phone",
+                "alertPushToken": "alert-token-b",
+                "alertPushEnvironment": "production"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(register.status, 200);
+
+        let first = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(first.status, 200);
+        assert_eq!(first.body["requestCount"], 1);
+
+        let background = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/background".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-background"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(background.status, 200);
+        let offline = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/offline".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-offline"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(offline.status, 200);
+
+        let stale_keepalive = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/keepalive".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-keepalive"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(stale_keepalive.status, 200);
+        assert_eq!(stale_keepalive.body["status"], "offline");
+
+        let repeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(repeat.status, 200);
+        assert_eq!(repeat.body["requestCount"], 2);
+        worker.join().expect("worker should finish");
+
+        let push_events = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/wake-events/recent".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(push_events.status, 200);
+        let event = push_events.body["events"][0]
+            .as_object()
+            .expect("push event should be an object");
+        assert_eq!(event["event"], "beep");
+        assert_eq!(event["pushType"], "alert");
+        assert_eq!(event["requestCount"], 2);
+        assert_eq!(event["result"], "sent");
+        assert_eq!(event["targetDeviceId"], "device-b");
+    }
+
+    #[test]
     fn self_hosted_beep_create_rejects_background_recipient_without_alert_token() {
         let mut service = service();
         let create = service.handle(HttpRequest {
@@ -3885,7 +4073,7 @@ mod tests {
 
         let heartbeat = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
             body: serde_json::to_vec(&serde_json::json!({
                 "deviceId": "device-b"
@@ -4413,7 +4601,7 @@ mod tests {
 
         let blake_heartbeat = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
             body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-b" }))
                 .expect("body should encode"),
@@ -4539,7 +4727,7 @@ mod tests {
 
         let blake_heartbeat = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
             body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-b" }))
                 .expect("body should encode"),
@@ -5772,7 +5960,7 @@ mod tests {
 
         let heartbeat = service.handle(HttpRequest {
             method: "POST".to_owned(),
-            path: "/v1/presence/heartbeat".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
             headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
             body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-a" }))
                 .expect("body should encode"),

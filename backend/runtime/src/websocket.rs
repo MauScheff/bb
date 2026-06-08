@@ -393,7 +393,7 @@ fn command_response_body(
     message: &Value,
 ) -> Value {
     match command_kind {
-        "presence-heartbeat" => serde_json::json!({
+        "presence-foreground" | "presence-keepalive" => serde_json::json!({
             "deviceId": binding.device_id,
             "userId": binding.participant_id,
             "status": "online"

@@ -321,16 +321,16 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
 
     func heartbeatPresence() async throws -> TurboPresenceHeartbeatResponse {
         try await hedgedPresenceCommandRequest(
-            path: "/v1/presence/heartbeat",
-            commandKind: "presence-heartbeat",
+            path: "/v1/presence/keepalive",
+            commandKind: "presence-keepalive",
             httpFallbackDelayNanoseconds: controlCommandHedgeDelayNanoseconds
         )
     }
 
     func foregroundPresence() async throws -> TurboPresenceHeartbeatResponse {
         try await hedgedPresenceCommandRequest(
-            path: "/v1/presence/heartbeat",
-            commandKind: "presence-heartbeat",
+            path: "/v1/presence/foreground",
+            commandKind: "presence-foreground",
             httpFallbackDelayNanoseconds: 0
         )
     }

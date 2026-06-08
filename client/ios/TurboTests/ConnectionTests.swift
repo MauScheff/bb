@@ -30212,10 +30212,10 @@ struct ConnectionTests {
         let response = try await client.heartbeatPresence()
 
         #expect(response.status == "http")
-        #expect(webSocketEnvelope?.commandKind == "presence-heartbeat")
-        #expect(httpPath == "/v1/presence/heartbeat")
-        #expect(httpEnvelope?.commandKind == "presence-heartbeat")
-        #expect(notices.contains("WebSocket presence-heartbeat slow; hedging over HTTP"))
+        #expect(webSocketEnvelope?.commandKind == "presence-keepalive")
+        #expect(httpPath == "/v1/presence/keepalive")
+        #expect(httpEnvelope?.commandKind == "presence-keepalive")
+        #expect(notices.contains("WebSocket presence-keepalive slow; hedging over HTTP"))
     }
 
     @MainActor
@@ -30229,7 +30229,7 @@ struct ConnectionTests {
 
         var httpStarted = false
         client.controlCommandWebSocketResponseForTesting = { envelope in
-            #expect(envelope.commandKind == "presence-heartbeat")
+            #expect(envelope.commandKind == "presence-keepalive")
             return makePresenceHeartbeatResponseData(status: "websocket")
         }
         client.controlCommandHTTPResponseForTesting = { _, _ in
@@ -30315,24 +30315,24 @@ struct ConnectionTests {
         }
         client.controlCommandHTTPResponseForTesting = { path, envelope in
             httpPath = path
-            #expect(envelope.commandKind == "presence-heartbeat")
+            #expect(envelope.commandKind == "presence-foreground")
             return makePresenceHeartbeatResponseData(status: "http")
         }
 
         let response = try await client.foregroundPresence()
 
         #expect(response.status == "http")
-        #expect(webSocketEnvelope?.commandKind == "presence-heartbeat")
-        #expect(httpPath == "/v1/presence/heartbeat")
+        #expect(webSocketEnvelope?.commandKind == "presence-foreground")
+        #expect(httpPath == "/v1/presence/foreground")
         #expect(
             traces.contains {
-                $0.commandKind == "presence-heartbeat"
+                $0.commandKind == "presence-foreground"
                     && $0.transport == .http
                     && $0.phase == .hedgeStarted
                     && $0.detail == "immediate-http-fallback"
             }
         )
-        #expect(notices.contains("WebSocket presence-heartbeat using immediate HTTP fallback"))
+        #expect(notices.contains("WebSocket presence-foreground using immediate HTTP fallback"))
     }
 
     @MainActor
@@ -30352,14 +30352,14 @@ struct ConnectionTests {
         }
         client.controlCommandHTTPResponseForTesting = { path, envelope in
             httpPath = path
-            #expect(envelope.commandKind == "presence-heartbeat")
+            #expect(envelope.commandKind == "presence-keepalive")
             return makePresenceHeartbeatResponseData(status: "http")
         }
 
         let response = try await client.heartbeatPresence()
 
         #expect(response.status == "http")
-        #expect(httpPath == "/v1/presence/heartbeat")
+        #expect(httpPath == "/v1/presence/keepalive")
         #expect(!webSocketStarted)
     }
 

@@ -4067,8 +4067,8 @@ struct DeviceTests {
 
         await viewModel.publishForegroundPresenceTransition(reason: "test-foreground")
 
-        #expect(heartbeatPath == "/v1/presence/heartbeat")
-        #expect(heartbeatCommandKind == "presence-heartbeat")
+        #expect(heartbeatPath == "/v1/presence/foreground")
+        #expect(heartbeatCommandKind == "presence-foreground")
         #expect(viewModel.diagnosticsTranscript.contains("Foreground presence publish succeeded"))
     }
 

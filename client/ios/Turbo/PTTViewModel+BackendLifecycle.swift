@@ -762,7 +762,7 @@ extension PTTViewModel {
             if let directQuicIdentity {
                 directQuicRegisteredFingerprint = directQuicIdentity.fingerprint
             }
-            bootstrapStep = "presence-heartbeat"
+            bootstrapStep = "presence-keepalive"
             _ = try await client.heartbeatPresence()
             backendRuntime.markPresenceHeartbeatSent()
             guard backendConfigurationIsCurrent(key: key) else {

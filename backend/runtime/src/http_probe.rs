@@ -167,7 +167,7 @@ pub fn run_self_hosted_http_process_probe() -> Result<SelfHostedHttpProbeReport,
 
     let heartbeat = post_json_with_headers(
         address,
-        "/s/turbo/v1/presence/heartbeat",
+        "/s/turbo/v1/presence/keepalive",
         &serde_json::json!({ "deviceId": "device-a" }),
         &[("x-turbo-user-handle", "@avery")],
     )?;
@@ -175,15 +175,15 @@ pub fn run_self_hosted_http_process_probe() -> Result<SelfHostedHttpProbeReport,
         && heartbeat.body.contains(r#""deviceId":"device-a""#)
         && heartbeat.body.contains(r#""status":"online""#);
     observations.push(http_observation(
-        "app-compatible-presence-heartbeat",
+        "app-compatible-presence-keepalive",
         "POST",
-        "/s/turbo/v1/presence/heartbeat",
+        "/s/turbo/v1/presence/keepalive",
         &heartbeat,
         200,
         heartbeat_ok,
-        "device presence heartbeat",
+        "device presence keepalive",
     ));
-    steps.push("app-compatible presence heartbeat route served over TCP".to_owned());
+    steps.push("app-compatible presence keepalive route served over TCP".to_owned());
 
     let telemetry = post_json_with_headers(
         address,
