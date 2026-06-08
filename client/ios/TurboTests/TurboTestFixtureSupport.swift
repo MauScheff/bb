@@ -587,6 +587,7 @@ func makeContactSummary(
     requestCount: Int = 0,
     isActiveConversation: Bool = false,
     badgeStatus: String = "online",
+    beepReachability: TurboBeepReachability? = nil,
     membershipKind: String? = nil,
     peerDeviceConnected: Bool? = nil
 ) -> TurboContactSummaryResponse {
@@ -601,6 +602,7 @@ func makeContactSummary(
         requestCount: requestCount,
         isActiveConversation: isActiveConversation,
         badgeStatus: badgeStatus,
+        beepReachability: beepReachability,
         membershipPayload: membershipKind.map {
             TurboChannelMembershipPayload(kind: $0, peerDeviceConnected: peerDeviceConnected)
         }

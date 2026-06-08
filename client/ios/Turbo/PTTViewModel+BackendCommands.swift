@@ -269,6 +269,20 @@ extension PTTViewModel {
         }
         let relationship = beepThreadProjection(for: contact.id)
         let incomingBeep = incomingBeepByContactID[contact.id]
+        if intent == .requestConnection,
+           !relationship.hasIncomingBeep,
+           contactPresencePresentation(for: contact.id) == .offline {
+            diagnostics.record(
+                .backend,
+                level: .notice,
+                message: "Rejected outgoing Beep for unreachable contact",
+                metadata: ["contactId": contact.id.uuidString, "handle": contact.handle]
+            )
+            backendStatusMessage = "\(contact.name) is unavailable"
+            statusMessage = "Unavailable"
+            captureDiagnosticsState("backend-join:unreachable-contact-rejected")
+            return
+        }
         if relationship.hasIncomingBeep {
             markIncomingBeepHandledLocally(
                 contactID: contact.id,

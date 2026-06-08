@@ -12,9 +12,10 @@ use serde_json::Value;
 
 use crate::{
     postgres::{
-        DurableBeepThread, DurableBeepThreadStore, DurableContactStore, DurablePostgresError,
-        KernelDecisionCommitter, RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader,
-        TalkTurnReleaseCommitter, TalkTurnRenewalCommitter,
+        DurableAlertPushToken, DurableAlertPushTokenStore, DurableBeepThread,
+        DurableBeepThreadStore, DurableContactStore, DurablePostgresError, KernelDecisionCommitter,
+        RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter,
+        TalkTurnRenewalCommitter,
     },
     routes::{RuntimeRouteError, SelfHostedRouteService},
     shadow::LegacyBeginTransmitInput,
@@ -220,6 +221,23 @@ struct AppBeepAlertPushRequest<'a> {
     started_at: &'a str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BeepReachability {
+    Foreground,
+    WakeCapable(DurableAlertPushToken),
+    NotReachable,
+}
+
+impl BeepReachability {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground",
+            Self::WakeCapable(_) => "wake-capable",
+            Self::NotReachable => "not-reachable",
+        }
+    }
+}
+
 impl<S, W, C> RuntimeHttpService<S, W, C>
 where
     S: RequestTalkTurnSnapshotLoader,
@@ -228,6 +246,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableAlertPushTokenStore
         + DurableBeepThreadStore,
 {
     pub fn new(route_service: SelfHostedRouteService<S, W, C>) -> Self {
@@ -609,7 +628,7 @@ where
                     &device_id,
                     alert_push_token,
                     alert_push_environment,
-                );
+                )?;
             }
             let direct_quic_identity = self
                 .state
@@ -723,9 +742,14 @@ where
                 .committer_mut()
                 .clear_remembered_contacts()?;
             let cleared_profiles = self.route_service.committer_mut().clear_profiles()?;
+            let cleared_alert_push_tokens = self
+                .route_service
+                .committer_mut()
+                .clear_alert_push_tokens()?;
             let cleared_direct_quic_identities = self.state.direct_quic_identities_by_device.len();
             let cleared_presence_entries = self.state.presence_by_handle.len();
             self.state.channels.clear();
+            self.state.alert_push_tokens_by_handle.clear();
             self.state.direct_quic_identities_by_device.clear();
             self.state.presence_by_handle.clear();
             self.state.diagnostics_by_device.clear();
@@ -738,7 +762,7 @@ where
                     "status": if control_plane_path_parts(&request.path).as_slice() == ["v1", "dev", "reset-all"] { "reset-all" } else { "reset" },
                     "clearedTransmitStates": 0,
                     "clearedPresenceEntries": cleared_presence_entries,
-                    "clearedTokenEntries": 0,
+                    "clearedTokenEntries": cleared_alert_push_tokens,
                     "clearedBeeps": cleared_beeps,
                     "clearedChannels": cleared_channels,
                     "clearedRememberedContacts": cleared_remembered_contacts,
@@ -808,11 +832,7 @@ where
                         .map(handle_for_user_id)
                 })
                 .unwrap_or_else(|| "@peer".to_owned());
-            let beep = self.create_beep(handle, &friend_handle)?;
-            return Ok(HttpResponse {
-                status: 200,
-                body: beep_response(&beep, handle),
-            });
+            return self.create_beep_response(handle, &friend_handle);
         }
         if let Some((beep_id, action)) = beep_action_path(&request.path) {
             let handle = request_handle(&request);
@@ -1069,21 +1089,40 @@ where
         Ok(error_response(404, "not found"))
     }
 
-    fn create_beep(
+    fn create_beep_response(
         &mut self,
         from_handle: &str,
         to_handle: &str,
-    ) -> Result<DurableBeepThread, RuntimeHttpError> {
+    ) -> Result<HttpResponse, RuntimeHttpError> {
         let from_handle = normalize_handle(from_handle);
         let to_handle = normalize_handle(to_handle);
         let channel_id = channel_id_for_pair(&from_handle, &to_handle);
+        let reachability = self.beep_reachability_for_handle(&to_handle)?;
+        if matches!(reachability, BeepReachability::NotReachable) {
+            self.record_missing_beep_alert_token(&from_handle, &to_handle, &channel_id);
+            return Ok(HttpResponse {
+                status: 409,
+                body: serde_json::json!({
+                    "error": "recipient not reachable",
+                    "code": "recipient-not-reachable",
+                    "friendHandle": to_handle,
+                    "friendUserId": user_id_for_handle(&to_handle),
+                    "beepReachability": reachability.kind()
+                }),
+            });
+        }
         let beep = self
             .route_service
             .committer_mut()
             .create_or_refresh_beep_thread(&from_handle, &to_handle, &channel_id)?;
         self.ensure_channel_participants(&channel_id, &from_handle, &to_handle);
-        self.send_beep_alert_push_if_possible(&beep);
-        Ok(beep)
+        if let BeepReachability::WakeCapable(token) = reachability {
+            self.send_beep_alert_push(&beep, &token);
+        }
+        Ok(HttpResponse {
+            status: 200,
+            body: beep_response(&beep, &from_handle),
+        })
     }
 
     fn resolve_beep_action_id(
@@ -1216,7 +1255,9 @@ where
             self.beep_projection_for_channel(channel_id, handle)?;
         let projected_membership =
             membership.projected_for_pending_beep(has_incoming_beep || has_outgoing_beep);
-        let peer_online = self.handle_is_online(peer_handle);
+        let reachability = self.beep_reachability_for_handle(peer_handle)?;
+        let peer_online = matches!(reachability, BeepReachability::Foreground)
+            || projected_membership.peer_device_connected;
         let badge_status = summary_status_kind(
             has_incoming_beep,
             has_outgoing_beep,
@@ -1238,6 +1279,11 @@ where
             "profileName": profile_name,
             "channelId": channel_id,
             "isOnline": peer_online,
+            "beepReachability": if projected_membership.peer_device_connected {
+                "foreground"
+            } else {
+                reachability.kind()
+            },
             "hasIncomingBeep": has_incoming_beep,
             "hasOutgoingBeep": has_outgoing_beep,
             "requestCount": request_count,
@@ -1457,6 +1503,18 @@ where
                         }
                     })
                     .unwrap_or("");
+                if let Some(reason) =
+                    alert_push_token_invalidation_reason(result, status_code, response_body)
+                {
+                    let _ = self
+                        .route_service
+                        .committer_mut()
+                        .invalidate_alert_push_token(
+                            request.target_handle,
+                            request.target_device_id,
+                            reason,
+                        );
+                }
                 self.record_wake_event(base_event, result, status_code, response_body);
             }
             Err(error) => {
@@ -1465,16 +1523,50 @@ where
         }
     }
 
-    fn send_beep_alert_push_if_possible(&mut self, beep: &DurableBeepThread) {
+    fn beep_reachability_for_handle(
+        &mut self,
+        handle: &str,
+    ) -> Result<BeepReachability, RuntimeHttpError> {
+        let handle = normalize_handle(handle);
+        if self.handle_is_online(&handle) {
+            return Ok(BeepReachability::Foreground);
+        }
+        Ok(self
+            .route_service
+            .committer_mut()
+            .valid_alert_push_token(&handle)?
+            .map(BeepReachability::WakeCapable)
+            .unwrap_or(BeepReachability::NotReachable))
+    }
+
+    fn record_missing_beep_alert_token(
+        &mut self,
+        from_handle: &str,
+        target_handle: &str,
+        channel_id: &str,
+    ) {
+        let started_at = runtime_iso8601_utc_millis(runtime_now_millis());
+        let base_event = serde_json::json!({
+            "event": "beep",
+            "pushType": "alert",
+            "channelId": channel_id,
+            "senderUserId": user_id_for_handle(from_handle),
+            "senderHandle": from_handle,
+            "targetUserId": user_id_for_handle(target_handle),
+            "targetHandle": target_handle,
+            "startedAt": started_at,
+            "recordedAt": runtime_iso8601_utc_millis(runtime_now_millis()),
+        });
+        self.record_wake_event(
+            base_event,
+            "missing-alert-token",
+            0,
+            "recipient not reachable",
+        );
+    }
+
+    fn send_beep_alert_push(&mut self, beep: &DurableBeepThread, target: &DurableAlertPushToken) {
         let target_handle = normalize_handle(&beep.to_handle);
-        let Some(target) = self
-            .state
-            .alert_push_tokens_by_handle
-            .get(&target_handle)
-            .cloned()
-        else {
-            return;
-        };
         let badge_count = self
             .beeps_for_handle(&target_handle, "incoming")
             .map(|beeps| beeps.len())
@@ -1727,15 +1819,23 @@ where
         device_id: &str,
         token: &str,
         apns_environment: Option<String>,
-    ) {
+    ) -> Result<(), RuntimeHttpError> {
+        let handle = normalize_handle(handle);
+        let durable = self.route_service.committer_mut().upsert_alert_push_token(
+            &handle,
+            device_id,
+            token,
+            apns_environment.as_deref(),
+        )?;
         self.state.alert_push_tokens_by_handle.insert(
-            normalize_handle(handle),
+            handle,
             RuntimeAlertPushToken {
-                device_id: device_id.to_owned(),
-                token: token.to_owned(),
-                apns_environment,
+                device_id: durable.device_id,
+                token: durable.token,
+                apns_environment: durable.apns_environment,
             },
         );
+        Ok(())
     }
 
     fn revoke_ephemeral_token(&mut self, channel_id: &str, handle: &str) {
@@ -2200,6 +2300,7 @@ where
     crate::postgres::DurableConversationStore: TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableAlertPushTokenStore
         + DurableBeepThreadStore,
 {
     let (mut stream, _) = listener.accept()?;
@@ -2223,6 +2324,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableAlertPushTokenStore
         + DurableBeepThreadStore,
 {
     let (mut stream, _) = listener.accept()?;
@@ -2240,6 +2342,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableAlertPushTokenStore
         + DurableBeepThreadStore,
 {
     let request = read_http_request(stream)?;
@@ -2262,6 +2365,7 @@ where
         + TalkTurnRenewalCommitter
         + TalkTurnReleaseCommitter
         + DurableContactStore
+        + DurableAlertPushTokenStore
         + DurableBeepThreadStore,
 {
     loop {
@@ -2777,6 +2881,17 @@ fn request_handle(request: &HttpRequest) -> &str {
     header_value(request, "x-turbo-user-handle")
         .or_else(|| header_value(request, "authorization").and_then(bearer_handle))
         .unwrap_or("@self")
+}
+
+fn alert_push_token_invalidation_reason<'a>(
+    _result: &str,
+    _status_code: u64,
+    response_body: &'a str,
+) -> Option<&'a str> {
+    match response_body.trim() {
+        "BadDeviceToken" | "DeviceTokenNotForTopic" | "Unregistered" => Some(response_body.trim()),
+        _ => None,
+    }
 }
 
 fn request_public_base_url(request: &HttpRequest) -> String {
@@ -3492,6 +3607,26 @@ mod tests {
         )
     }
 
+    fn mark_handle_foreground(
+        service: &mut RuntimeHttpService<
+            InMemoryRequestTalkTurnSnapshotLoader,
+            CorpusKernelDecisionWorker,
+        >,
+        handle: &str,
+        device_id: &str,
+    ) {
+        let response = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/heartbeat".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": device_id
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(response.status, 200);
+    }
+
     #[test]
     fn self_hosted_config_advertises_direct_quic_capabilities_from_runtime_config() {
         let mut service = service_with_config(RuntimeHttpConfig {
@@ -3523,6 +3658,16 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_creates_and_lists_beeps_by_direction() {
         let mut service = service();
+        let heartbeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/heartbeat".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(heartbeat.status, 200);
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -3612,6 +3757,20 @@ mod tests {
             .expect("body should encode"),
         });
         assert_eq!(register.status, 200);
+        let durable_committer_after_restart = service.route_service().committer().clone();
+        let mut service = service_with_config_and_committer(
+            RuntimeHttpConfig {
+                apns_worker: Some(RuntimeApnsWorkerConfig {
+                    base_url: format!("http://{worker_address}"),
+                    secret: "secret".to_owned(),
+                    bundle_id: "com.rounded.Turbo".to_owned(),
+                    use_sandbox: true,
+                    timeout_ms: 1_000,
+                }),
+                ..RuntimeHttpConfig::default()
+            },
+            durable_committer_after_restart,
+        );
 
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
@@ -3641,6 +3800,132 @@ mod tests {
         assert_eq!(event["result"], "sent");
         assert_eq!(event["statusCode"], "200");
         assert_eq!(event["targetDeviceId"], "device-b");
+    }
+
+    #[test]
+    fn self_hosted_beep_create_rejects_background_recipient_without_alert_token() {
+        let mut service = service();
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+
+        assert_eq!(create.status, 409);
+        assert_eq!(create.body["code"], "recipient-not-reachable");
+        assert_eq!(create.body["beepReachability"], "not-reachable");
+
+        let outgoing = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/beeps/outgoing".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let incoming = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/beeps/incoming".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(outgoing.body.as_array().expect("outgoing list").len(), 0);
+        assert_eq!(incoming.body.as_array().expect("incoming list").len(), 0);
+
+        let wake_events = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/wake-events/recent".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        let event = wake_events.body["events"][0]
+            .as_object()
+            .expect("wake event should be an object");
+        assert_eq!(event["event"], "beep");
+        assert_eq!(event["pushType"], "alert");
+        assert_eq!(event["result"], "missing-alert-token");
+        assert_eq!(
+            event["targetUserId"],
+            serde_json::json!(user_id_for_handle("@blake"))
+        );
+    }
+
+    #[test]
+    fn self_hosted_contact_summary_projects_beep_reachability() {
+        let mut service = service();
+        let remember = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/remember".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "otherHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(remember.status, 200);
+
+        let offline_summary = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(offline_summary.status, 200);
+        assert_eq!(offline_summary.body[0]["handle"], "@blake");
+        assert_eq!(offline_summary.body[0]["isOnline"], false);
+        assert_eq!(offline_summary.body[0]["beepReachability"], "not-reachable");
+
+        let heartbeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/heartbeat".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(heartbeat.status, 200);
+
+        let foreground_summary = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(foreground_summary.body[0]["isOnline"], true);
+        assert_eq!(foreground_summary.body[0]["beepReachability"], "foreground");
+
+        let register = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/devices/register".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "alertPushToken": "alert-token-b",
+                "alertPushEnvironment": "production"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(register.status, 200);
+
+        let durable_committer_after_restart = service.route_service().committer().clone();
+        let mut restarted_service = service_with_config_and_committer(
+            RuntimeHttpConfig::default(),
+            durable_committer_after_restart,
+        );
+        let wake_capable_summary = restarted_service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(wake_capable_summary.body[0]["isOnline"], false);
+        assert_eq!(
+            wake_capable_summary.body[0]["beepReachability"],
+            "wake-capable"
+        );
     }
 
     #[test]
@@ -3950,6 +4235,8 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_refreshes_reciprocal_beep_thread() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@avery", "device-a");
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let first = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -3982,6 +4269,7 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_accepts_stale_beep_id_through_current_alias() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let original = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -4307,6 +4595,7 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_projects_beeps_in_contact_summaries() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -4357,6 +4646,7 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_cancelled_beep_does_not_leave_ghost_contact_summary() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -4394,6 +4684,7 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_projects_pending_beep_in_channel_state() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -4451,6 +4742,7 @@ mod tests {
     #[test]
     fn self_hosted_http_receiver_ready_during_pending_beep_does_not_join_membership() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -4603,6 +4895,7 @@ mod tests {
     #[test]
     fn self_hosted_http_websocket_receiver_ready_during_pending_beep_does_not_join_membership() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),
@@ -5476,6 +5769,7 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_dev_reset_clears_beeps() {
         let mut service = service();
+        mark_handle_foreground(&mut service, "@blake", "device-b");
         let create = service.handle(HttpRequest {
             method: "POST".to_owned(),
             path: "/v1/beeps".to_owned(),

@@ -167,6 +167,21 @@ create table if not exists runtime_profiles (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists runtime_alert_push_tokens (
+  handle text primary key,
+  device_id text not null,
+  token text not null,
+  apns_environment text,
+  status text not null default 'valid',
+  updated_at timestamptz not null default now(),
+  invalidated_at timestamptz,
+  invalidation_reason text,
+  check (status in ('valid', 'invalid'))
+);
+
+create index if not exists runtime_alert_push_tokens_status_updated_at
+  on runtime_alert_push_tokens (status, updated_at);
+
 create sequence if not exists runtime_beep_thread_seq;
 
 create table if not exists runtime_beep_threads (

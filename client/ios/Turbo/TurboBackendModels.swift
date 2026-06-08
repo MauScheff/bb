@@ -3173,6 +3173,22 @@ struct TurboLeaveResponse: Decodable {
     let status: String
 }
 
+enum TurboBeepReachability: String, Decodable, Equatable {
+    case foreground
+    case wakeCapable = "wake-capable"
+    case notReachable = "not-reachable"
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = TurboBeepReachability(rawValue: rawValue) ?? .notReachable
+    }
+
+    static func legacy(isOnline: Bool) -> Self {
+        isOnline ? .foreground : .notReachable
+    }
+}
+
 struct TurboContactSummaryResponse: Decodable, Equatable {
     let userId: String
     let handle: String
@@ -3181,6 +3197,7 @@ struct TurboContactSummaryResponse: Decodable, Equatable {
     let profileName: String
     let channelId: String?
     let isOnline: Bool
+    let beepReachability: TurboBeepReachability
     let isActiveConversation: Bool
     private let beepThreadProjectionPayload: BackendBeepThreadProjectionPayload
     private let membershipPayload: TurboChannelMembershipPayload
@@ -3199,6 +3216,7 @@ struct TurboContactSummaryResponse: Decodable, Equatable {
         requestCount: Int,
         isActiveConversation: Bool,
         badgeStatus: String,
+        beepReachability: TurboBeepReachability? = nil,
         beepThreadProjectionPayload: BackendBeepThreadProjectionPayload? = nil,
         membershipPayload: TurboChannelMembershipPayload? = nil,
         summaryStatusPayload: TurboSummaryStatusPayload? = nil
@@ -3210,6 +3228,7 @@ struct TurboContactSummaryResponse: Decodable, Equatable {
         self.profileName = profileName ?? displayName
         self.channelId = channelId
         self.isOnline = isOnline
+        self.beepReachability = beepReachability ?? .legacy(isOnline: isOnline)
         self.isActiveConversation = isActiveConversation
         self.beepThreadProjectionPayload = beepThreadProjectionPayload ?? Self.synthesizedBeepThreadProjectionPayload(
             hasIncomingBeep: hasIncomingBeep,
@@ -3234,6 +3253,7 @@ struct TurboContactSummaryResponse: Decodable, Equatable {
         case profileName
         case channelId
         case isOnline
+        case beepReachability
         case hasIncomingBeep
         case hasOutgoingBeep
         case requestCount
@@ -3253,6 +3273,10 @@ struct TurboContactSummaryResponse: Decodable, Equatable {
         profileName = try container.decodeIfPresent(String.self, forKey: .profileName) ?? displayName
         channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
         isOnline = try container.decode(Bool.self, forKey: .isOnline)
+        beepReachability = try container.decodeIfPresent(
+            TurboBeepReachability.self,
+            forKey: .beepReachability
+        ) ?? .legacy(isOnline: isOnline)
         isActiveConversation = try container.decode(Bool.self, forKey: .isActiveConversation)
         beepThreadProjectionPayload = try container.decode(
             BackendBeepThreadProjectionPayload.self,

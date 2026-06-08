@@ -760,6 +760,26 @@ struct BeepTests {
         #expect(action.style == .accent)
     }
 
+    @Test func idleUnavailablePrimaryActionDisablesOutgoingBeep() {
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: SelectedConversationState(
+                contactPresence: .offline,
+                relationship: .none,
+                phase: .idle,
+                statusMessage: "Blake is unavailable",
+                canTransmitNow: false
+            ),
+            isSelectedChannelJoined: false,
+            isTransmitting: false,
+            beepCooldownRemaining: nil
+        )
+
+        #expect(action.kind == .connect)
+        #expect(action.label == "Unavailable")
+        #expect(!action.isEnabled)
+        #expect(action.style == .muted)
+    }
+
     @Test func blockedRequestedPrimaryActionAllowsBeepAgainAfterCooldownExpires() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(

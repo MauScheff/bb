@@ -1072,35 +1072,46 @@ extension PTTViewModel {
     }
 
     func contactPresencePresentation(for contactID: UUID) -> ContactPresencePresentation {
-        let rawPresenceOnline = contactSummaryByContactID[contactID]?.isOnline
+        let summary = contactSummaryByContactID[contactID]
+        let rawPresenceOnline = summary?.isOnline
             ?? contacts.first(where: { $0.id == contactID })?.isOnline
             ?? false
+        let summaryReachability = summary.map { contactPresencePresentation(for: $0) }
 
         if let channelSnapshot = selectedChannelSnapshot(for: contactID) {
             if case .absent = channelSnapshot.membership {
-                return rawPresenceOnline ? .connected : .offline
+                return summaryReachability ?? (rawPresenceOnline ? .connected : .offline)
             }
-            return channelSnapshot.membership.peerDeviceConnected ? .connected : (rawPresenceOnline ? .reachable : .offline)
+            if channelSnapshot.membership.peerDeviceConnected {
+                return .connected
+            }
+            if let summaryReachability {
+                return summaryReachability == .connected ? .reachable : summaryReachability
+            }
+            return rawPresenceOnline ? .reachable : .offline
         }
 
-        if let summary = contactSummaryByContactID[contactID] {
-            switch summary.badge {
-            case .online:
-                return .connected
-            case .offline:
-                return .offline
-            case .idle, .unknown:
-                break
-            default:
-                return rawPresenceOnline ? .reachable : .offline
-            }
-
-            if summary.channelId != nil {
-                return summary.membership.peerDeviceConnected ? .connected : (rawPresenceOnline ? .reachable : .offline)
-            }
+        if let summaryReachability {
+            return summaryReachability
         }
 
         return rawPresenceOnline ? .connected : .offline
+    }
+
+    private func contactPresencePresentation(
+        for summary: TurboContactSummaryResponse
+    ) -> ContactPresencePresentation {
+        if summary.membership.peerDeviceConnected {
+            return .connected
+        }
+        switch summary.beepReachability {
+        case .foreground:
+            return summary.channelId == nil ? .connected : .reachable
+        case .wakeCapable:
+            return .reachable
+        case .notReachable:
+            return .offline
+        }
     }
 
     func selectedConversationPresenceIsOnline(for contactID: UUID) -> Bool {

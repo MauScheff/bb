@@ -77,6 +77,7 @@ pub struct DurableConversationStore {
     current_talk_turns: BTreeMap<String, CurrentTalkTurnRow>,
     remembered_contacts_by_handle: BTreeMap<String, BTreeSet<String>>,
     profiles_by_handle: BTreeMap<String, String>,
+    alert_push_tokens_by_handle: BTreeMap<String, DurableAlertPushToken>,
     beep_threads: BTreeMap<String, DurableBeepThread>,
     beep_aliases_by_id: BTreeMap<String, String>,
     next_beep_id: u64,
@@ -95,6 +96,15 @@ pub struct DurableBeepThread {
     pub channel_id: String,
     pub status: String,
     pub request_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableAlertPushToken {
+    pub handle: String,
+    pub device_id: String,
+    pub token: String,
+    pub apns_environment: Option<String>,
+    pub status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -351,6 +361,30 @@ pub trait DurableContactStore {
     fn profile_name(&mut self, handle: &str) -> Result<Option<String>, DurablePostgresError>;
 
     fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError>;
+}
+
+pub trait DurableAlertPushTokenStore {
+    fn upsert_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        token: &str,
+        apns_environment: Option<&str>,
+    ) -> Result<DurableAlertPushToken, DurablePostgresError>;
+
+    fn valid_alert_push_token(
+        &mut self,
+        handle: &str,
+    ) -> Result<Option<DurableAlertPushToken>, DurablePostgresError>;
+
+    fn invalidate_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        reason: &str,
+    ) -> Result<(), DurablePostgresError>;
+
+    fn clear_alert_push_tokens(&mut self) -> Result<usize, DurablePostgresError>;
 }
 
 pub trait DurableBeepThreadStore {
@@ -2423,6 +2457,94 @@ impl DurableContactStore for PostgresDecisionCommitter {
     }
 }
 
+impl DurableAlertPushTokenStore for PostgresDecisionCommitter {
+    fn upsert_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        token: &str,
+        apns_environment: Option<&str>,
+    ) -> Result<DurableAlertPushToken, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let row = client.query_one(
+            "insert into runtime_alert_push_tokens (
+                handle,
+                device_id,
+                token,
+                apns_environment,
+                status,
+                updated_at,
+                invalidated_at,
+                invalidation_reason
+             ) values ($1, $2, $3, $4, 'valid', now(), null, null)
+             on conflict (handle)
+             do update set
+                device_id = excluded.device_id,
+                token = excluded.token,
+                apns_environment = excluded.apns_environment,
+                status = 'valid',
+                updated_at = now(),
+                invalidated_at = null,
+                invalidation_reason = null
+             returning handle, device_id, token, apns_environment, status",
+            &[&handle, &device_id, &token, &apns_environment],
+        )?;
+        Ok(alert_push_token_from_sql(row))
+    }
+
+    fn valid_alert_push_token(
+        &mut self,
+        handle: &str,
+    ) -> Result<Option<DurableAlertPushToken>, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        Ok(client
+            .query_opt(
+                "select handle, device_id, token, apns_environment, status
+                 from runtime_alert_push_tokens
+                 where handle = $1 and status = 'valid'",
+                &[&handle],
+            )?
+            .map(alert_push_token_from_sql))
+    }
+
+    fn invalidate_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        reason: &str,
+    ) -> Result<(), DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        client.execute(
+            "update runtime_alert_push_tokens
+             set status = 'invalid',
+                 invalidated_at = now(),
+                 invalidation_reason = $3,
+                 updated_at = now()
+             where handle = $1 and device_id = $2",
+            &[&handle, &device_id, &reason],
+        )?;
+        Ok(())
+    }
+
+    fn clear_alert_push_tokens(&mut self) -> Result<usize, DurablePostgresError> {
+        let mut client = self
+            .client
+            .lock()
+            .expect("Postgres decision committer lock should not be poisoned");
+        let removed = client.execute("delete from runtime_alert_push_tokens", &[])?;
+        Ok(removed as usize)
+    }
+}
+
 impl DurableBeepThreadStore for PostgresDecisionCommitter {
     fn create_or_refresh_beep_thread(
         &mut self,
@@ -2626,6 +2748,16 @@ impl DurableBeepThreadStore for PostgresDecisionCommitter {
         let removed = tx.execute("delete from runtime_beep_threads", &[])?;
         tx.commit()?;
         Ok(removed as usize)
+    }
+}
+
+fn alert_push_token_from_sql(row: postgres::Row) -> DurableAlertPushToken {
+    DurableAlertPushToken {
+        handle: row.get("handle"),
+        device_id: row.get("device_id"),
+        token: row.get("token"),
+        apns_environment: row.get("apns_environment"),
+        status: row.get("status"),
     }
 }
 
@@ -3662,6 +3794,58 @@ impl DurableContactStore for DurableConversationStore {
     fn clear_profiles(&mut self) -> Result<usize, DurablePostgresError> {
         let removed = self.profiles_by_handle.len();
         self.profiles_by_handle.clear();
+        Ok(removed)
+    }
+}
+
+impl DurableAlertPushTokenStore for DurableConversationStore {
+    fn upsert_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        token: &str,
+        apns_environment: Option<&str>,
+    ) -> Result<DurableAlertPushToken, DurablePostgresError> {
+        let row = DurableAlertPushToken {
+            handle: handle.to_owned(),
+            device_id: device_id.to_owned(),
+            token: token.to_owned(),
+            apns_environment: apns_environment.map(ToOwned::to_owned),
+            status: "valid".to_owned(),
+        };
+        self.alert_push_tokens_by_handle
+            .insert(handle.to_owned(), row.clone());
+        Ok(row)
+    }
+
+    fn valid_alert_push_token(
+        &mut self,
+        handle: &str,
+    ) -> Result<Option<DurableAlertPushToken>, DurablePostgresError> {
+        Ok(self
+            .alert_push_tokens_by_handle
+            .get(handle)
+            .filter(|token| token.status == "valid")
+            .cloned())
+    }
+
+    fn invalidate_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        _reason: &str,
+    ) -> Result<(), DurablePostgresError> {
+        if let Some(token) = self.alert_push_tokens_by_handle.get_mut(handle) {
+            if token.device_id == device_id {
+                token.status = "invalid".to_owned();
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_alert_push_tokens(&mut self) -> Result<usize, DurablePostgresError> {
+        let removed = self.alert_push_tokens_by_handle.len();
+        self.alert_push_tokens_by_handle.clear();
         Ok(removed)
     }
 }

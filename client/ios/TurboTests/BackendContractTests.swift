@@ -939,6 +939,7 @@ struct BackendContractTests {
               "displayName": "Blake",
               "channelId": "channel",
               "isOnline": true,
+              "beepReachability": "foreground",
               "hasIncomingBeep": false,
               "hasOutgoingBeep": false,
               "requestCount": 0,
@@ -964,6 +965,7 @@ struct BackendContractTests {
 
         #expect(summary.beepThreadProjection == .mutual(requestCount: 3))
         #expect(summary.membership == .peerOnly(peerDeviceConnected: true))
+        #expect(summary.beepReachability == .foreground)
         #expect(summary.badge == .incoming)
         #expect(summary.badgeKind == "incoming")
         #expect(summary.badge.conversationState == .incomingBeep)
@@ -1002,6 +1004,7 @@ struct BackendContractTests {
         let summary = try JSONDecoder().decode(TurboContactSummaryResponse.self, from: data)
 
         #expect(summary.isOnline)
+        #expect(summary.beepReachability == .foreground)
         #expect(summary.beepThreadProjection == .outgoing(requestCount: 1))
         #expect(summary.badge == .outgoingBeep)
         #expect(summary.badgeStatus == "outgoing-beep")
@@ -2096,6 +2099,48 @@ struct BackendContractTests {
             membershipPayload: TurboChannelMembershipPayload(
                 kind: "peer-only",
                 peerDeviceConnected: false
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .contactSummariesUpdated([
+                BackendContactSummaryUpdate(contactID: contactID, summary: summary)
+            ])
+        )
+
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .reachable)
+        #expect(viewModel.selectedConversationPresenceIsOnline(for: contactID) == false)
+    }
+
+    @MainActor
+    @Test func contactPresencePresentationTreatsWakeCapableSummaryAsReachable() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: false,
+                channelId: ContactDirectory.stableChannelUUID(for: "channel-blake"),
+                backendChannelId: "channel-blake",
+                remoteUserId: "user-blake"
+            )
+        ]
+        let summary = TurboContactSummaryResponse(
+            userId: "user-blake",
+            handle: "@blake",
+            displayName: "Blake",
+            channelId: "channel-blake",
+            isOnline: false,
+            hasIncomingBeep: false,
+            hasOutgoingBeep: false,
+            requestCount: 0,
+            isActiveConversation: false,
+            badgeStatus: "idle",
+            beepReachability: .wakeCapable,
+            membershipPayload: TurboChannelMembershipPayload(
+                kind: "absent",
+                peerDeviceConnected: nil
             )
         )
         viewModel.backendSyncCoordinator.send(

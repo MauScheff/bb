@@ -2629,6 +2629,16 @@ enum ConversationStateMachine {
                     style: beepCooldownRemaining == nil ? .accent : .muted
                 )
             }
+            if selectedConversationState.phase == .idle,
+               selectedConversationState.contactPresence == .offline,
+               !isSelectedChannelJoined {
+                return ConversationPrimaryAction(
+                    kind: .connect,
+                    label: "Unavailable",
+                    isEnabled: false,
+                    style: .muted
+                )
+            }
             return primaryAction(
                 conversationState: selectedConversationState.conversationState,
                 isSelectedChannelJoined: isSelectedChannelJoined,
