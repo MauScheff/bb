@@ -158,8 +158,16 @@ final class TurboAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         UNUserNotificationCenter.current().delegate = self
         TurboNotificationCategory.register()
         Task { @MainActor in
+            PTTViewModel.shared.beginForegroundActivationIncomingBeepBannerSuppression(reason: "application-launch")
             await PTTViewModel.shared.initializeIfNeeded()
             await PTTViewModel.shared.consumeDeliveredBeepNotificationsWithoutForegroundBanner(reason: "application-launch")
+            PTTViewModel.shared.reconcileIncomingBeepSurface(
+                applicationState: .active,
+                presentationPolicy: .markSeenWithoutBanner,
+                allowsSelectedContact: true,
+                allowsAlreadySurfacedBeep: true
+            )
+            PTTViewModel.shared.endForegroundActivationIncomingBeepBannerSuppression(reason: "application-launch")
             if !AppRuntimeEnvironment.isRunningAutomatedTests {
                 await PTTViewModel.shared.configureAlertNotificationsIfNeeded()
             }

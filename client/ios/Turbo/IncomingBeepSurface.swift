@@ -281,6 +281,11 @@ nonisolated enum IncomingBeepSurfaceReducer {
             if presentationPolicy == .markSeenWithoutBanner {
                 nextState.surfacedBeepIDs.formUnion(activeBeepIDs)
                 nextState.surfacedBeepKeys.formUnion(activeBeepKeys)
+                if let pendingForegroundBeep = nextState.pendingForegroundBeep,
+                   activeBeepKeys.contains(pendingForegroundBeep.surfaceKey) {
+                    nextState.pendingForegroundBeep = nil
+                    nextState.pendingForegroundBeepReceivedAt = nil
+                }
                 return nextState
             }
 

@@ -1201,6 +1201,65 @@ struct BeepTests {
     }
 
     @MainActor
+    @Test func foregroundActivationSuppressesIncomingBeepBannerBeforeNotificationIntakeCompletes() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let beep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-1",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 1,
+            createdAt: "2026-04-17T19:00:00Z",
+            updatedAt: "2026-04-17T19:00:00Z"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: beep.channelId,
+                remoteUserId: beep.fromUserId
+            )
+        ]
+
+        viewModel.beginForegroundActivationIncomingBeepBannerSuppression(reason: "test")
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: beep)],
+                outgoing: [],
+                now: .now
+            )
+        )
+        viewModel.reconcileIncomingBeepSurface(
+            applicationState: .active,
+            allowsSelectedContact: true
+        )
+
+        #expect(viewModel.activeIncomingBeep == nil)
+        #expect(
+            viewModel.incomingBeepSurfaceState.surfacedBeepKeys
+                == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)])
+        )
+
+        viewModel.endForegroundActivationIncomingBeepBannerSuppression(reason: "test")
+        viewModel.reconcileIncomingBeepSurface(
+            applicationState: .active,
+            allowsSelectedContact: true
+        )
+
+        #expect(viewModel.activeIncomingBeep == nil)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Started foreground activation Beep banner suppression"
+            )
+        )
+    }
+
+    @MainActor
     @Test func beepNotificationBadgeCountUsesUniqueIncomingContacts() {
         let viewModel = PTTViewModel()
         let firstContactID = UUID()
@@ -3334,6 +3393,37 @@ struct BeepTests {
 
         #expect(nextState.activeIncomingBeep == nil)
         #expect(nextState.surfacedBeepIDs == Set(["beep-1"]))
+        #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
+    }
+
+    @Test func incomingBeepMarkSeenWithoutBannerClearsMatchingPendingForegroundSurface() {
+        let contactID = UUID()
+        let surface = IncomingBeepSurface(
+            contactID: contactID,
+            beepID: "beep-1",
+            contactName: "Avery",
+            contactHandle: "@avery",
+            contactIsOnline: true,
+            requestCount: 1,
+            recencyKey: "notification:1:beep-1"
+        )
+        let queuedState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .pendingForegroundBeepQueued(surface: surface, receivedAt: Date())
+        )
+        let nextState = IncomingBeepSurfaceReducer.reduce(
+            state: queuedState,
+            event: .beepsUpdated(
+                candidates: [IncomingBeepCandidate(surface: surface)],
+                selectedContactID: nil,
+                applicationIsActive: true,
+                presentationPolicy: .markSeenWithoutBanner
+            )
+        )
+
+        #expect(nextState.activeIncomingBeep == nil)
+        #expect(nextState.pendingForegroundBeep == nil)
+        #expect(nextState.pendingForegroundBeepReceivedAt == nil)
         #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
     }
 

@@ -21,6 +21,9 @@ extension PTTViewModel {
         allowsAlreadySurfacedBeep: Bool = false
     ) {
         let resolvedApplicationState = applicationState ?? currentApplicationState()
+        let effectivePresentationPolicy = suppressIncomingBeepBannersDuringForegroundActivation
+            ? .markSeenWithoutBanner
+            : presentationPolicy
         expirePendingForegroundBeepSurfaceIfNeeded()
         applyBackgroundDeliveredBeepReceiptsToKnownContacts(reason: "incoming-beep-surface-reconcile")
         let candidates: [IncomingBeepCandidate] = contacts.compactMap { contact in
@@ -56,12 +59,32 @@ extension PTTViewModel {
                 candidates: candidates,
                 selectedContactID: selectedContactId,
                 applicationIsActive: resolvedApplicationState == .active,
-                presentationPolicy: presentationPolicy,
+                presentationPolicy: effectivePresentationPolicy,
                 allowsSelectedContact: allowsSelectedContact,
                 allowsAlreadySurfacedBeep: allowsAlreadySurfacedBeep
             )
         )
         completePendingForegroundBeepAcceptIfReady(reason: "surface-reconcile")
+    }
+
+    func beginForegroundActivationIncomingBeepBannerSuppression(reason: String) {
+        guard !suppressIncomingBeepBannersDuringForegroundActivation else { return }
+        suppressIncomingBeepBannersDuringForegroundActivation = true
+        diagnostics.record(
+            .pushToTalk,
+            message: "Started foreground activation Beep banner suppression",
+            metadata: ["reason": reason]
+        )
+    }
+
+    func endForegroundActivationIncomingBeepBannerSuppression(reason: String) {
+        guard suppressIncomingBeepBannersDuringForegroundActivation else { return }
+        suppressIncomingBeepBannersDuringForegroundActivation = false
+        diagnostics.record(
+            .pushToTalk,
+            message: "Ended foreground activation Beep banner suppression",
+            metadata: ["reason": reason]
+        )
     }
 
     func dismissIncomingBeepSurface() {

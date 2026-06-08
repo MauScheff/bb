@@ -368,6 +368,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     @ObservationIgnored
     var backgroundDeliveredBeepReceiptsByHandle: [String: BackgroundDeliveredBeepReceipt] = [:]
     @ObservationIgnored
+    var suppressIncomingBeepBannersDuringForegroundActivation = false
+    @ObservationIgnored
     var conversationParticipantTelemetryNetworkMonitor: NWPathMonitor?
     @ObservationIgnored
     let conversationParticipantTelemetryNetworkQueue = DispatchQueue(label: "Turbo.ConversationParticipantTelemetryNetworkMonitor")
@@ -2414,18 +2416,18 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             message: "Application became active",
             metadata: [:]
         )
+        beginForegroundActivationIncomingBeepBannerSuppression(reason: "application-did-become-active-notification")
         Task { @MainActor [weak self] in
             await self?.handleApplicationDidBecomeActive()
         }
     }
 
     func handleApplicationDidBecomeActive() async {
+        beginForegroundActivationIncomingBeepBannerSuppression(reason: "application-did-become-active")
         syncEngineLifecycle(.active, reason: "application-did-become-active")
         lastLifecyclePresenceTransitionKind = nil
         lastLifecyclePresenceTransitionAt = nil
         lifecyclePresenceTransitionInFlightKind = nil
-        backendServices?.resumeWebSocket()
-        await publishForegroundPresenceTransition(reason: "application-did-become-active")
         updateAutomaticAudioRouteMonitoring(reason: "application-became-active")
         await consumeDeliveredBeepNotificationsWithoutForegroundBanner(reason: "application-did-become-active")
         reconcileIncomingBeepSurface(
@@ -2434,6 +2436,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             allowsSelectedContact: true,
             allowsAlreadySurfacedBeep: true
         )
+        endForegroundActivationIncomingBeepBannerSuppression(reason: "application-did-become-active")
+        backendServices?.resumeWebSocket()
+        await publishForegroundPresenceTransition(reason: "application-did-become-active")
         await resumeBufferedWakePlaybackIfNeeded(
             reason: "application-became-active",
             applicationState: .active
