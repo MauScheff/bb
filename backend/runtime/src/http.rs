@@ -211,6 +211,7 @@ struct AppPttPushRequest<'a> {
 struct AppBeepAlertPushRequest<'a> {
     beep_id: &'a str,
     channel_id: &'a str,
+    request_count: u64,
     from_handle: &'a str,
     from_user_id: &'a str,
     target_handle: &'a str,
@@ -1575,6 +1576,7 @@ where
         self.send_apns_beep_alert_push(AppBeepAlertPushRequest {
             beep_id: &beep.beep_id,
             channel_id: &beep.channel_id,
+            request_count: beep.request_count.max(1),
             from_handle: &beep.from_handle,
             from_user_id: &user_id_for_handle(&beep.from_handle),
             target_handle: &target_handle,
@@ -1592,6 +1594,7 @@ where
             "pushType": "alert",
             "beepId": request.beep_id,
             "channelId": request.channel_id,
+            "requestCount": request.request_count,
             "senderUserId": request.from_user_id,
             "senderHandle": request.from_handle,
             "targetUserId": user_id_for_handle(request.target_handle),
@@ -1635,6 +1638,7 @@ where
                 },
                 "event": "beep",
                 "beepId": request.beep_id,
+                "requestCount": request.request_count,
                 "fromHandle": request.from_handle,
                 "fromUserId": request.from_user_id,
                 "channelId": request.channel_id,
@@ -1651,6 +1655,7 @@ where
                 "pushType": "alert",
                 "beepId": request.beep_id,
                 "channelId": request.channel_id,
+                "requestCount": request.request_count,
                 "targetDeviceId": request.target_device_id,
             },
         });
@@ -3722,6 +3727,7 @@ mod tests {
             assert!(request.contains("\"interruption-level\":\"time-sensitive\""));
             assert!(request.contains("\"mutable-content\":1"));
             assert!(request.contains("\"fromHandle\":\"@avery\""));
+            assert!(request.contains("\"requestCount\":1"));
             assert!(request.contains("\"sandbox\":false"));
             let body = br#"{"ok":true,"result":"sent","status":200,"reason":null}"#;
             let response = format!(

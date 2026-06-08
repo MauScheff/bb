@@ -42,15 +42,6 @@ extension PTTViewModel {
                   contact.handle != currentDevUserHandle else {
                 return nil
             }
-            guard incomingBeepByContactID[contact.id] == nil else {
-                clearPendingForegroundBeepSurface(contactID: contact.id)
-                return nil
-            }
-            let relationship = beepThreadProjection(for: contact.id)
-            guard !relationship.hasIncomingBeep else {
-                clearPendingForegroundBeepSurface(contactID: contact.id)
-                return nil
-            }
             guard !beepNotificationAlreadyHandled(for: contact.id) else {
                 clearPendingForegroundBeepSurface(contactID: contact.id)
                 return nil
@@ -330,6 +321,7 @@ extension PTTViewModel {
         for contact: Contact,
         beepID: String,
         requestCount: Int,
+        contactIsOnlineOverride: Bool? = nil,
         subject: String? = nil,
         sentAt: String? = nil,
         reason: String
@@ -340,7 +332,7 @@ extension PTTViewModel {
             beepID: beepID,
             contactName: contact.name,
             contactHandle: contact.handle,
-            contactIsOnline: contact.isOnline,
+            contactIsOnline: contactIsOnlineOverride ?? contact.isOnline,
             requestCount: normalizedRequestCount,
             recencyKey: "notification:\(normalizedRequestCount):\(beepID)",
             channelID: contact.backendChannelId,

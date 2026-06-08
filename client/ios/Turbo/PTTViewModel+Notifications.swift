@@ -447,10 +447,8 @@ extension PTTViewModel {
             return
         }
 
-        clearPendingForegroundBeepSurface(
-            contactID: contact.id,
-            beepID: (userInfo["beepId"] as? String)
-        )
+        // Keep the foreground notification edge queued so it can merge with backend snapshots.
+        // It expires or clears when the user accepts, opens, or dismisses it.
     }
 
     func beepNotificationAlreadyHandled(for contactID: UUID) -> Bool {
@@ -569,6 +567,20 @@ extension PTTViewModel {
         userInfo["fromHandle"] as? String
     }
 
+    private func beepNotificationRequestCount(from userInfo: [AnyHashable: Any]) -> Int? {
+        if let requestCount = userInfo["requestCount"] as? Int {
+            return max(requestCount, 1)
+        }
+        if let requestCount = userInfo["requestCount"] as? NSNumber {
+            return max(requestCount.intValue, 1)
+        }
+        if let requestCount = userInfo["requestCount"] as? String,
+           let parsed = Int(requestCount) {
+            return max(parsed, 1)
+        }
+        return nil
+    }
+
     @discardableResult
     private func openBeepFromNotification(
         handle: String,
@@ -638,10 +650,6 @@ extension PTTViewModel {
         userInfo: [AnyHashable: Any],
         reason: String
     ) {
-        guard !beepThreadProjection(for: contact.id).hasIncomingBeep else {
-            clearPendingForegroundBeepSurface(contactID: contact.id)
-            return
-        }
         guard !beepNotificationAlreadyHandled(for: contact.id) else {
             clearPendingForegroundBeepSurface(contactID: contact.id)
             return
@@ -649,13 +657,15 @@ extension PTTViewModel {
         guard let beepID = userInfo["beepId"] as? String, !beepID.isEmpty else {
             return
         }
-        let requestCount = incomingBeepByContactID[contact.id]?.requestCount
+        let requestCount = beepNotificationRequestCount(from: userInfo)
+            ?? incomingBeepByContactID[contact.id]?.requestCount
             ?? beepThreadProjection(for: contact.id).requestCount
             ?? 1
         queuePendingForegroundBeepSurface(
             for: contact,
             beepID: beepID,
             requestCount: requestCount,
+            contactIsOnlineOverride: true,
             subject: userInfo["subject"] as? String,
             sentAt: (userInfo["sentAt"] as? String) ?? (userInfo["createdAt"] as? String),
             reason: reason
@@ -672,6 +682,7 @@ extension PTTViewModel {
             "event": (userInfo["event"] as? String) ?? "unknown",
             "fromHandle": beepNotificationHandle(from: userInfo) ?? "none",
             "beepId": (userInfo["beepId"] as? String) ?? "none",
+            "requestCount": beepNotificationRequestCount(from: userInfo).map(String.init) ?? "none",
             "channelId": (userInfo["channelId"] as? String) ?? "none",
             "subject": (userInfo["subject"] as? String) ?? "none",
             "sentAt": ((userInfo["sentAt"] as? String) ?? (userInfo["createdAt"] as? String)) ?? "none",

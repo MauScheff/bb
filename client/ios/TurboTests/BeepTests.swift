@@ -1627,6 +1627,73 @@ struct BeepTests {
     }
 
     @MainActor
+    @Test func foregroundRepeatBeepNotificationSurfacesWhenIncomingBeepAlreadyPending() async {
+        let viewModel = PTTViewModel()
+        viewModel.applicationStateOverride = .active
+        let contactID = UUID()
+        let beep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-2",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 2,
+            createdAt: "2026-04-17T19:01:00Z",
+            updatedAt: "2026-04-17T19:01:00Z"
+        )
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: false,
+                channelId: UUID(),
+                backendChannelId: beep.channelId,
+                remoteUserId: beep.fromUserId
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.backendSyncCoordinator.send(
+            .contactSummariesUpdated([
+                BackendContactSummaryUpdate(
+                    contactID: contactID,
+                    summary: makeContactSummary(
+                        channelId: beep.channelId,
+                        handle: "@avery",
+                        displayName: "Avery",
+                        isOnline: false,
+                        hasIncomingBeep: true,
+                        requestCount: 2,
+                        badgeStatus: "incoming"
+                    )
+                )
+            ])
+        )
+        viewModel.markIncomingBeepSurfaceOpened(
+            for: contactID,
+            beepID: "beep-1",
+            requestCount: 1
+        )
+
+        await viewModel.handleForegroundBeepNotification(
+            userInfo: [
+                "event": TurboNotificationCategory.beepEvent,
+                "fromHandle": "@avery",
+                "beepId": "beep-2",
+                "requestCount": 2,
+            ]
+        )
+
+        #expect(viewModel.activeIncomingBeep?.contactID == contactID)
+        #expect(viewModel.activeIncomingBeep?.beepID == "beep-2")
+        #expect(viewModel.activeIncomingBeep?.requestCount == 2)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Queued pending foreground incoming Beep surface from notification"
+            )
+        )
+    }
+
+    @MainActor
     @Test func acceptedIncomingBeepSuppressesStaleBeepResurface() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -3592,6 +3659,32 @@ struct BeepTests {
         #expect(offlineState.activeIncomingBeep == nil)
         #expect(visibleState.activeIncomingBeep?.contactID == contactID)
         #expect(downgradedState.activeIncomingBeep == nil)
+    }
+
+    @Test func foregroundNotificationSurfaceCanAppearForStaleOfflinePresence() {
+        let contactID = UUID()
+        let notificationSurface = IncomingBeepSurface(
+            contactID: contactID,
+            beepID: "beep-2",
+            contactName: "Avery",
+            contactHandle: "@avery",
+            contactIsOnline: false,
+            requestCount: 2,
+            recencyKey: "notification:2:beep-2"
+        )
+
+        let nextState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .beepsUpdated(
+                candidates: [IncomingBeepCandidate(surface: notificationSurface)],
+                selectedContactID: contactID,
+                applicationIsActive: true,
+                allowsSelectedContact: true
+            )
+        )
+
+        #expect(nextState.activeIncomingBeep?.beepID == "beep-2")
+        #expect(nextState.activeIncomingBeep?.requestCount == 2)
     }
 
     @Test func backgroundNotificationOpenConsumesForegroundIncomingBeepSurface() {

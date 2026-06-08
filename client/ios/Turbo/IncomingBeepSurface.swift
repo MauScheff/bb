@@ -84,6 +84,10 @@ nonisolated struct CanonicalIncomingBeep: Equatable, Identifiable {
         if sources.contains(.foregroundNotification) { return 2 }
         return 1
     }
+
+    var isEligibleForSurfaceByPresence: Bool {
+        contactIsOnline || sources.contains(.foregroundNotification)
+    }
 }
 
 nonisolated struct IncomingBeepSurface: Equatable, Identifiable {
@@ -255,7 +259,7 @@ nonisolated enum IncomingBeepSurfaceReducer {
 
             if let activeIncomingBeep = nextState.activeIncomingBeep,
                let activeCandidate = canonicalCandidates.first(where: { $0.beep.key == activeIncomingBeep.surfaceKey }),
-               !activeCandidate.surface.contactIsOnline {
+               !activeCandidate.beep.isEligibleForSurfaceByPresence {
                 nextState.activeIncomingBeep = nil
             } else if let activeIncomingBeep = nextState.activeIncomingBeep,
                       !activeBeepKeys.contains(activeIncomingBeep.surfaceKey) {
@@ -283,7 +287,7 @@ nonisolated enum IncomingBeepSurfaceReducer {
             }
 
             let candidate = sortedCandidates.first { candidate in
-                candidate.surface.contactIsOnline
+                candidate.beep.isEligibleForSurfaceByPresence
                     && (allowsSelectedContact || candidate.surface.contactID != selectedContactID)
                     && (
                         allowsAlreadySurfacedBeep
