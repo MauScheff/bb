@@ -3483,6 +3483,48 @@ struct BeepTests {
         #expect(viewModel.diagnosticsTranscript.contains("Auto-selected contact"))
     }
 
+    @MainActor
+    @Test func foregroundIncomingBeepBannerAutoDismissesAfterDelay() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let beep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-1",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            createdAt: "2026-04-17T19:00:00Z",
+            updatedAt: "2026-04-17T19:00:00Z"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.incomingBeepSurfaceAutoDismissDelayNanoseconds = 20_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: beep.channelId,
+                remoteUserId: beep.fromUserId
+            )
+        ]
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: beep)],
+                outgoing: [],
+                now: .now
+            )
+        )
+        viewModel.reconcileIncomingBeepSurface(applicationState: .active)
+        let surface = try #require(viewModel.activeIncomingBeep)
+
+        viewModel.scheduleIncomingBeepSurfaceAutoDismiss(surface)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        #expect(viewModel.activeIncomingBeep == nil)
+        #expect(viewModel.diagnosticsTranscript.contains("Auto-dismissed foreground incoming Beep banner"))
+    }
+
     @Test func incomingBeepSurfaceKeepsActiveBannerStableWhenBeepSourceFlipsForSameBeep() {
         let contactID = UUID()
         let contact = Contact(

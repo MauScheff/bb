@@ -378,6 +378,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     @ObservationIgnored
     var automaticAudioRouteSwitchingEnabled = true
     @ObservationIgnored
+    var incomingBeepSurfaceAutoDismissTask: Task<Void, Never>?
+    @ObservationIgnored
+    var incomingBeepSurfaceAutoDismissDelayNanoseconds: UInt64 = 4_500_000_000
+    @ObservationIgnored
     var mediaRelayConnectOverride: (@MainActor (
         TurboMediaRelayClient,
         TurboMediaRelayClientConfig,
@@ -553,6 +557,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         conversationParticipantTelemetryPollTask?.cancel()
         conversationParticipantTelemetryOutputVolumeObservation?.invalidate()
         conversationParticipantTelemetryNetworkMonitor?.cancel()
+        incomingBeepSurfaceAutoDismissTask?.cancel()
         Task { @MainActor in
             UIDevice.current.isProximityMonitoringEnabled = false
         }

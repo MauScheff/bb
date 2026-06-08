@@ -64,6 +64,8 @@ extension PTTViewModel {
     }
 
     func dismissIncomingBeepSurface() {
+        incomingBeepSurfaceAutoDismissTask?.cancel()
+        incomingBeepSurfaceAutoDismissTask = nil
         if let activeIncomingBeep {
             clearPendingForegroundBeepSurface(contactID: activeIncomingBeep.contactID)
         }
@@ -73,11 +75,34 @@ extension PTTViewModel {
         )
     }
 
+    func scheduleIncomingBeepSurfaceAutoDismiss(_ surface: IncomingBeepSurface) {
+        incomingBeepSurfaceAutoDismissTask?.cancel()
+        let surfaceKey = surface.surfaceKey
+        let delayNanoseconds = incomingBeepSurfaceAutoDismissDelayNanoseconds
+        incomingBeepSurfaceAutoDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            guard self.activeIncomingBeep?.surfaceKey == surfaceKey else { return }
+            self.diagnostics.record(
+                .pushToTalk,
+                message: "Auto-dismissed foreground incoming Beep banner",
+                metadata: [
+                    "contactId": surface.contactID.uuidString,
+                    "beepId": surface.beepID,
+                    "requestCount": "\(surface.requestCount)",
+                ]
+            )
+            self.dismissIncomingBeepSurface()
+        }
+    }
+
     func markIncomingBeepSurfaceOpened(
         for contactID: UUID,
         beepID: String?,
         requestCount: Int? = nil
     ) {
+        incomingBeepSurfaceAutoDismissTask?.cancel()
+        incomingBeepSurfaceAutoDismissTask = nil
         clearPendingForegroundBeepSurface(contactID: contactID, beepID: beepID)
         let resolvedRequestCount = requestCount ?? beepThreadProjection(for: contactID).requestCount
         incomingBeepSurfaceState = IncomingBeepSurfaceReducer.reduce(

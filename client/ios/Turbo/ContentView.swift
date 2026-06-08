@@ -165,6 +165,9 @@ struct ContentView: View {
                 .padding(.horizontal)
                 .padding(.top, route == .launchSplash ? 18 : 10)
                 .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: activeIncomingBeep.surfaceKey.stableID) {
+                    viewModel.scheduleIncomingBeepSurfaceAutoDismiss(activeIncomingBeep)
+                }
             }
         }
         .overlay(alignment: .bottom) {
