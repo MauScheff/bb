@@ -21,6 +21,7 @@ use crate::{
 };
 
 const APP_COMPATIBLE_TRANSMIT_LEASE_MS: u64 = 12_000;
+const PRESENCE_ONLINE_LEASE_MS: u128 = 30_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpRequest {
@@ -189,6 +190,7 @@ struct RuntimeAlertPushToken {
 struct RuntimePresence {
     status: String,
     device_id: Option<String>,
+    last_seen_at_ms: u128,
 }
 
 struct AppPttPushRequest<'a> {
@@ -1214,12 +1216,14 @@ where
             self.beep_projection_for_channel(channel_id, handle)?;
         let projected_membership =
             membership.projected_for_pending_beep(has_incoming_beep || has_outgoing_beep);
+        let peer_online = self.handle_is_online(peer_handle);
         let badge_status = summary_status_kind(
             has_incoming_beep,
             has_outgoing_beep,
             projected_membership.self_joined,
             projected_membership.peer_joined,
             projected_membership.peer_device_connected,
+            peer_online,
             active_transmitter_for_handle(self.state.channels.get(channel_id), handle),
         );
         let active_transmitter_user_id =
@@ -1233,7 +1237,7 @@ where
             "displayName": profile_name,
             "profileName": profile_name,
             "channelId": channel_id,
-            "isOnline": true,
+            "isOnline": peer_online,
             "hasIncomingBeep": has_incoming_beep,
             "hasOutgoingBeep": has_outgoing_beep,
             "requestCount": request_count,
@@ -1763,6 +1767,8 @@ where
                 handle_for_user_id(&peer_user_id_for_channel(channel_id, &self_user_id))
             });
         let peer_user_id = user_id_for_handle(&peer_handle);
+        let self_online = self.handle_is_online(handle);
+        let peer_online = self.handle_is_online(&peer_handle);
         let (has_incoming_beep, has_outgoing_beep, request_count) =
             self.beep_projection_for_channel(channel_id, handle)?;
         let membership = self.channel_membership(channel_id, handle);
@@ -1793,8 +1799,8 @@ where
             "selfUserId": self_user_id,
             "peerUserId": peer_user_id,
             "peerHandle": peer_handle,
-            "selfOnline": true,
-            "peerOnline": true,
+            "selfOnline": self_online,
+            "peerOnline": peer_online,
             "stateEpoch": "1",
             "serverTimestamp": "1970-01-01T00:00:00Z",
             "activeTransmitId": active_transmit_id,
@@ -2132,6 +2138,7 @@ where
             RuntimePresence {
                 status: status.to_owned(),
                 device_id,
+                last_seen_at_ms: runtime_now_millis(),
             },
         );
     }
@@ -2140,21 +2147,27 @@ where
         self.state
             .presence_by_handle
             .get(&normalize_handle(handle))
-            .is_none_or(|presence| presence.status != "offline")
+            .is_some_and(|presence| Self::presence_is_online(presence, runtime_now_millis()))
     }
 
     fn handle_is_connected(&self, handle: &str) -> bool {
         self.state
             .presence_by_handle
             .get(&normalize_handle(handle))
-            .is_none_or(|presence| presence.status == "online")
+            .is_some_and(|presence| Self::presence_is_online(presence, runtime_now_millis()))
     }
 
     fn presence_device_id(&self, handle: &str) -> Option<String> {
         self.state
             .presence_by_handle
             .get(&normalize_handle(handle))
+            .filter(|presence| Self::presence_is_online(presence, runtime_now_millis()))
             .and_then(|presence| presence.device_id.clone())
+    }
+
+    fn presence_is_online(presence: &RuntimePresence, now_ms: u128) -> bool {
+        presence.status == "online"
+            && now_ms.saturating_sub(presence.last_seen_at_ms) <= PRESENCE_ONLINE_LEASE_MS
     }
 }
 
@@ -3017,6 +3030,7 @@ fn summary_status_kind(
     self_joined: bool,
     peer_joined: bool,
     peer_device_connected: bool,
+    peer_online: bool,
     active_transmitter_is_self: Option<bool>,
 ) -> &'static str {
     if let Some(is_self) = active_transmitter_is_self {
@@ -3025,12 +3039,14 @@ fn summary_status_kind(
         "incoming"
     } else if has_outgoing_beep {
         "outgoing-beep"
-    } else if self_joined && peer_joined && !peer_device_connected {
+    } else if self_joined && peer_joined && !peer_device_connected && peer_online {
         "online"
     } else if self_joined || peer_joined {
         "ready"
-    } else {
+    } else if peer_online {
         "online"
+    } else {
+        "offline"
     }
 }
 
@@ -4064,7 +4080,28 @@ mod tests {
             "none"
         );
         assert_eq!(avery_summaries.body[0]["membership"]["kind"], "absent");
-        assert_eq!(avery_summaries.body[0]["summaryStatus"]["kind"], "online");
+        assert_eq!(avery_summaries.body[0]["isOnline"], false);
+        assert_eq!(avery_summaries.body[0]["summaryStatus"]["kind"], "offline");
+
+        let blake_heartbeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/heartbeat".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-b" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(blake_heartbeat.status, 200);
+        let avery_summaries_after_heartbeat = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(avery_summaries_after_heartbeat.body[0]["isOnline"], true);
+        assert_eq!(
+            avery_summaries_after_heartbeat.body[0]["summaryStatus"]["kind"],
+            "online"
+        );
 
         let durable_committer_after_restart = service.route_service().committer().clone();
         let mut restarted_service = service_with_config_and_committer(
@@ -4096,6 +4133,100 @@ mod tests {
             restarted_blake_summaries.body[0]["handle"], "@avery",
             "reciprocal remembered contact must survive RuntimeHttpService rebuild"
         );
+        assert_eq!(
+            restarted_avery_summaries.body[0]["isOnline"], false,
+            "online presence is a runtime lease and must not survive RuntimeHttpService rebuild"
+        );
+        assert_eq!(
+            restarted_avery_summaries.body[0]["summaryStatus"]["kind"],
+            "offline"
+        );
+    }
+
+    #[test]
+    fn self_hosted_contact_presence_expires_without_fresh_heartbeat() {
+        let mut service = service();
+
+        let remember = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/remember".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(remember.status, 200);
+
+        service.state.presence_by_handle.insert(
+            "@blake".to_owned(),
+            RuntimePresence {
+                status: "online".to_owned(),
+                device_id: Some("device-b".to_owned()),
+                last_seen_at_ms: runtime_now_millis().saturating_sub(PRESENCE_ONLINE_LEASE_MS + 1),
+            },
+        );
+
+        let summaries = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(summaries.status, 200);
+        assert_eq!(summaries.body[0]["isOnline"], false);
+        assert_eq!(summaries.body[0]["summaryStatus"]["kind"], "offline");
+
+        let lookup = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/users/by-handle/@blake/presence".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(lookup.status, 200);
+        assert_eq!(lookup.body["isOnline"], false);
+    }
+
+    #[test]
+    fn self_hosted_channel_state_uses_fresh_presence_leases() {
+        let mut service = service();
+
+        let channel = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/channels/direct".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(channel.status, 200);
+        let channel_id = channel.body["channelId"].as_str().expect("channel id");
+
+        let initial_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(initial_state.status, 200);
+        assert_eq!(initial_state.body["selfOnline"], false);
+        assert_eq!(initial_state.body["peerOnline"], false);
+
+        let blake_heartbeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/heartbeat".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-b" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(blake_heartbeat.status, 200);
+
+        let peer_online_state = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: format!("/v1/channels/{channel_id}/state/device-a"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(peer_online_state.status, 200);
+        assert_eq!(peer_online_state.body["selfOnline"], false);
+        assert_eq!(peer_online_state.body["peerOnline"], true);
     }
 
     #[test]
@@ -5300,9 +5431,10 @@ mod tests {
             peer_summaries_after_disconnect.body[0]["membership"]["peerDeviceConnected"],
             false
         );
+        assert_eq!(peer_summaries_after_disconnect.body[0]["isOnline"], false);
         assert_eq!(
             peer_summaries_after_disconnect.body[0]["summaryStatus"]["kind"],
-            "online"
+            "ready"
         );
 
         let heartbeat = service.handle(HttpRequest {

@@ -223,7 +223,7 @@ pub fn run_self_hosted_http_process_probe() -> Result<SelfHostedHttpProbeReport,
     let presence = get(address, "/s/turbo/v1/users/by-handle/%40blake/presence")?;
     let presence_ok = presence.status_code == 200
         && presence.body.contains(r#""handle":"@blake""#)
-        && presence.body.contains(r#""isOnline":true"#);
+        && presence.body.contains(r#""isOnline":false"#);
     observations.push(http_observation(
         "app-compatible-user-presence",
         "GET",
