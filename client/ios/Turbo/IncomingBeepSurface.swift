@@ -210,6 +210,7 @@ nonisolated enum IncomingBeepSurfaceEvent: Equatable {
         candidates: [IncomingBeepCandidate],
         selectedContactID: UUID?,
         applicationIsActive: Bool,
+        presentationPolicy: IncomingBeepSurfacePresentationPolicy = .surfaceEligible,
         allowsSelectedContact: Bool = false,
         allowsAlreadySurfacedBeep: Bool = false
     )
@@ -220,6 +221,11 @@ nonisolated enum IncomingBeepSurfaceEvent: Equatable {
     case pendingForegroundBeepExpired(now: Date, lifetime: TimeInterval)
     case incomingBeepAcceptStarted(IncomingBeepSurface)
     case incomingBeepAcceptFinished(IncomingBeepSurface)
+}
+
+nonisolated enum IncomingBeepSurfacePresentationPolicy: Equatable {
+    case surfaceEligible
+    case markSeenWithoutBanner
 }
 
 nonisolated enum IncomingBeepSurfaceReducer {
@@ -234,6 +240,7 @@ nonisolated enum IncomingBeepSurfaceReducer {
             let candidates,
             let selectedContactID,
             let applicationIsActive,
+            let presentationPolicy,
             let allowsSelectedContact,
             let allowsAlreadySurfacedBeep
         ):
@@ -259,6 +266,12 @@ nonisolated enum IncomingBeepSurfaceReducer {
                activeBeepKeys.contains(activeIncomingBeep.surfaceKey) {
                 nextState.surfacedBeepIDs.insert(activeIncomingBeep.beepID)
                 nextState.surfacedBeepKeys.insert(activeIncomingBeep.surfaceKey)
+            }
+
+            if presentationPolicy == .markSeenWithoutBanner {
+                nextState.surfacedBeepIDs.formUnion(activeBeepIDs)
+                nextState.surfacedBeepKeys.formUnion(activeBeepKeys)
+                return nextState
             }
 
             guard applicationIsActive else {

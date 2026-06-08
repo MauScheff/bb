@@ -1066,7 +1066,7 @@ extension PTTViewModel {
         return outgoingBeeps.first { beepMatchesJoinRequest($0, request: request, direction: "outgoing") }
     }
 
-    func shouldReplaceExistingOutgoingBeep(for request: BackendJoinRequest) -> Bool {
+    func shouldRefreshExistingOutgoingBeep(for request: BackendJoinRequest) -> Bool {
         guard request.intent == .requestConnection else { return false }
         guard !request.relationship.hasIncomingBeep else { return false }
         guard request.relationship.hasOutgoingBeep else { return false }
@@ -1103,7 +1103,7 @@ extension PTTViewModel {
 
         var contact = contacts[index]
         var createdBeep: TurboBeepResponse?
-        let shouldReplaceOutgoingBeep = shouldReplaceExistingOutgoingBeep(for: request)
+        let shouldRefreshOutgoingBeep = shouldRefreshExistingOutgoingBeep(for: request)
         let shouldCreateOutgoingBeepWithoutMetadataPrefetch =
             shouldCreateOutgoingBeepWithoutMetadataPrefetch(for: request)
 
@@ -1160,35 +1160,16 @@ extension PTTViewModel {
             }
         }
 
-        if shouldReplaceOutgoingBeep,
-           let outgoingBeep = try await resolveOutgoingBeep(for: request, backend: backend) {
-            do {
-                _ = try await backend.cancelBeep(beepId: outgoingBeep.beepId)
-                diagnostics.record(
-                    .backend,
-                    message: "Cancelled stale outgoing Beep before sending Beep again",
-                    metadata: ["contactId": request.contactID.uuidString, "handle": request.handle]
-                )
-            } catch {
-                guard shouldIgnoreBeepNotFoundFailure(error) else {
-                    diagnostics.record(
-                        .backend,
-                        level: .error,
-                        message: "Cancel outgoing Beep before Beep Again failed",
-                        metadata: [
-                            "contactId": request.contactID.uuidString,
-                            "handle": request.handle,
-                            "error": error.localizedDescription,
-                        ]
-                    )
-                    throw error
-                }
-                diagnostics.record(
-                    .backend,
-                    message: "Ignoring stale outgoing Beep cancel failure during Beep Again",
-                    metadata: ["contactId": request.contactID.uuidString, "handle": request.handle]
-                )
-            }
+        if shouldRefreshOutgoingBeep {
+            diagnostics.record(
+                .backend,
+                message: "Refreshing existing outgoing Beep thread before sending Beep again",
+                metadata: [
+                    "contactId": request.contactID.uuidString,
+                    "handle": request.handle,
+                    "relationship": String(describing: request.relationship),
+                ]
+            )
         }
 
         let shouldAcceptIncomingBeep = request.relationship.hasIncomingBeep && request.contactIsOnline
@@ -1226,7 +1207,7 @@ extension PTTViewModel {
             ? await existingConversationSnapshot(for: contact, backend: backend)
             : nil
 
-        if !shouldReplaceOutgoingBeep,
+        if !shouldRefreshOutgoingBeep,
            shouldResolveOutgoingBeepBeforeJoin(for: request, contact: contact),
            let beep = try await resolveOutgoingBeep(for: request, backend: backend) {
             applyBeepMetadata(beep, to: &contact)

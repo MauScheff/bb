@@ -4267,6 +4267,40 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_http_route_probe_refreshes_repeat_outgoing_beep_thread() {
+        let mut service = service();
+        mark_handle_foreground(&mut service, "@avery", "device-a");
+        mark_handle_foreground(&mut service, "@blake", "device-b");
+        let first = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "friendHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        let repeat = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "friendHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+
+        assert_eq!(first.body["beepId"], repeat.body["beepId"]);
+        assert_eq!(repeat.body["requestCount"], 2);
+        assert_eq!(repeat.body["direction"], "outgoing");
+
+        let blake_incoming = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/beeps/incoming".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(blake_incoming.body[0]["requestCount"], 2);
+        assert_eq!(blake_incoming.body[0]["direction"], "incoming");
+    }
+
+    #[test]
     fn self_hosted_http_route_probe_accepts_stale_beep_id_through_current_alias() {
         let mut service = service();
         mark_handle_foreground(&mut service, "@blake", "device-b");

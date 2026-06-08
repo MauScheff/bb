@@ -2564,7 +2564,7 @@ struct BeepTests {
     }
 
     @MainActor
-    @Test func beepAgainReplacesExistingOutgoingBeepAfterCooldownExpires() {
+    @Test func beepAgainRefreshesExistingOutgoingBeepAfterCooldownExpires() {
         let viewModel = PTTViewModel()
         let request = BackendJoinRequest(
             contactID: UUID(),
@@ -2579,11 +2579,11 @@ struct BeepTests {
             usesLocalHTTPBackend: false
         )
 
-        #expect(viewModel.shouldReplaceExistingOutgoingBeep(for: request))
+        #expect(viewModel.shouldRefreshExistingOutgoingBeep(for: request))
     }
 
     @MainActor
-    @Test func beepAgainDoesNotReplaceOutgoingBeepWhileCooldownIsActive() {
+    @Test func beepAgainDoesNotRefreshOutgoingBeepWhileCooldownIsActive() {
         let viewModel = PTTViewModel()
         let request = BackendJoinRequest(
             contactID: UUID(),
@@ -2598,7 +2598,7 @@ struct BeepTests {
             usesLocalHTTPBackend: false
         )
 
-        #expect(!viewModel.shouldReplaceExistingOutgoingBeep(for: request))
+        #expect(!viewModel.shouldRefreshExistingOutgoingBeep(for: request))
     }
 
     @MainActor
@@ -3159,6 +3159,74 @@ struct BeepTests {
         #expect(backgroundState.activeIncomingBeep == nil)
         #expect(backgroundState.surfacedBeepIDs.isEmpty)
         #expect(activeState.activeIncomingBeep?.beepID == "beep-1")
+    }
+
+    @Test func incomingBeepSurfaceCanMarkPendingBeepSeenWithoutBannerWhenAppOpens() {
+        let contactID = UUID()
+        let candidate = IncomingBeepCandidate(
+            contact: Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID()
+            ),
+            beep: makeBeep(
+                direction: "incoming",
+                beepId: "beep-1",
+                fromHandle: "@avery",
+                createdAt: "2026-04-17T19:00:00Z",
+                updatedAt: "2026-04-17T19:00:00Z"
+            )
+        )
+
+        let openedState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .beepsUpdated(
+                candidates: [candidate],
+                selectedContactID: nil,
+                applicationIsActive: true,
+                presentationPolicy: .markSeenWithoutBanner
+            )
+        )
+        let repeatedPendingState = IncomingBeepSurfaceReducer.reduce(
+            state: openedState,
+            event: .beepsUpdated(
+                candidates: [candidate],
+                selectedContactID: nil,
+                applicationIsActive: true
+            )
+        )
+        let refreshedCandidate = IncomingBeepCandidate(
+            contact: Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID()
+            ),
+            beep: makeBeep(
+                direction: "incoming",
+                beepId: "beep-1",
+                fromHandle: "@avery",
+                requestCount: 2,
+                createdAt: "2026-04-17T19:00:00Z",
+                updatedAt: "2026-04-17T19:01:00Z"
+            )
+        )
+        let newRevisionState = IncomingBeepSurfaceReducer.reduce(
+            state: repeatedPendingState,
+            event: .beepsUpdated(
+                candidates: [refreshedCandidate],
+                selectedContactID: nil,
+                applicationIsActive: true
+            )
+        )
+
+        #expect(openedState.activeIncomingBeep == nil)
+        #expect(openedState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
+        #expect(repeatedPendingState.activeIncomingBeep == nil)
+        #expect(newRevisionState.activeIncomingBeep?.requestCount == 2)
     }
 
     @Test func incomingBeepSurfaceNormallyDoesNotInterruptForSelectedContact() {

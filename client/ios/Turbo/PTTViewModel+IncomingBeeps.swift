@@ -16,6 +16,7 @@ extension PTTViewModel {
 
     func reconcileIncomingBeepSurface(
         applicationState: UIApplication.State? = nil,
+        presentationPolicy: IncomingBeepSurfacePresentationPolicy = .surfaceEligible,
         allowsSelectedContact: Bool = false,
         allowsAlreadySurfacedBeep: Bool = false
     ) {
@@ -63,6 +64,7 @@ extension PTTViewModel {
                 candidates: candidates,
                 selectedContactID: selectedContactId,
                 applicationIsActive: resolvedApplicationState == .active,
+                presentationPolicy: presentationPolicy,
                 allowsSelectedContact: allowsSelectedContact,
                 allowsAlreadySurfacedBeep: allowsAlreadySurfacedBeep
             )

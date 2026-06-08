@@ -2419,6 +2419,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         clearBeepNotifications()
         reconcileIncomingBeepSurface(
             applicationState: .active,
+            presentationPolicy: .markSeenWithoutBanner,
             allowsSelectedContact: true,
             allowsAlreadySurfacedBeep: true
         )
