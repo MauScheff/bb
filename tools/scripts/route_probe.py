@@ -1038,19 +1038,26 @@ async def main() -> int:
                 expected_status="ok",
             )
 
-            heartbeat = run_check(
+            foreground_presence = run_check(
                 results,
-                f"presence-heartbeat:{current['handle']}",
+                f"presence-foreground:{current['handle']}",
                 lambda current=current: request(
                     args.base_url,
-                    "/v1/presence/heartbeat",
+                    "/v1/presence/foreground",
                     current["handle"],
                     method="POST",
                     body={"deviceId": current["device_id"]},
                     insecure=args.insecure,
                 ),
             )
-            require(heartbeat.get("deviceId") == current["device_id"], f"presence heartbeat mismatched device: {heartbeat}")
+            require(
+                foreground_presence.get("deviceId") == current["device_id"],
+                f"presence foreground mismatched device: {foreground_presence}",
+            )
+            require(
+                foreground_presence.get("status") == "online",
+                f"presence foreground should report online: {foreground_presence}",
+            )
 
             background_presence = run_check(
                 results,
@@ -1101,12 +1108,12 @@ async def main() -> int:
                 f"background presence lookup should include online state: {presence_lookup}",
             )
 
-            heartbeat_after_background = run_check(
+            keepalive_after_background = run_check(
                 results,
-                f"presence-heartbeat-after-background:{current['handle']}",
+                f"presence-keepalive-after-background:{current['handle']}",
                 lambda current=current: request(
                     args.base_url,
-                    "/v1/presence/heartbeat",
+                    "/v1/presence/keepalive",
                     current["handle"],
                     method="POST",
                     body={"deviceId": current["device_id"]},
@@ -1114,8 +1121,12 @@ async def main() -> int:
                 ),
             )
             require(
-                heartbeat_after_background.get("deviceId") == current["device_id"],
-                f"presence heartbeat after background mismatched device: {heartbeat_after_background}",
+                keepalive_after_background.get("deviceId") == current["device_id"],
+                f"presence keepalive after background mismatched device: {keepalive_after_background}",
+            )
+            require(
+                keepalive_after_background.get("status") in {"background", "offline"},
+                f"presence keepalive after background must not resurrect foreground reachability: {keepalive_after_background}",
             )
 
             device_after_background = run_check(
@@ -1144,12 +1155,12 @@ async def main() -> int:
                 f"device registration without identity leaked Direct QUIC certificate DER material: {device_after_background}",
             )
 
-            heartbeat_after_reregister = run_check(
+            foreground_after_reregister = run_check(
                 results,
-                f"presence-heartbeat-after-reregister:{current['handle']}",
+                f"presence-foreground-after-reregister:{current['handle']}",
                 lambda current=current: request(
                     args.base_url,
-                    "/v1/presence/heartbeat",
+                    "/v1/presence/foreground",
                     current["handle"],
                     method="POST",
                     body={"deviceId": current["device_id"]},
@@ -1157,8 +1168,12 @@ async def main() -> int:
                 ),
             )
             require(
-                heartbeat_after_reregister.get("deviceId") == current["device_id"],
-                f"presence heartbeat after re-register mismatched device: {heartbeat_after_reregister}",
+                foreground_after_reregister.get("deviceId") == current["device_id"],
+                f"presence foreground after re-register mismatched device: {foreground_after_reregister}",
+            )
+            require(
+                foreground_after_reregister.get("status") == "online",
+                f"presence foreground after re-register should report online: {foreground_after_reregister}",
             )
 
         caller_summaries = run_check(
@@ -1300,10 +1315,10 @@ async def main() -> int:
         )
         run_check(
             results,
-            "presence-heartbeat:caller-before-accept",
+            "presence-foreground:caller-before-accept",
             lambda: request(
                 args.base_url,
-                "/v1/presence/heartbeat",
+                "/v1/presence/foreground",
                 caller["handle"],
                 method="POST",
                 body={"deviceId": caller["device_id"]},
@@ -1366,10 +1381,10 @@ async def main() -> int:
         )
         run_check(
             results,
-            "presence-heartbeat:caller-before-stale-accept",
+            "presence-foreground:caller-before-stale-accept",
             lambda: request(
                 args.base_url,
-                "/v1/presence/heartbeat",
+                "/v1/presence/foreground",
                 caller["handle"],
                 method="POST",
                 body={"deviceId": caller["device_id"]},
@@ -1562,10 +1577,10 @@ async def main() -> int:
             )
         run_check(
             results,
-            "presence-heartbeat:callee-before-mutual-accept",
+            "presence-foreground:callee-before-mutual-accept",
             lambda: request(
                 args.base_url,
-                "/v1/presence/heartbeat",
+                "/v1/presence/foreground",
                 callee["handle"],
                 method="POST",
                 body={"deviceId": callee["device_id"]},

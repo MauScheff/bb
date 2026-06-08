@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--heartbeat-interval",
         type=int,
         default=20,
-        help="Seconds between presence-heartbeat writes per device. Set 0 to disable.",
+        help="Seconds between presence-keepalive writes per device. Set 0 to disable.",
     )
     parser.add_argument(
         "--telemetry-interval",
@@ -232,12 +232,12 @@ async def repeat_http_action(
             )
             duration_ms = int((time.perf_counter() - started) * 1000)
             detail = "ok"
-            if action_name == "heartbeat":
+            if action_name == "presence-keepalive":
                 expected_device_id = current["device_id"]
                 actual_device_id = payload.get("deviceId")
                 if actual_device_id != expected_device_id:
                     raise RuntimeError(
-                        f"heartbeat deviceId mismatch for {current['handle']}: expected {expected_device_id}, got {actual_device_id}"
+                        f"presence keepalive deviceId mismatch for {current['handle']}: expected {expected_device_id}, got {actual_device_id}"
                     )
             if action_name == "telemetry":
                 status = payload.get("status")
@@ -314,7 +314,7 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         request(
             args.base_url,
-            "/v1/presence/heartbeat",
+            "/v1/presence/foreground",
             current["handle"],
             method="POST",
             body={"deviceId": current["device_id"]},
@@ -385,9 +385,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 interval_seconds=args.heartbeat_interval,
                 stop_event=stop_event,
                 results=http_results,
-                action_name="heartbeat",
+                action_name="presence-keepalive",
                 build_body=lambda current, _iteration: {"deviceId": current["device_id"]},
-                path="/v1/presence/heartbeat",
+                path="/v1/presence/keepalive",
             )
         ),
         asyncio.create_task(
@@ -398,9 +398,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 interval_seconds=args.heartbeat_interval,
                 stop_event=stop_event,
                 results=http_results,
-                action_name="heartbeat",
+                action_name="presence-keepalive",
                 build_body=lambda current, _iteration: {"deviceId": current["device_id"]},
-                path="/v1/presence/heartbeat",
+                path="/v1/presence/keepalive",
             )
         ),
     ]

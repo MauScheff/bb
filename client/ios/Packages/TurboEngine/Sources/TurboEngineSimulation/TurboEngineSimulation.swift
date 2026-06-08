@@ -377,7 +377,7 @@ public final class LiveHTTPWebSocketEngineBackendPort: EngineBackendPort {
 
     private func markPresenceOnline(_ deviceID: EngineDeviceID, handle: String) async throws {
         _ = try await requestJSON(
-            path: "/v1/presence/heartbeat",
+            path: "/v1/presence/foreground",
             method: "POST",
             handle: handle,
             body: DeviceBody(deviceId: deviceID.rawValue)

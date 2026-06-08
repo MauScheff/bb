@@ -122,7 +122,7 @@ def validate_response(
     response: str,
     expected_device_id: str | None,
 ) -> str | None:
-    if endpoint not in {"device", "heartbeat", "telemetry"}:
+    if endpoint not in {"device", "foreground", "telemetry"}:
         return None
     try:
         parsed = json.loads(response)
@@ -130,17 +130,17 @@ def validate_response(
         return f"{endpoint} returned invalid JSON"
     if not isinstance(parsed, dict):
         return f"{endpoint} returned unexpected payload type"
-    if endpoint in {"device", "heartbeat"}:
+    if endpoint in {"device", "foreground"}:
         actual_device_id = str(parsed.get("deviceId") or "")
         if expected_device_id and actual_device_id != expected_device_id:
             return (
                 f"{endpoint} deviceId mismatch: expected {expected_device_id}, "
                 f"got {actual_device_id or 'missing'}"
             )
-    if endpoint == "heartbeat":
+    if endpoint == "foreground":
         status = str(parsed.get("status") or "")
         if not status:
-            return "heartbeat response missing status"
+            return "foreground response missing status"
     if endpoint == "telemetry":
         status = str(parsed.get("status") or "")
         if not status:
@@ -224,9 +224,9 @@ def main() -> int:
                 None,
             ),
             (
-                "heartbeat",
+                "foreground",
                 "POST",
-                "v1/presence/heartbeat",
+                "v1/presence/foreground",
                 {"deviceId": device_id},
                 True,
                 device_id,

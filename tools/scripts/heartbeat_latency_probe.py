@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 #
-# Minimal tail-latency probe for Turbo's heartbeat endpoint.
+# Minimal tail-latency probe for Turbo's foreground presence endpoint.
 #
 # Endpoint:
-#   POST /v1/presence/heartbeat
+#   POST /v1/presence/foreground
 #   Headers:
 #     x-turbo-user-handle: @avery
 #     Authorization: Bearer @avery
 #   Body:
-#     {"deviceId":"heartbeat-latency-probe-..."}
+#     {"deviceId":"presence-latency-probe-..."}
 #
-# Current Unison implementation under bb/main, narrowed to the route and
-# storage call that matter for heartbeat latency:
+# Current presence implementation, narrowed to the route and storage call that
+# matter for foreground-presence latency:
 #
-# turbo.service.presence.heartbeat : Database -> '{Route, Config, Exception, Http, Storage, Remote, Random} ()
-# turbo.service.presence.heartbeat db = do
+# presence foreground:
 #   use Parser /
 #   use object empty
-#   noCapture POST (s "v1" / s "presence" / s "heartbeat")
+#   noCapture POST (s "v1" / s "presence" / s "foreground")
 #   match requireUser db () with
 #     Left err          -> unauthorized.json (empty |> addText "error" err)
 #     Right currentUser ->
@@ -29,20 +28,9 @@
 #         None              -> badRequest.json (empty |> addText "error" "missing deviceId")
 #         Some deviceIdText ->
 #           deviceId = DeviceId.fromText deviceIdText
-#           _ = store.presence.heartbeat db deviceId currentUserId ()
+#           _ = store.presence.foreground db deviceId currentUserId ()
 #           _ = touchCurrent db deviceId ()
 #           ok.json (empty |> addText "deviceId" deviceIdText |> addText "userId" (UserId.toText currentUserId) |> addText "status" "online")
-#
-# turbo.store.presence.heartbeat : Database -> DeviceId -> UserId -> '{Exception, Storage, Remote, Random} DevicePresence
-# turbo.store.presence.heartbeat db deviceId userId = do
-#   now = now!
-#   match presence.get db deviceId () with
-#     Some existing@(DevicePresence _ _ _ currentChannelId _) ->
-#       if presence.internal.shouldWriteHeartbeat now userId existing then
-#         presence.upsert db deviceId userId DevicePresenceStatus.Online currentChannelId ()
-#       else existing
-#     None ->
-#       presence.upsert db deviceId userId DevicePresenceStatus.Online None ()
 
 import json
 import statistics
@@ -59,10 +47,10 @@ SLOW_MS = 2000
 def main() -> None:
     durations = []
     failures = 0
-    url = BASE_URL.rstrip("/") + "/v1/presence/heartbeat"
+    url = BASE_URL.rstrip("/") + "/v1/presence/foreground"
 
     for i in range(1, ITERATIONS + 1):
-        device_id = f"heartbeat-latency-probe-{int(time.time())}-{i}"
+        device_id = f"presence-latency-probe-{int(time.time())}-{i}"
         body = json.dumps({"deviceId": device_id})
         cmd = [
             "curl", "-sS", "--max-time", str(TIMEOUT_SECONDS),
