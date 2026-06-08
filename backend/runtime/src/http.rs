@@ -149,6 +149,7 @@ impl RuntimeApnsWorkerConfig {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct RuntimeHttpState {
     channels: BTreeMap<String, RuntimeChannel>,
+    alert_push_tokens_by_handle: BTreeMap<String, RuntimeAlertPushToken>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
@@ -178,6 +179,13 @@ struct RuntimeEphemeralToken {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RuntimeAlertPushToken {
+    device_id: String,
+    token: String,
+    apns_environment: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct RuntimePresence {
     status: String,
     device_id: Option<String>,
@@ -194,6 +202,19 @@ struct AppPttPushRequest<'a> {
     target_token: &'a str,
     target_apns_environment: Option<&'a str>,
     attempt_id: &'a str,
+    started_at: &'a str,
+}
+
+struct AppBeepAlertPushRequest<'a> {
+    beep_id: &'a str,
+    channel_id: &'a str,
+    from_handle: &'a str,
+    from_user_id: &'a str,
+    target_handle: &'a str,
+    target_device_id: &'a str,
+    target_token: &'a str,
+    target_apns_environment: Option<&'a str>,
+    badge_count: usize,
     started_at: &'a str,
 }
 
@@ -573,6 +594,20 @@ where
                 self.state
                     .direct_quic_identities_by_device
                     .insert(device_id.clone(), identity);
+            }
+            if let Some(alert_push_token) = path_value(&body, &["alertPushToken"])
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+            {
+                let alert_push_environment = path_value(&body, &["alertPushEnvironment"])
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                self.record_alert_push_token(
+                    handle,
+                    &device_id,
+                    alert_push_token,
+                    alert_push_environment,
+                );
             }
             let direct_quic_identity = self
                 .state
@@ -1045,6 +1080,7 @@ where
             .committer_mut()
             .create_or_refresh_beep_thread(&from_handle, &to_handle, &channel_id)?;
         self.ensure_channel_participants(&channel_id, &from_handle, &to_handle);
+        self.send_beep_alert_push_if_possible(&beep);
         Ok(beep)
     }
 
@@ -1425,6 +1461,156 @@ where
         }
     }
 
+    fn send_beep_alert_push_if_possible(&mut self, beep: &DurableBeepThread) {
+        let target_handle = normalize_handle(&beep.to_handle);
+        let Some(target) = self
+            .state
+            .alert_push_tokens_by_handle
+            .get(&target_handle)
+            .cloned()
+        else {
+            return;
+        };
+        let badge_count = self
+            .beeps_for_handle(&target_handle, "incoming")
+            .map(|beeps| beeps.len())
+            .unwrap_or(1);
+        let started_at = runtime_iso8601_utc_millis(runtime_now_millis());
+        self.send_apns_beep_alert_push(AppBeepAlertPushRequest {
+            beep_id: &beep.beep_id,
+            channel_id: &beep.channel_id,
+            from_handle: &beep.from_handle,
+            from_user_id: &user_id_for_handle(&beep.from_handle),
+            target_handle: &target_handle,
+            target_device_id: &target.device_id,
+            target_token: &target.token,
+            target_apns_environment: target.apns_environment.as_deref(),
+            badge_count,
+            started_at: &started_at,
+        });
+    }
+
+    fn send_apns_beep_alert_push(&mut self, request: AppBeepAlertPushRequest<'_>) {
+        let base_event = serde_json::json!({
+            "event": "beep",
+            "pushType": "alert",
+            "beepId": request.beep_id,
+            "channelId": request.channel_id,
+            "senderUserId": request.from_user_id,
+            "senderHandle": request.from_handle,
+            "targetUserId": user_id_for_handle(request.target_handle),
+            "targetDeviceId": request.target_device_id,
+            "startedAt": request.started_at,
+            "recordedAt": runtime_iso8601_utc_millis(runtime_now_millis()),
+        });
+
+        let Some(worker) = self.runtime_config.apns_worker.clone() else {
+            self.record_wake_event(
+                base_event,
+                "not-configured",
+                0,
+                "TURBO_APNS_WORKER_BASE_URL or TURBO_APNS_WORKER_SECRET missing",
+            );
+            return;
+        };
+
+        let sandbox = request
+            .target_apns_environment
+            .map(|environment| environment != "production")
+            .unwrap_or(worker.use_sandbox);
+        let worker_url = format!("{}/apns/send", worker.base_url.trim_end_matches('/'));
+        let deep_link = format!(
+            "beepbeep://conversation?handle={}&action=accept&beepId={}&channelId={}",
+            request.from_handle, request.beep_id, request.channel_id
+        );
+        let body = serde_json::json!({
+            "token": request.target_token,
+            "payload": {
+                "aps": {
+                    "alert": {
+                        "title": format!("{} wants to talk", request.from_handle),
+                        "body": "Tap to accept."
+                    },
+                    "badge": request.badge_count,
+                    "sound": "default",
+                    "category": "TURBO_BEEP",
+                    "interruption-level": "time-sensitive",
+                    "mutable-content": 1
+                },
+                "event": "beep",
+                "beepId": request.beep_id,
+                "fromHandle": request.from_handle,
+                "fromUserId": request.from_user_id,
+                "channelId": request.channel_id,
+                "deepLink": deep_link,
+            },
+            "pushType": "alert",
+            "bundleId": worker.bundle_id,
+            "sandbox": sandbox,
+            "priority": 10,
+            "expiration": 0,
+            "collapseId": format!("beep:{}", request.channel_id),
+            "metadata": {
+                "event": "beep",
+                "pushType": "alert",
+                "beepId": request.beep_id,
+                "channelId": request.channel_id,
+                "targetDeviceId": request.target_device_id,
+            },
+        });
+
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(worker.timeout_ms))
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                self.record_wake_event(base_event, "client-build-failed", 0, &error.to_string());
+                return;
+            }
+        };
+
+        let response = client
+            .post(worker_url)
+            .header("x-turbo-worker-secret", worker.secret)
+            .json(&body)
+            .send();
+        match response {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let response_text = response.text().unwrap_or_default();
+                let parsed: Option<Value> = serde_json::from_str(&response_text).ok();
+                let result = parsed
+                    .as_ref()
+                    .and_then(|value| path_value(value, &["result"]).and_then(Value::as_str))
+                    .unwrap_or(if (200..300).contains(&status) {
+                        "sent"
+                    } else {
+                        "rejected"
+                    });
+                let status_code = parsed
+                    .as_ref()
+                    .and_then(|value| path_value(value, &["status"]).and_then(Value::as_u64))
+                    .unwrap_or(status as u64);
+                let response_body = parsed
+                    .as_ref()
+                    .and_then(|value| path_value(value, &["reason"]).and_then(Value::as_str))
+                    .or_else(|| {
+                        if response_text.is_empty() {
+                            None
+                        } else {
+                            Some(response_text.as_str())
+                        }
+                    })
+                    .unwrap_or("");
+                self.record_wake_event(base_event, result, status_code, response_body);
+            }
+            Err(error) => {
+                self.record_wake_event(base_event, "transport-failed", 0, &error.to_string());
+            }
+        }
+    }
+
     fn record_wake_event(
         &mut self,
         mut event: Value,
@@ -1524,6 +1710,23 @@ where
         channel.ephemeral_tokens_by_handle.insert(
             handle,
             RuntimeEphemeralToken {
+                device_id: device_id.to_owned(),
+                token: token.to_owned(),
+                apns_environment,
+            },
+        );
+    }
+
+    fn record_alert_push_token(
+        &mut self,
+        handle: &str,
+        device_id: &str,
+        token: &str,
+        apns_environment: Option<String>,
+    ) {
+        self.state.alert_push_tokens_by_handle.insert(
+            normalize_handle(handle),
+            RuntimeAlertPushToken {
                 device_id: device_id.to_owned(),
                 token: token.to_owned(),
                 apns_environment,
@@ -3336,6 +3539,92 @@ mod tests {
         assert_eq!(outgoing.body.as_array().expect("outgoing list").len(), 1);
         assert_eq!(incoming.body.as_array().expect("incoming list").len(), 1);
         assert_eq!(incoming.body[0]["direction"], "incoming");
+    }
+
+    #[test]
+    fn self_hosted_beep_create_sends_alert_push_for_registered_recipient() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("worker listener should bind");
+        let worker_address = listener.local_addr().expect("worker address should exist");
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("worker should accept request");
+            let mut request = vec![0_u8; 8192];
+            let read = stream
+                .read(&mut request)
+                .expect("worker should read request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("POST /apns/send HTTP/1.1"));
+            assert!(request.contains("x-turbo-worker-secret: secret"));
+            assert!(request.contains("alert-token-b"));
+            assert!(request.contains("\"pushType\":\"alert\""));
+            assert!(request.contains("\"event\":\"beep\""));
+            assert!(request.contains("\"category\":\"TURBO_BEEP\""));
+            assert!(request.contains("\"interruption-level\":\"time-sensitive\""));
+            assert!(request.contains("\"mutable-content\":1"));
+            assert!(request.contains("\"fromHandle\":\"@avery\""));
+            assert!(request.contains("\"sandbox\":false"));
+            let body = br#"{"ok":true,"result":"sent","status":200,"reason":null}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("worker should write response");
+        });
+
+        let mut service = service_with_config(RuntimeHttpConfig {
+            apns_worker: Some(RuntimeApnsWorkerConfig {
+                base_url: format!("http://{worker_address}"),
+                secret: "secret".to_owned(),
+                bundle_id: "com.rounded.Turbo".to_owned(),
+                use_sandbox: true,
+                timeout_ms: 1_000,
+            }),
+            ..RuntimeHttpConfig::default()
+        });
+        let register = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/devices/register".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "deviceLabel": "Blake Phone",
+                "alertPushToken": "alert-token-b",
+                "alertPushEnvironment": "production"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(register.status, 200);
+
+        let create = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/beeps".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "friendHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(create.status, 200);
+        assert_eq!(create.body["direction"], "outgoing");
+        worker.join().expect("worker should finish");
+
+        let push_events = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/wake-events/recent".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(push_events.status, 200);
+        let event = push_events.body["events"][0]
+            .as_object()
+            .expect("push event should be an object");
+        assert_eq!(event["event"], "beep");
+        assert_eq!(event["pushType"], "alert");
+        assert_eq!(event["result"], "sent");
+        assert_eq!(event["statusCode"], "200");
+        assert_eq!(event["targetDeviceId"], "device-b");
     }
 
     #[test]
