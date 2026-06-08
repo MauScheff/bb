@@ -812,8 +812,7 @@ struct ContentView: View {
             onClose: onClose,
             onLeave: {
                 leaveCallScreen(for: contact)
-                ensureContactSelected(contact, reason: "call-screen-action")
-                viewModel.disconnect()
+                viewModel.disconnectAndReturnToContactList(from: contact)
             },
             onJoin: {
                 ensureContactSelected(contact, reason: "call-screen-action")

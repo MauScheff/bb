@@ -842,6 +842,40 @@ extension PTTViewModel {
         }
     }
 
+    func disconnectAndReturnToContactList(from contact: Contact) {
+        Task {
+            await disconnectSelectedConversationAndReturnToContactList(from: contact)
+        }
+    }
+
+    func disconnectSelectedConversationAndReturnToContactList(from contact: Contact) async {
+        if selectedContactId != contact.id {
+            selectContact(
+                contact,
+                reason: "call-screen-leave",
+                opensIncomingBeepSurface: false
+            )
+        }
+
+        await requestDisconnectSelectedConversation()
+        clearSelectionAfterCallLeave(contactID: contact.id)
+    }
+
+    private func clearSelectionAfterCallLeave(contactID: UUID) {
+        guard selectedContactId == contactID else { return }
+        selectedContactId = nil
+        syncEngineSelectedFriend(nil, reason: "call-screen-leave")
+        selectedContactPrewarmedSelectionContactID = nil
+        selectedConversationCoordinator.send(.selectedContactChanged(nil))
+        updateStatusForSelectedContact()
+        diagnostics.record(
+            .state,
+            message: "Returned to contact list after call leave",
+            metadata: ["contactId": contactID.uuidString]
+        )
+        captureDiagnosticsState("call-screen-leave:return-home")
+    }
+
     func performDisconnect() {
         let disconnectContactID = selectedContactId
         let disconnectChannelUUID = activeChannelId.flatMap { channelUUID(for: $0) }

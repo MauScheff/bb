@@ -3692,6 +3692,38 @@ struct ConversationTests {
     }
 
     @MainActor
+    @Test func callScreenLeaveIssuesDisconnectThenReturnsToContactList() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+
+        await viewModel.disconnectSelectedConversationAndReturnToContactList(from: contact)
+
+        #expect(pttClient.leaveRequests == [channelUUID])
+        #expect(viewModel.conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID))
+        #expect(viewModel.selectedContactId == nil)
+        #expect(viewModel.selectedConversationCoordinator.state.selection == nil)
+        #expect(viewModel.diagnosticsTranscript.contains("Returned to contact list after call leave"))
+    }
+
+    @MainActor
     @Test func reconciledTeardownWithoutSystemSessionClearsPendingLeave() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
