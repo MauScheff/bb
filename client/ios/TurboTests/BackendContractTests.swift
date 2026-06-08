@@ -2107,12 +2107,12 @@ struct BackendContractTests {
             ])
         )
 
-        #expect(viewModel.contactPresencePresentation(for: contactID) == .reachable)
-        #expect(viewModel.selectedConversationPresenceIsOnline(for: contactID) == false)
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .foreground)
+        #expect(viewModel.selectedConversationPresenceIsOnline(for: contactID))
     }
 
     @MainActor
-    @Test func contactPresencePresentationTreatsWakeCapableSummaryAsReachable() {
+    @Test func contactPresencePresentationTreatsWakeCapableSummaryAsWakeCapable() {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         viewModel.contacts = [
@@ -2149,7 +2149,7 @@ struct BackendContractTests {
             ])
         )
 
-        #expect(viewModel.contactPresencePresentation(for: contactID) == .reachable)
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .wakeCapable)
         #expect(viewModel.selectedConversationPresenceIsOnline(for: contactID) == false)
     }
 
@@ -2208,7 +2208,7 @@ struct BackendContractTests {
             .channelStateUpdated(contactID: contactID, channelState: channelState)
         )
 
-        #expect(viewModel.contactPresencePresentation(for: contactID) == .connected)
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .foreground)
     }
 
     @MainActor

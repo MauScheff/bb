@@ -15,7 +15,7 @@ struct SelectedConversationSelection: Equatable {
         self.contactID = contactID
         self.contactName = contactName
         self.contactIsOnline = contactIsOnline
-        self.contactPresence = contactPresence ?? (contactIsOnline ? .connected : .offline)
+        self.contactPresence = contactPresence ?? FriendAvailability(isOnline: contactIsOnline)
     }
 }
 

@@ -10544,7 +10544,7 @@ struct ConnectionTests {
             contactID: contactID,
             contactName: "Avery",
             contactIsOnline: false,
-            contactPresence: .offline
+            contactPresence: .unavailable
         )
 
         let state = reduceSelectedConversationState([
@@ -10572,7 +10572,7 @@ struct ConnectionTests {
             contactID: contactID,
             contactName: "Avery",
             contactIsOnline: false,
-            contactPresence: .offline
+            contactPresence: .unavailable
         )
 
         let connectingState = reduceSelectedConversationState([

@@ -1723,7 +1723,7 @@ struct ContentView: View {
         }
     }
 
-    private func contactStatusPillModel(_ contact: Contact) -> ContactStatusPillModel {
+    private func contactStatusPillModel(_ contact: Contact) -> ContactStatusPillModel? {
         pillModel(
             for: viewModel.contactListItem(for: contact).presentation,
             isActiveConversation: true
@@ -1747,27 +1747,33 @@ struct ContentView: View {
             return ContactStatusPillModel(text: "Needs attention", tint: .orange)
         case .idle:
             return pillModel(for: viewModel.contactListItem(for: contact).presentation)
+                ?? ContactStatusPillModel(text: "Offline", tint: .gray)
         }
     }
 
-    private func contactListItemStatusPillModel(_ item: ContactListItem) -> ContactStatusPillModel {
+    private func contactListItemStatusPillModel(_ item: ContactListItem) -> ContactStatusPillModel? {
         pillModel(for: item.presentation)
     }
 
     private func pillModel(
         for presentation: ContactListPresentation,
         isActiveConversation: Bool = false
-    ) -> ContactStatusPillModel {
+    ) -> ContactStatusPillModel? {
+        guard let text = presentation.statusPillText(isActiveConversation: isActiveConversation) else {
+            return nil
+        }
         switch presentation.availabilityPill {
+        case .hidden:
+            return nil
         case .online:
             return ContactStatusPillModel(
-                text: presentation.statusPillText(isActiveConversation: isActiveConversation),
+                text: text,
                 tint: .green
             )
         case .offline:
-            return ContactStatusPillModel(text: presentation.statusPillText(), tint: .gray)
+            return ContactStatusPillModel(text: text, tint: .gray)
         case .busy:
-            return ContactStatusPillModel(text: presentation.statusPillText(), tint: .orange)
+            return ContactStatusPillModel(text: text, tint: .orange)
         }
     }
 }

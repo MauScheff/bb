@@ -410,6 +410,42 @@ struct ConversationPrimaryAction: Equatable {
     let style: ConversationPrimaryActionStyle
 }
 
+nonisolated enum FriendAvailability: Equatable {
+    case foreground
+    case wakeCapable
+    case unavailable
+
+    init(isOnline: Bool) {
+        self = isOnline ? .foreground : .unavailable
+    }
+
+    var isForeground: Bool {
+        self == .foreground
+    }
+
+    var canReceiveBeep: Bool {
+        switch self {
+        case .foreground, .wakeCapable:
+            return true
+        case .unavailable:
+            return false
+        }
+    }
+}
+
+typealias ContactPresencePresentation = FriendAvailability
+
+nonisolated struct BeepContent: Equatable {
+    static let empty = BeepContent()
+
+    let subject: String?
+
+    init(subject: String? = nil) {
+        let trimmedSubject = subject?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.subject = trimmedSubject?.isEmpty == false ? trimmedSubject : nil
+    }
+}
+
 enum BeepThreadProjection: Equatable {
     case none
     case outgoingBeep(requestCount: Int)
@@ -524,12 +560,15 @@ enum ConversationListSection: String, Equatable {
 }
 
 enum ConversationAvailabilityPill: String, Equatable {
+    case hidden
     case online
     case offline
     case busy
 
-    var pillText: String {
+    var pillText: String? {
         switch self {
+        case .hidden:
+            return nil
         case .online:
             return "Online"
         case .offline:
@@ -546,7 +585,7 @@ struct ContactListPresentation: Equatable {
     let availabilityPill: ConversationAvailabilityPill
     let requestCount: Int?
 
-    func statusPillText(isActiveConversation: Bool = false) -> String {
+    func statusPillText(isActiveConversation: Bool = false) -> String? {
         if isActiveConversation, availabilityPill == .online {
             return "Connected"
         }
@@ -1404,7 +1443,7 @@ struct ConversationDerivationContext: Equatable {
         self.relationship = relationship
         self.contactName = contactName
         self.contactIsOnline = contactIsOnline
-        self.contactPresence = contactPresence ?? (contactIsOnline ? .connected : .offline)
+        self.contactPresence = contactPresence ?? FriendAvailability(isOnline: contactIsOnline)
         self.localSession = localSession ?? DevicePTTLocalSession(
             selectedContactID: contactID,
             isJoined: isJoined,
@@ -1557,18 +1596,18 @@ struct ConversationDerivationContext: Equatable {
 
     var idleAvailabilityStatusMessage: String {
         switch contactPresence {
-        case .connected, .reachable:
+        case .foreground:
             return "\(contactName) is online"
-        case .offline:
+        case .wakeCapable, .unavailable:
             return "Ready to connect"
         }
     }
 
     var connectionAttemptStatusMessage: String {
         switch contactPresence {
-        case .offline:
+        case .unavailable:
             return "Waiting for \(contactName) to reconnect"
-        case .connected, .reachable:
+        case .foreground, .wakeCapable:
             return "Connecting..."
         }
     }
@@ -2062,6 +2101,9 @@ enum ConversationStateMachine {
         let connectedExecution = context.connectedExecutionProjection
         let connectedControlPlane = context.connectedControlPlaneProjection
         let pendingBeepState: () -> SelectedConversationState? = {
+            guard !context.pendingConnectAcceptedIncomingBeep else {
+                return nil
+            }
             guard context.pendingAction.pendingJoinContactID != context.contactID else {
                 return nil
             }
@@ -2088,7 +2130,7 @@ enum ConversationStateMachine {
         }
         let fallbackState: () -> SelectedConversationState = {
             let localDevicePTTEvidencePresent = devicePTTContinuity.localDevicePTTEvidencePresent
-            let idleIsOnline = context.contactPresence != .offline
+            let idleIsOnline = context.contactPresence.isForeground
 
             if let pendingBeepState = pendingBeepState() {
                 return pendingBeepState
@@ -2316,7 +2358,7 @@ enum ConversationStateMachine {
         case .ready, .transmitting, .receiving:
             return .live
         case .idle:
-            return presence == .offline ? .offline : .online
+            return presence.isForeground ? .online : .offline
         }
     }
 
@@ -2338,16 +2380,21 @@ enum ConversationStateMachine {
 
     static func availabilityPill(
         for presence: ContactPresencePresentation,
+        displayStatus: ConversationDisplayStatus,
         isBusy: Bool = false
     ) -> ConversationAvailabilityPill {
         if isBusy {
             return .busy
         }
 
+        if case .beep = displayStatus, !presence.isForeground {
+            return .hidden
+        }
+
         switch presence {
-        case .connected, .reachable:
+        case .foreground:
             return .online
-        case .offline:
+        case .wakeCapable, .unavailable:
             return .offline
         }
     }
@@ -2366,7 +2413,11 @@ enum ConversationStateMachine {
         return ContactListPresentation(
             displayStatus: displayStatus,
             section: contactListSection(for: displayStatus),
-            availabilityPill: availabilityPill(for: presence, isBusy: isBusy),
+            availabilityPill: availabilityPill(
+                for: presence,
+                displayStatus: displayStatus,
+                isBusy: isBusy
+            ),
             requestCount: displayStatus.requestCount
         )
     }
@@ -2426,7 +2477,7 @@ enum ConversationStateMachine {
     ) -> String {
         switch conversationState {
         case .incomingBeep:
-            return "Accept"
+            return "Connect Now"
         case .outgoingBeep:
             if let beepCooldownRemaining {
                 return "Beep again in \(beepCooldownRemaining)s"
@@ -2519,7 +2570,7 @@ enum ConversationStateMachine {
         case .friendReady:
             return ConversationPrimaryAction(
                 kind: .connect,
-                label: "Connect",
+                label: "Connect Now",
                 isEnabled: true,
                 style: .accent
             )
@@ -2620,17 +2671,19 @@ enum ConversationStateMachine {
                 style: beepCooldownRemaining == nil ? .accent : .muted
             )
         case .idle, .incomingBeep, .startingTransmit, .transmitting, .receiving:
-            if selectedConversationState.phase == .incomingBeep,
-               selectedConversationState.contactPresence == .offline {
+            if selectedConversationState.phase == .incomingBeep {
+                let label = selectedConversationState.contactPresence?.isForeground == true
+                    ? "Connect Now"
+                    : "Beep Back"
                 return ConversationPrimaryAction(
                     kind: .connect,
-                    label: "Beep Back",
+                    label: label,
                     isEnabled: beepCooldownRemaining == nil,
                     style: beepCooldownRemaining == nil ? .accent : .muted
                 )
             }
             if selectedConversationState.phase == .idle,
-               selectedConversationState.contactPresence == .offline,
+               selectedConversationState.contactPresence == .unavailable,
                !isSelectedChannelJoined {
                 return ConversationPrimaryAction(
                     kind: .connect,

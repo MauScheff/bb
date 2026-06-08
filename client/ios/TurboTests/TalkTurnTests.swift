@@ -14940,7 +14940,7 @@ struct TalkTurnTests {
             )
         ]
 
-        #expect(viewModel.contactPresencePresentation(for: contactID) == .connected)
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .foreground)
     }
 
     @MainActor
@@ -19524,7 +19524,7 @@ struct TalkTurnTests {
                 baseState: .outgoingBeep,
                 contactName: "Blake",
                 contactIsOnline: true,
-                contactPresence: .connected,
+                contactPresence: .foreground,
                 isJoined: false,
                 localTransmit: .idle,
                 remoteParticipantSignalIsTransmitting: false,

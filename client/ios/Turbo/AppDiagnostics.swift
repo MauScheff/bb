@@ -223,6 +223,12 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                 backendJoinSettling
                 || backendSelfJoined == true
             )
+        let pendingIncomingBeepLooksAcceptedByLocalIntent =
+            (
+                selectedConversationRelationship.hasPrefix("incomingBeep")
+                    || selectedConversationRelationship.hasPrefix("mutualBeep")
+            )
+            && pendingAction.contains("requestingBackend")
 
         var violations: [DiagnosticsInvariantViolationCandidate] = []
 
@@ -237,7 +243,8 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
             }
         if let pendingBeepExpectedPhase,
            phase != pendingBeepExpectedPhase,
-           !pendingBeepLooksAcceptedByLocalSession {
+           !pendingBeepLooksAcceptedByLocalSession,
+           !pendingIncomingBeepLooksAcceptedByLocalIntent {
             violations.append(
                 DiagnosticsInvariantViolationCandidate(
                     invariantID: "selected.pending_beep_dominates_live_projection",

@@ -1237,7 +1237,7 @@ struct ConversationTests {
         #expect(state.canTransmitNow == false)
     }
 
-    @Test func selectedConversationIdleStateKeepsOnlineStatusForReachablePeer() {
+    @Test func selectedConversationIdleStateDoesNotTreatWakeCapableFriendAsOnline() {
         let contactID = UUID()
         let context = ConversationDerivationContext(
             contactID: contactID,
@@ -1245,7 +1245,7 @@ struct ConversationTests {
             baseState: .idle,
             contactName: "Blake",
             contactIsOnline: false,
-            contactPresence: .reachable,
+            contactPresence: .wakeCapable,
             isJoined: false,
             activeChannelID: nil,
             systemSessionMatchesContact: false,
@@ -1261,10 +1261,10 @@ struct ConversationTests {
         )
 
         #expect(state.phase == .idle)
-        #expect(state.statusMessage == "Blake is online")
+        #expect(state.statusMessage == "Ready to connect")
     }
 
-    @Test func selectedConversationIdleDisplayStatusUsesOnlineForReachablePeer() {
+    @Test func selectedConversationIdleDisplayStatusUsesOfflineForWakeCapableFriend() {
         let contactID = UUID()
         let context = ConversationDerivationContext(
             contactID: contactID,
@@ -1272,7 +1272,7 @@ struct ConversationTests {
             baseState: .idle,
             contactName: "Blake",
             contactIsOnline: false,
-            contactPresence: .reachable,
+            contactPresence: .wakeCapable,
             isJoined: false,
             activeChannelID: nil,
             systemSessionMatchesContact: false,
@@ -1287,7 +1287,7 @@ struct ConversationTests {
             relationship: .none
         )
 
-        #expect(state.displayStatus == .online)
+        #expect(state.displayStatus == .offline)
     }
 
     @Test func selectedConversationStateUsesWaitingDuringPendingJoin() {
@@ -2643,10 +2643,10 @@ struct ConversationTests {
         #expect(reconciled.state.selectedConversationState.phase == .idle)
     }
 
-    @Test func incomingBeepPrimaryActionUsesAcceptLabel() {
+    @Test func incomingBeepPrimaryActionConnectsOnlyForForegroundFriend() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(
-                contactPresence: .connected,
+                contactPresence: .foreground,
                 relationship: .incomingBeep(requestCount: 1),
                 phase: .incomingBeep,
                 statusMessage: "Blake wants to talk",
@@ -2658,7 +2658,27 @@ struct ConversationTests {
         )
 
         #expect(action.kind == .connect)
-        #expect(action.label == "Accept")
+        #expect(action.label == "Connect Now")
+        #expect(action.isEnabled)
+        #expect(action.style == .accent)
+    }
+
+    @Test func incomingBeepPrimaryActionBeepsBackWhenFriendIsNotForeground() {
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: SelectedConversationState(
+                contactPresence: .wakeCapable,
+                relationship: .incomingBeep(requestCount: 1),
+                phase: .incomingBeep,
+                statusMessage: "Blake wants to talk",
+                canTransmitNow: false
+            ),
+            isSelectedChannelJoined: false,
+            isTransmitting: false,
+            beepCooldownRemaining: nil
+        )
+
+        #expect(action.kind == .connect)
+        #expect(action.label == "Beep Back")
         #expect(action.isEnabled)
         #expect(action.style == .accent)
     }
@@ -3371,10 +3391,11 @@ struct ConversationTests {
                         channelId: "channel-drew",
                         handle: "@drew",
                         displayName: "Drew",
-                        isOnline: true,
+                        isOnline: false,
                         hasOutgoingBeep: true,
                         requestCount: 1,
                         badgeStatus: "outgoing-beep",
+                        beepReachability: .wakeCapable,
                         membershipKind: "peer-only",
                         peerDeviceConnected: false
                     )
@@ -3402,7 +3423,7 @@ struct ConversationTests {
         #expect(sections.contacts.map { $0.contact.handle } == ["@erin"])
         #expect(sections.wantsToTalk.first?.presentation.availabilityPill == .online)
         #expect(sections.readyToTalk.first?.presentation.availabilityPill == .online)
-        #expect(sections.outgoingBeep.first?.presentation.availabilityPill == .online)
+        #expect(sections.outgoingBeep.first?.presentation.availabilityPill == .hidden)
         #expect(sections.contacts.first?.presentation.availabilityPill == .offline)
     }
 

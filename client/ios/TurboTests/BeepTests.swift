@@ -740,10 +740,10 @@ struct BeepTests {
         #expect(transition.state.syncState.requestContactIDs == [incomingContactID, outgoingContactID])
     }
 
-    @Test func incomingBeepPrimaryActionUsesBeepBackWhenFriendIsOffline() {
+    @Test func incomingBeepPrimaryActionUsesBeepBackWhenFriendIsUnavailable() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(
-                contactPresence: .offline,
+                contactPresence: .unavailable,
                 relationship: .incomingBeep(requestCount: 1),
                 phase: .incomingBeep,
                 statusMessage: "Blake wants to talk",
@@ -763,7 +763,7 @@ struct BeepTests {
     @Test func idleUnavailablePrimaryActionDisablesOutgoingBeep() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(
-                contactPresence: .offline,
+                contactPresence: .unavailable,
                 relationship: .none,
                 phase: .idle,
                 statusMessage: "Blake is unavailable",
@@ -2050,7 +2050,7 @@ struct BeepTests {
             ])
         )
 
-        #expect(viewModel.contactPresencePresentation(for: contactID) == .connected)
+        #expect(viewModel.contactPresencePresentation(for: contactID) == .foreground)
     }
 
     @MainActor

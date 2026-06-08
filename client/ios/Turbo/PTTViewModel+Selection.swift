@@ -47,12 +47,6 @@ private enum AbsentBackendMembershipRecoveryDecision {
     case suppressed(AbsentBackendMembershipSuppressionReason)
 }
 
-enum ContactPresencePresentation: Equatable {
-    case connected
-    case reachable
-    case offline
-}
-
 struct ContactListItem: Identifiable, Equatable {
     let contact: Contact
     let presentation: ContactListPresentation
@@ -1080,42 +1074,42 @@ extension PTTViewModel {
 
         if let channelSnapshot = selectedChannelSnapshot(for: contactID) {
             if case .absent = channelSnapshot.membership {
-                return summaryReachability ?? (rawPresenceOnline ? .connected : .offline)
+                return summaryReachability ?? FriendAvailability(isOnline: rawPresenceOnline)
             }
             if channelSnapshot.membership.peerDeviceConnected {
-                return .connected
+                return .foreground
             }
             if let summaryReachability {
-                return summaryReachability == .connected ? .reachable : summaryReachability
+                return summaryReachability
             }
-            return rawPresenceOnline ? .reachable : .offline
+            return rawPresenceOnline ? .wakeCapable : .unavailable
         }
 
         if let summaryReachability {
             return summaryReachability
         }
 
-        return rawPresenceOnline ? .connected : .offline
+        return FriendAvailability(isOnline: rawPresenceOnline)
     }
 
     private func contactPresencePresentation(
         for summary: TurboContactSummaryResponse
     ) -> ContactPresencePresentation {
         if summary.membership.peerDeviceConnected {
-            return .connected
+            return .foreground
         }
         switch summary.beepReachability {
         case .foreground:
-            return summary.channelId == nil ? .connected : .reachable
+            return .foreground
         case .wakeCapable:
-            return .reachable
+            return .wakeCapable
         case .notReachable:
-            return .offline
+            return .unavailable
         }
     }
 
     func selectedConversationPresenceIsOnline(for contactID: UUID) -> Bool {
-        contactPresencePresentation(for: contactID) == .connected
+        contactPresencePresentation(for: contactID).isForeground
     }
 
     var activeConversationContactID: UUID? {
@@ -1222,11 +1216,11 @@ extension PTTViewModel {
 
     private func presenceSortRank(_ presence: ContactPresencePresentation) -> Int {
         switch presence {
-        case .connected:
+        case .foreground:
             return 0
-        case .reachable:
+        case .wakeCapable:
             return 1
-        case .offline:
+        case .unavailable:
             return 2
         }
     }

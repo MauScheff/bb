@@ -269,9 +269,11 @@ extension PTTViewModel {
         }
         let relationship = beepThreadProjection(for: contact.id)
         let incomingBeep = incomingBeepByContactID[contact.id]
+        let friendAvailability = contactPresencePresentation(for: contact.id)
+        let friendIsForeground = friendAvailability.isForeground
         if intent == .requestConnection,
            !relationship.hasIncomingBeep,
-           contactPresencePresentation(for: contact.id) == .offline {
+           friendAvailability == .unavailable {
             diagnostics.record(
                 .backend,
                 level: .notice,
@@ -334,16 +336,16 @@ extension PTTViewModel {
             outgoingBeep: outgoingBeepByContactID[contact.id],
             beepCooldownRemaining: beepCooldownRemaining(for: contact.id),
             usesLocalHTTPBackend: usesLocalHTTPBackend,
-            contactIsOnline: contact.isOnline
+            contactIsOnline: friendIsForeground
         )
         if intent == .requestConnection,
-           (!relationship.hasIncomingBeep || !contact.isOnline),
+           (!relationship.hasIncomingBeep || !friendIsForeground),
            request.beepCooldownRemaining == nil {
             markOptimisticOutgoingBeepStarted(
                 contactID: contact.id,
                 relationship: relationship,
                 operationID: request.operationID,
-                allowsIncomingBeepBack: !contact.isOnline
+                allowsIncomingBeepBack: !friendIsForeground
             )
         }
         Task {

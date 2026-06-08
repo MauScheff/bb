@@ -332,7 +332,7 @@ extension PTTViewModel {
             beepID: beepID,
             contactName: contact.name,
             contactHandle: contact.handle,
-            contactIsOnline: contactIsOnlineOverride ?? contact.isOnline,
+            contactIsOnline: contactIsOnlineOverride ?? selectedConversationPresenceIsOnline(for: contact.id),
             requestCount: normalizedRequestCount,
             recencyKey: "notification:\(normalizedRequestCount):\(beepID)",
             channelID: contact.backendChannelId,
@@ -413,8 +413,9 @@ extension PTTViewModel {
             )
             return false
         }
-        guard contact.isOnline else {
-            return false
+        guard selectedConversationPresenceIsOnline(for: contact.id) else {
+            requestBackendJoin(for: contact, intent: .requestConnection)
+            return true
         }
         if requestedExpandedCallContactID != contact.id {
             requestExpandedCall(for: contact)

@@ -505,14 +505,14 @@ struct ReadinessTests {
             ConversationStateMachine.displayStatus(
                 for: .waitingForPeer,
                 requestCount: nil,
-                presence: .offline
+                presence: .unavailable
             ) == .ready
         )
         #expect(
             ConversationStateMachine.displayStatus(
                 for: .ready,
                 requestCount: nil,
-                presence: .connected
+                presence: .foreground
             ) == .live
         )
     }
@@ -521,22 +521,22 @@ struct ReadinessTests {
         let incoming = ConversationStateMachine.contactListPresentation(
             for: .incomingBeep,
             requestCount: 2,
-            presence: .connected
+            presence: .foreground
         )
         let ready = ConversationStateMachine.contactListPresentation(
             for: .ready,
             requestCount: nil,
-            presence: .reachable
+            presence: .foreground
         )
         let requested = ConversationStateMachine.contactListPresentation(
             for: .outgoingBeep,
             requestCount: 1,
-            presence: .connected
+            presence: .wakeCapable
         )
         let offline = ConversationStateMachine.contactListPresentation(
             for: .idle,
             requestCount: nil,
-            presence: .offline
+            presence: .unavailable
         )
 
         #expect(incoming.section == .wantsToTalk)
@@ -547,8 +547,8 @@ struct ReadinessTests {
         #expect(ready.statusPillText() == "Online")
         #expect(ready.statusPillText(isActiveConversation: true) == "Connected")
         #expect(requested.section == .outgoingBeep)
-        #expect(requested.availabilityPill == .online)
-        #expect(requested.statusPillText() == "Online")
+        #expect(requested.availabilityPill == .hidden)
+        #expect(requested.statusPillText() == nil)
         #expect(offline.section == .contacts)
         #expect(offline.availabilityPill == .offline)
         #expect(offline.statusPillText() == "Offline")
@@ -556,12 +556,12 @@ struct ReadinessTests {
         let reachableIdle = ConversationStateMachine.contactListPresentation(
             for: .idle,
             requestCount: nil,
-            presence: .reachable
+            presence: .wakeCapable
         )
         #expect(reachableIdle.section == .contacts)
-        #expect(reachableIdle.displayStatus == .online)
-        #expect(reachableIdle.availabilityPill == .online)
-        #expect(reachableIdle.statusPillText() == "Online")
+        #expect(reachableIdle.displayStatus == .offline)
+        #expect(reachableIdle.availabilityPill == .offline)
+        #expect(reachableIdle.statusPillText() == "Offline")
     }
 
     @Test func selectedConversationStateSkipsFriendReadyWhileAcceptedIncomingBeepIsStillJoining() {
@@ -1307,7 +1307,7 @@ struct ReadinessTests {
         )
 
         #expect(action.kind == .connect)
-        #expect(action.label == "Connect")
+        #expect(action.label == "Connect Now")
         #expect(action.isEnabled)
         #expect(action.style == .accent)
     }

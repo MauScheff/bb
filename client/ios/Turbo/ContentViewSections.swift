@@ -66,7 +66,7 @@ struct TurboIncomingBeepBanner: View {
     }
 
     private var primaryActionTitle: String {
-        "Connect"
+        beep.contactIsOnline ? "Connect Now" : "Beep Back"
     }
 }
 
@@ -74,8 +74,8 @@ struct TurboContactListView: View {
     let activeContact: Contact?
     let systemSessionSubtitle: String?
     let contactSections: ContactListSections
-    let activeStatusPill: (Contact) -> ContactStatusPillModel
-    let itemStatusPill: (ContactListItem) -> ContactStatusPillModel
+    let activeStatusPill: (Contact) -> ContactStatusPillModel?
+    let itemStatusPill: (ContactListItem) -> ContactStatusPillModel?
     let activeSubtitle: (Contact) -> String
     let itemSubtitle: (ContactListItem) -> String
     let selectContact: (Contact) -> Void
@@ -203,7 +203,7 @@ struct TurboContactListView: View {
 private struct TurboContactRow: View {
     let title: String
     let subtitle: String
-    let pill: ContactStatusPillModel
+    let pill: ContactStatusPillModel?
     let onTap: () -> Void
     let onLongPress: (() -> Void)?
 
@@ -223,13 +223,15 @@ private struct TurboContactRow: View {
 
                 Spacer(minLength: 12)
 
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(pill.tint)
-                        .frame(width: 7, height: 7)
-                    Text(pill.text)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                if let pill {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(pill.tint)
+                            .frame(width: 7, height: 7)
+                        Text(pill.text)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Image(systemName: "chevron.right")

@@ -127,6 +127,11 @@ nonisolated struct IncomingBeepSurface: Equatable, Identifiable {
     }
 
     var id: String { beepID }
+
+    var content: BeepContent {
+        BeepContent(subject: subject)
+    }
+
     var surfaceKey: BeepSurfaceKey {
         BeepSurfaceKey(contactID: contactID, requestCount: requestCount)
     }

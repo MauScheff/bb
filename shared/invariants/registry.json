@@ -1351,7 +1351,7 @@
       "scope": "local",
       "owner": "app",
       "authoritativeSeam": "Turbo/ConversationDomain.swift selected Conversation projection",
-      "predicate": "A pending incoming, outgoing, or mutual Beep is the authoritative selected Conversation state until accepted, cancelled, or replaced; stale local Device PTT or backend membership evidence must not project a live, connecting, ready, or hold-to-talk state unless an aligned local Apple session and backend self-membership/join-settling evidence show the Beep projection is stale acceptance residue.",
+      "predicate": "A pending outgoing Beep remains authoritative until cancelled or replaced. A pending incoming or mutual Beep remains authoritative until the user accepts it or Beeps back; after acceptance, a local backend-connect intent, aligned local Apple session, or backend self-membership/join-settling evidence may project connecting/live state while backend Beep projection catches up.",
       "evidenceFields": ["selectedConversationPhase", "selectedConversationPhaseDetail", "selectedConversationRelationship", "expectedSelectedConversationPhase", "pendingAction", "reconciliationAction", "isJoined", "systemSession", "backendJoinSettling", "backendChannelStatus", "backendReadiness", "backendSelfJoined", "backendPeerJoined", "backendCanTransmit"],
       "detectors": ["Turbo/ConversationDomain.swift", "Turbo/AppDiagnostics.swift"],
       "regressions": ["TurboTests/ConversationTests.swift"],
