@@ -366,6 +366,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         TurboNotificationCategory.clearDeliveredBeepNotifications()
     }
     @ObservationIgnored
+    var protectedDataAvailableProvider: @MainActor () -> Bool = {
+        UIApplication.shared.isProtectedDataAvailable
+    }
+    @ObservationIgnored
     var backgroundDeliveredBeepReceiptsByHandle: [String: BackgroundDeliveredBeepReceipt] = [:]
     @ObservationIgnored
     var suppressIncomingBeepBannersDuringForegroundActivation = false
@@ -2436,7 +2440,6 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             allowsSelectedContact: true,
             allowsAlreadySurfacedBeep: true
         )
-        endForegroundActivationIncomingBeepBannerSuppression(reason: "application-did-become-active")
         backendServices?.resumeWebSocket()
         await publishForegroundPresenceTransition(reason: "application-did-become-active")
         await resumeBufferedWakePlaybackIfNeeded(
@@ -2454,6 +2457,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             )
         }
         await backendSyncCoordinator.handle(.pollRequested(selectedContactID: selectedContactId))
+        endForegroundActivationIncomingBeepBannerSuppression(reason: "application-did-become-active")
     }
 
     func publishForegroundPresenceTransition(reason: String) async {

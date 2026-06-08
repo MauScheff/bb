@@ -88,6 +88,32 @@ nonisolated struct CanonicalIncomingBeep: Equatable, Identifiable {
     var isEligibleForSurfaceByPresence: Bool {
         contactIsOnline || sources.contains(.foregroundNotification)
     }
+
+    func wasSentBeforeForegroundBannerEpoch(_ epochStartedAt: Date?) -> Bool {
+        guard let epochStartedAt,
+              let sentAt,
+              let sentDate = Self.parseBackendInstant(sentAt) else {
+            return false
+        }
+        return sentDate < epochStartedAt
+    }
+
+    private static func parseBackendInstant(_ text: String) -> Date? {
+        guard text.hasSuffix("Z") else { return nil }
+        let withoutZone = String(text.dropLast())
+        let parts = withoutZone.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let baseText = String(parts[0]) + "Z"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let baseDate = formatter.date(from: baseText) else { return nil }
+        guard parts.count == 2 else { return baseDate }
+
+        let fractionalDigits = parts[1].prefix { $0 >= "0" && $0 <= "9" }
+        guard !fractionalDigits.isEmpty else { return baseDate }
+        let scale = pow(10.0, Double(fractionalDigits.count))
+        let fractionalSeconds = (Double(fractionalDigits) ?? 0) / scale
+        return baseDate.addingTimeInterval(fractionalSeconds)
+    }
 }
 
 nonisolated struct IncomingBeepSurface: Equatable, Identifiable {
@@ -205,6 +231,7 @@ nonisolated struct IncomingBeepSurfaceState: Equatable {
     var activeIncomingBeep: IncomingBeepSurface?
     var surfacedBeepIDs: Set<String> = []
     var surfacedBeepKeys: Set<BeepSurfaceKey> = []
+    var foregroundBannerEpochStartedAt: Date?
     var pendingForegroundBeep: IncomingBeepSurface?
     var pendingForegroundBeepReceivedAt: Date?
     var pendingAcceptBeep: IncomingBeepSurface?
@@ -229,6 +256,7 @@ nonisolated enum IncomingBeepSurfaceEvent: Equatable {
     case pendingForegroundBeepCleared(contactID: UUID?, beepID: String?)
     case pendingForegroundBeepExpired(now: Date, lifetime: TimeInterval)
     case beepSeenWithoutBanner(contactID: UUID, beepID: String?, requestCount: Int?)
+    case foregroundBannerEpochStarted(Date)
     case incomingBeepAcceptStarted(IncomingBeepSurface)
     case incomingBeepAcceptFinished(IncomingBeepSurface)
 }
@@ -260,12 +288,20 @@ nonisolated enum IncomingBeepSurfaceReducer {
             }
             let activeBeepIDs = Set(canonicalCandidates.map(\.surface.beepID))
             let activeBeepKeys = Set(canonicalCandidates.map(\.beep.key))
+            let preEpochCandidates = canonicalCandidates.filter {
+                $0.beep.wasSentBeforeForegroundBannerEpoch(nextState.foregroundBannerEpochStartedAt)
+            }
+            let preEpochBeepIDs = Set(preEpochCandidates.map(\.surface.beepID))
+            let preEpochBeepKeys = Set(preEpochCandidates.map(\.beep.key))
             nextState.surfacedBeepIDs.formIntersection(activeBeepIDs)
             nextState.surfacedBeepKeys.formIntersection(activeBeepKeys)
+            nextState.surfacedBeepIDs.formUnion(preEpochBeepIDs)
+            nextState.surfacedBeepKeys.formUnion(preEpochBeepKeys)
 
             if let activeIncomingBeep = nextState.activeIncomingBeep,
                let activeCandidate = canonicalCandidates.first(where: { $0.beep.key == activeIncomingBeep.surfaceKey }),
-               !activeCandidate.beep.isEligibleForSurfaceByPresence {
+               (!activeCandidate.beep.isEligibleForSurfaceByPresence
+                || activeCandidate.beep.wasSentBeforeForegroundBannerEpoch(nextState.foregroundBannerEpochStartedAt)) {
                 nextState.activeIncomingBeep = nil
             } else if let activeIncomingBeep = nextState.activeIncomingBeep,
                       !activeBeepKeys.contains(activeIncomingBeep.surfaceKey) {
@@ -299,6 +335,7 @@ nonisolated enum IncomingBeepSurfaceReducer {
 
             let candidate = sortedCandidates.first { candidate in
                 candidate.beep.isEligibleForSurfaceByPresence
+                    && !candidate.beep.wasSentBeforeForegroundBannerEpoch(nextState.foregroundBannerEpochStartedAt)
                     && (allowsSelectedContact || candidate.surface.contactID != selectedContactID)
                     && (
                         allowsAlreadySurfacedBeep
@@ -379,6 +416,12 @@ nonisolated enum IncomingBeepSurfaceReducer {
                 nextState.pendingForegroundBeep = nil
                 nextState.pendingForegroundBeepReceivedAt = nil
             }
+
+        case .foregroundBannerEpochStarted(let startedAt):
+            nextState.foregroundBannerEpochStartedAt = startedAt
+            nextState.activeIncomingBeep = nil
+            nextState.pendingForegroundBeep = nil
+            nextState.pendingForegroundBeepReceivedAt = nil
 
         case .incomingBeepAcceptStarted(let surface):
             guard !nextState.isAccepting(surface) else {

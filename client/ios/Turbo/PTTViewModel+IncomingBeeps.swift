@@ -68,6 +68,10 @@ extension PTTViewModel {
     }
 
     func beginForegroundActivationIncomingBeepBannerSuppression(reason: String) {
+        incomingBeepSurfaceState = IncomingBeepSurfaceReducer.reduce(
+            state: incomingBeepSurfaceState,
+            event: .foregroundBannerEpochStarted(Date())
+        )
         guard !suppressIncomingBeepBannersDuringForegroundActivation else { return }
         suppressIncomingBeepBannersDuringForegroundActivation = true
         diagnostics.record(

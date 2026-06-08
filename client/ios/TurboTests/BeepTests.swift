@@ -1260,6 +1260,47 @@ struct BeepTests {
     }
 
     @MainActor
+    @Test func inactiveForegroundNotificationIsConsumedWithoutInAppBanner() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.applicationStateOverride = .inactive
+        viewModel.protectedDataAvailableProvider = { false }
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: "channel-1",
+                remoteUserId: "user-avery"
+            )
+        ]
+
+        await viewModel.handleForegroundBeepNotification(
+            userInfo: [
+                "event": TurboNotificationCategory.beepEvent,
+                "fromHandle": "@avery",
+                "beepId": "beep-1",
+                "requestCount": 1,
+                "createdAt": "2026-04-17T19:00:00Z",
+            ]
+        )
+
+        #expect(viewModel.activeIncomingBeep == nil)
+        #expect(viewModel.pendingForegroundBeepSurface == nil)
+        #expect(
+            viewModel.backgroundDeliveredBeepReceiptsByHandle[Contact.normalizedHandle("@avery")]?
+                .requestCount == 1
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Consumed delivered Beep notifications without foreground banner"
+            )
+        )
+    }
+
+    @MainActor
     @Test func beepNotificationBadgeCountUsesUniqueIncomingContacts() {
         let viewModel = PTTViewModel()
         let firstContactID = UUID()
@@ -3424,6 +3465,84 @@ struct BeepTests {
         #expect(nextState.activeIncomingBeep == nil)
         #expect(nextState.pendingForegroundBeep == nil)
         #expect(nextState.pendingForegroundBeepReceivedAt == nil)
+        #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
+    }
+
+    @Test func incomingBeepCreatedBeforeForegroundBannerEpochDoesNotSurfaceBanner() {
+        let contactID = UUID()
+        let candidate = IncomingBeepCandidate(
+            contact: Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: "channel-1"
+            ),
+            beep: makeBeep(
+                direction: "incoming",
+                beepId: "beep-1",
+                fromHandle: "@avery",
+                toHandle: "@self",
+                requestCount: 1,
+                createdAt: "2026-04-17T19:00:00Z",
+                updatedAt: "2026-04-17T19:00:00Z"
+            )
+        )
+        let epoch = ISO8601DateFormatter().date(from: "2026-04-17T19:01:00Z")!
+        let epochState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .foregroundBannerEpochStarted(epoch)
+        )
+        let nextState = IncomingBeepSurfaceReducer.reduce(
+            state: epochState,
+            event: .beepsUpdated(
+                candidates: [candidate],
+                selectedContactID: nil,
+                applicationIsActive: true
+            )
+        )
+
+        #expect(nextState.activeIncomingBeep == nil)
+        #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
+    }
+
+    @Test func incomingBeepCreatedAfterForegroundBannerEpochCanSurfaceBanner() {
+        let contactID = UUID()
+        let candidate = IncomingBeepCandidate(
+            contact: Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: "channel-1"
+            ),
+            beep: makeBeep(
+                direction: "incoming",
+                beepId: "beep-1",
+                fromHandle: "@avery",
+                toHandle: "@self",
+                requestCount: 1,
+                createdAt: "2026-04-17T19:02:00Z",
+                updatedAt: "2026-04-17T19:02:00Z"
+            )
+        )
+        let epoch = ISO8601DateFormatter().date(from: "2026-04-17T19:01:00Z")!
+        let epochState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .foregroundBannerEpochStarted(epoch)
+        )
+        let nextState = IncomingBeepSurfaceReducer.reduce(
+            state: epochState,
+            event: .beepsUpdated(
+                candidates: [candidate],
+                selectedContactID: nil,
+                applicationIsActive: true
+            )
+        )
+
+        #expect(nextState.activeIncomingBeep?.beepID == "beep-1")
         #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
     }
 

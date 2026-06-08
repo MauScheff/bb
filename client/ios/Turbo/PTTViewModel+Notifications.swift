@@ -214,12 +214,41 @@ extension PTTViewModel {
     }
 
     func handleForegroundBeepNotification(userInfo: [AnyHashable: Any]) async {
+        let shouldSurfaceInAppBanner = shouldSurfaceForegroundBeepNotificationAsInAppBanner()
         clearBeepNotifications()
         diagnostics.record(
             .pushToTalk,
             message: "Foreground Beep notification received",
-            metadata: beepNotificationDiagnostics(userInfo: userInfo)
+            metadata: beepNotificationDiagnostics(userInfo: userInfo).merging(
+                [
+                    "applicationState": String(describing: currentApplicationState()),
+                    "protectedDataAvailable": String(protectedDataAvailableProvider()),
+                    "surfaceInAppBanner": String(shouldSurfaceInAppBanner),
+                    "suppressionActive": String(suppressIncomingBeepBannersDuringForegroundActivation),
+                ],
+                uniquingKeysWith: { _, new in new }
+            )
         )
+
+        if !shouldSurfaceInAppBanner {
+            consumeDeliveredBeepNotificationUserInfosWithoutForegroundBanner(
+                [userInfo],
+                reason: "foreground-notification-not-active"
+            )
+            await refreshBeepStateAfterNotification(
+                userInfo: userInfo,
+                reason: "foreground-notification-not-active",
+                allowsPendingForegroundSurface: false
+            )
+            reconcileIncomingBeepSurface(
+                applicationState: currentApplicationState(),
+                presentationPolicy: .markSeenWithoutBanner,
+                allowsSelectedContact: true,
+                allowsAlreadySurfacedBeep: true
+            )
+            return
+        }
+
         if let handle = beepNotificationHandle(from: userInfo),
            let contact = openCachedBeepContactFromNotification(
                handle: handle,
@@ -233,7 +262,7 @@ extension PTTViewModel {
         }
         await refreshBeepStateAfterNotification(userInfo: userInfo, reason: "foreground-notification")
         reconcileIncomingBeepSurface(
-            applicationState: .active,
+            applicationState: currentApplicationState(),
             allowsSelectedContact: true,
             allowsAlreadySurfacedBeep: true
         )
@@ -241,6 +270,12 @@ extension PTTViewModel {
             userInfo: userInfo,
             reason: "foreground-notification"
         )
+    }
+
+    func shouldSurfaceForegroundBeepNotificationAsInAppBanner() -> Bool {
+        currentApplicationState() == .active
+            && protectedDataAvailableProvider()
+            && !suppressIncomingBeepBannersDuringForegroundActivation
     }
 
     func handleBeepNotificationResponse(
@@ -407,7 +442,8 @@ extension PTTViewModel {
 
     func refreshBeepStateAfterNotification(
         userInfo: [AnyHashable: Any],
-        reason: String
+        reason: String,
+        allowsPendingForegroundSurface: Bool = true
     ) async {
         await refreshContactSummaries()
         await refreshBeeps()
@@ -440,11 +476,13 @@ extension PTTViewModel {
                 )
                 return
             }
-            maybeQueuePendingForegroundBeepSurface(
-                contact: contact,
-                userInfo: userInfo,
-                reason: reason
-            )
+            if allowsPendingForegroundSurface {
+                maybeQueuePendingForegroundBeepSurface(
+                    contact: contact,
+                    userInfo: userInfo,
+                    reason: reason
+                )
+            }
             recordBeepProjectionInvariant(
                 handle: handle,
                 reason: reason,
