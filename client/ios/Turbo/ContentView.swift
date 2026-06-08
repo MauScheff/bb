@@ -114,7 +114,6 @@ struct ContentView: View {
     @State private var addContactConfirmation: AddContactConfirmation?
     @State private var diagnosticsUploadStatus: String?
     @State private var shakeReportPresentation: ShakeReportPresentation?
-    @State private var lastShakeReportStartedAt: Date?
     @State private var identityRestoreError: String?
     @State private var handleSetupError: String?
     @State private var contactDeleteError: String?
@@ -1268,12 +1267,9 @@ struct ContentView: View {
     }
 
     private func startShakeReport() {
-        let now = Date()
-        if let lastShakeReportStartedAt,
-           now.timeIntervalSince(lastShakeReportStartedAt) < 60 {
+        guard ShakeReportStartPolicy().canStart(activePresentation: shakeReportPresentation) else {
             return
         }
-        lastShakeReportStartedAt = now
         shakeReportPresentation = ShakeReportPresentation(
             incidentID: "inc_\(UUID().uuidString.lowercased())",
             state: .composing

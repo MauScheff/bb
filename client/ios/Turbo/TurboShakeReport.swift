@@ -29,6 +29,12 @@ struct ShakeReportSensitivityPolicy: Equatable {
     }
 }
 
+struct ShakeReportStartPolicy: Equatable {
+    func canStart(activePresentation: ShakeReportPresentation?) -> Bool {
+        activePresentation == nil
+    }
+}
+
 struct TurboShakeReportSheet: View {
     let presentation: ShakeReportPresentation
     let onDone: () -> Void

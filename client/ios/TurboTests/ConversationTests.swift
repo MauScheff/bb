@@ -41,6 +41,22 @@ struct ConversationTests {
         )
     }
 
+    @Test func shakeReportStartPolicyAllowsAnotherReportAfterDismissal() {
+        let policy = ShakeReportStartPolicy()
+
+        #expect(policy.canStart(activePresentation: nil))
+    }
+
+    @Test func shakeReportStartPolicyRejectsDuplicateWhileSheetIsActive() {
+        let policy = ShakeReportStartPolicy()
+        let presentation = ShakeReportPresentation(
+            incidentID: "inc_existing",
+            state: .composing
+        )
+
+        #expect(!policy.canStart(activePresentation: presentation))
+    }
+
     @Test func suggestedProfileNameUsesTwoWordsWithoutDigits() {
         for _ in 0..<32 {
             let candidate = TurboSuggestedProfileName.generate()
