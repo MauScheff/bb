@@ -358,9 +358,15 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         UNUserNotificationCenter.current().setBadgeCount(count)
     }
     @ObservationIgnored
+    var deliveredBeepNotificationUserInfoProvider: @MainActor () async -> [[AnyHashable: Any]] = {
+        await TurboNotificationCategory.deliveredBeepNotificationUserInfos()
+    }
+    @ObservationIgnored
     var clearDeliveredNotifications: @MainActor () -> Void = {
         TurboNotificationCategory.clearDeliveredBeepNotifications()
     }
+    @ObservationIgnored
+    var backgroundDeliveredBeepReceiptsByHandle: [String: BackgroundDeliveredBeepReceipt] = [:]
     @ObservationIgnored
     var conversationParticipantTelemetryNetworkMonitor: NWPathMonitor?
     @ObservationIgnored
@@ -2421,7 +2427,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         backendServices?.resumeWebSocket()
         await publishForegroundPresenceTransition(reason: "application-did-become-active")
         updateAutomaticAudioRouteMonitoring(reason: "application-became-active")
-        clearBeepNotifications()
+        await consumeDeliveredBeepNotificationsWithoutForegroundBanner(reason: "application-did-become-active")
         reconcileIncomingBeepSurface(
             applicationState: .active,
             presentationPolicy: .markSeenWithoutBanner,

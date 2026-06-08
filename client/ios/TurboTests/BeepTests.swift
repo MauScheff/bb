@@ -1124,14 +1124,80 @@ struct BeepTests {
         let viewModel = PTTViewModel()
         var badgeCounts: [Int] = []
         var clearNotificationsCallCount = 0
+        var deliveredNotificationFetchCount = 0
         viewModel.setApplicationBadgeCount = { badgeCounts.append($0) }
+        viewModel.deliveredBeepNotificationUserInfoProvider = {
+            deliveredNotificationFetchCount += 1
+            return []
+        }
         viewModel.clearDeliveredNotifications = { clearNotificationsCallCount += 1 }
         viewModel.backendSyncCoordinator.effectHandler = { _ in }
 
         await viewModel.handleApplicationDidBecomeActive()
 
         #expect(badgeCounts == [0])
+        #expect(deliveredNotificationFetchCount == 1)
         #expect(clearNotificationsCallCount == 1)
+    }
+
+    @MainActor
+    @Test func applicationOpenAfterBackgroundBeepNotificationDoesNotReplayForegroundBanner() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let beep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-1",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 1,
+            createdAt: "2026-04-17T19:00:00Z",
+            updatedAt: "2026-04-17T19:00:00Z"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: beep.channelId,
+                remoteUserId: beep.fromUserId
+            )
+        ]
+        viewModel.deliveredBeepNotificationUserInfoProvider = {
+            [
+                [
+                    "event": TurboNotificationCategory.beepEvent,
+                    "fromHandle": "@avery",
+                    "beepId": "beep-1",
+                    "requestCount": 1,
+                ]
+            ]
+        }
+        viewModel.clearDeliveredNotifications = {}
+        viewModel.backendSyncCoordinator.effectHandler = { _ in }
+
+        await viewModel.handleApplicationDidBecomeActive()
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: beep)],
+                outgoing: [],
+                now: .now
+            )
+        )
+        viewModel.reconcileIncomingBeepSurface(applicationState: .active)
+
+        #expect(viewModel.activeIncomingBeep == nil)
+        #expect(
+            viewModel.incomingBeepSurfaceState.surfacedBeepKeys
+                == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)])
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Marked background-delivered Beep seen without foreground banner"
+            )
+        )
     }
 
     @MainActor
@@ -3228,6 +3294,49 @@ struct BeepTests {
         #expect(activeState.activeIncomingBeep?.beepID == "beep-1")
     }
 
+    @Test func backgroundDeliveredBeepReceiptSuppressesLaterForegroundBanner() {
+        let contactID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Avery",
+            handle: "@avery",
+            isOnline: true,
+            channelId: UUID()
+        )
+        let seenState = IncomingBeepSurfaceReducer.reduce(
+            state: IncomingBeepSurfaceState(),
+            event: .beepSeenWithoutBanner(
+                contactID: contactID,
+                beepID: "beep-1",
+                requestCount: 1
+            )
+        )
+        let nextState = IncomingBeepSurfaceReducer.reduce(
+            state: seenState,
+            event: .beepsUpdated(
+                candidates: [
+                    IncomingBeepCandidate(
+                        contact: contact,
+                        beep: makeBeep(
+                            direction: "incoming",
+                            beepId: "beep-1",
+                            fromHandle: "@avery",
+                            requestCount: 1,
+                            createdAt: "2026-04-17T19:00:00Z",
+                            updatedAt: "2026-04-17T19:00:00Z"
+                        )
+                    )
+                ],
+                selectedContactID: nil,
+                applicationIsActive: true
+            )
+        )
+
+        #expect(nextState.activeIncomingBeep == nil)
+        #expect(nextState.surfacedBeepIDs == Set(["beep-1"]))
+        #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
+    }
+
     @Test func incomingBeepSurfaceCanMarkPendingBeepSeenWithoutBannerWhenAppOpens() {
         let contactID = UUID()
         let candidate = IncomingBeepCandidate(
@@ -3399,7 +3508,7 @@ struct BeepTests {
     }
 
     @MainActor
-    @Test func applicationForegroundResurfacesSelectedIncomingBeepAfterLostNotificationAction() async {
+    @Test func applicationForegroundDoesNotReplayOpenedIncomingBeepBanner() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let beep = makeBeep(
@@ -3435,8 +3544,7 @@ struct BeepTests {
 
         await viewModel.handleApplicationDidBecomeActive()
 
-        #expect(viewModel.activeIncomingBeep?.contactID == contactID)
-        #expect(viewModel.activeIncomingBeep?.beepID == beep.beepId)
+        #expect(viewModel.activeIncomingBeep == nil)
     }
 
     @MainActor

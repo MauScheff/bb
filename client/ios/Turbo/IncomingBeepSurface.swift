@@ -228,6 +228,7 @@ nonisolated enum IncomingBeepSurfaceEvent: Equatable {
     case pendingForegroundBeepQueued(surface: IncomingBeepSurface, receivedAt: Date)
     case pendingForegroundBeepCleared(contactID: UUID?, beepID: String?)
     case pendingForegroundBeepExpired(now: Date, lifetime: TimeInterval)
+    case beepSeenWithoutBanner(contactID: UUID, beepID: String?, requestCount: Int?)
     case incomingBeepAcceptStarted(IncomingBeepSurface)
     case incomingBeepAcceptFinished(IncomingBeepSurface)
 }
@@ -353,6 +354,26 @@ nonisolated enum IncomingBeepSurfaceReducer {
             }
             nextState.pendingForegroundBeep = nil
             nextState.pendingForegroundBeepReceivedAt = nil
+
+        case .beepSeenWithoutBanner(let contactID, let beepID, let requestCount):
+            if let activeIncomingBeep = nextState.activeIncomingBeep,
+               activeIncomingBeep.contactID == contactID,
+               beepID == nil || activeIncomingBeep.beepID == beepID {
+                nextState.activeIncomingBeep = nil
+            }
+            if let beepID {
+                nextState.surfacedBeepIDs.insert(beepID)
+            }
+            if let requestCount {
+                nextState.surfacedBeepKeys.insert(
+                    BeepSurfaceKey(contactID: contactID, requestCount: requestCount)
+                )
+            }
+            if nextState.pendingForegroundBeep?.contactID == contactID,
+               beepID == nil || nextState.pendingForegroundBeep?.beepID == beepID {
+                nextState.pendingForegroundBeep = nil
+                nextState.pendingForegroundBeepReceivedAt = nil
+            }
 
         case .incomingBeepAcceptStarted(let surface):
             guard !nextState.isAccepting(surface) else {

@@ -22,6 +22,7 @@ extension PTTViewModel {
     ) {
         let resolvedApplicationState = applicationState ?? currentApplicationState()
         expirePendingForegroundBeepSurfaceIfNeeded()
+        applyBackgroundDeliveredBeepReceiptsToKnownContacts(reason: "incoming-beep-surface-reconcile")
         let candidates: [IncomingBeepCandidate] = contacts.compactMap { contact in
             guard contact.handle != currentDevUserHandle else { return nil }
             guard !beepNotificationAlreadyHandled(for: contact.id) else { return nil }

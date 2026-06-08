@@ -34,6 +34,13 @@ enum AlertNotificationPermissionPolicy {
     }
 }
 
+struct BackgroundDeliveredBeepReceipt: Equatable {
+    let handle: String
+    let normalizedHandle: String
+    let beepID: String?
+    let requestCount: Int?
+}
+
 extension PTTViewModel {
     var pendingIncomingBeepBadgeCount: Int {
         incomingBeepByContactID.count
@@ -556,6 +563,99 @@ extension PTTViewModel {
         }
 
         setApplicationBadgeCount(pendingIncomingBeepBadgeCount)
+    }
+
+    func consumeDeliveredBeepNotificationsWithoutForegroundBanner(reason: String) async {
+        let userInfos = await deliveredBeepNotificationUserInfoProvider()
+        consumeDeliveredBeepNotificationUserInfosWithoutForegroundBanner(userInfos, reason: reason)
+        clearBeepNotifications()
+    }
+
+    func consumeDeliveredBeepNotificationUserInfosWithoutForegroundBanner(
+        _ userInfos: [[AnyHashable: Any]],
+        reason: String
+    ) {
+        var consumedCount = 0
+        for userInfo in userInfos {
+            guard let handle = beepNotificationHandle(from: userInfo) else { continue }
+            let normalizedHandle = Contact.normalizedHandle(handle)
+            let receipt = BackgroundDeliveredBeepReceipt(
+                handle: handle,
+                normalizedHandle: normalizedHandle,
+                beepID: userInfo["beepId"] as? String,
+                requestCount: beepNotificationRequestCount(from: userInfo)
+            )
+            backgroundDeliveredBeepReceiptsByHandle[normalizedHandle] = receipt
+            consumedCount += 1
+        }
+
+        guard consumedCount > 0 else { return }
+        applyBackgroundDeliveredBeepReceiptsToKnownContacts(reason: reason)
+        diagnostics.record(
+            .pushToTalk,
+            message: "Consumed delivered Beep notifications without foreground banner",
+            metadata: [
+                "reason": reason,
+                "count": "\(consumedCount)",
+            ]
+        )
+    }
+
+    func applyBackgroundDeliveredBeepReceiptsToKnownContacts(reason: String) {
+        guard !backgroundDeliveredBeepReceiptsByHandle.isEmpty else { return }
+
+        for (normalizedHandle, receipt) in Array(backgroundDeliveredBeepReceiptsByHandle) {
+            guard let contact = contacts.first(where: {
+                Contact.normalizedHandle($0.handle) == normalizedHandle
+            }) else {
+                continue
+            }
+            let projectedIncomingBeep = incomingBeepByContactID[contact.id]
+            let relationship = beepThreadProjection(for: contact.id)
+            guard let requestCount = receipt.requestCount
+                    ?? projectedIncomingBeep?.requestCount
+                    ?? relationship.requestCount else {
+                continue
+            }
+
+            markIncomingBeepSurfaceSeenWithoutBanner(
+                for: contact.id,
+                beepID: receipt.beepID,
+                requestCount: requestCount
+            )
+            let hasProjectedIncomingBeep = projectedIncomingBeep != nil || relationship.hasIncomingBeep
+            if hasProjectedIncomingBeep {
+                backgroundDeliveredBeepReceiptsByHandle.removeValue(forKey: normalizedHandle)
+            }
+            diagnostics.record(
+                .pushToTalk,
+                message: hasProjectedIncomingBeep
+                    ? "Marked background-delivered Beep seen without foreground banner"
+                    : "Deferred background-delivered Beep banner suppression until projection",
+                metadata: [
+                    "contactId": contact.id.uuidString,
+                    "handle": contact.handle,
+                    "beepId": receipt.beepID ?? "none",
+                    "requestCount": "\(requestCount)",
+                    "reason": reason,
+                ]
+            )
+        }
+    }
+
+    func markIncomingBeepSurfaceSeenWithoutBanner(
+        for contactID: UUID,
+        beepID: String?,
+        requestCount: Int?
+    ) {
+        incomingBeepSurfaceState = IncomingBeepSurfaceReducer.reduce(
+            state: incomingBeepSurfaceState,
+            event: .beepSeenWithoutBanner(
+                contactID: contactID,
+                beepID: beepID,
+                requestCount: requestCount
+            )
+        )
     }
 
     func clearBeepNotifications() {

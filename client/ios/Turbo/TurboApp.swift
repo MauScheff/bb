@@ -121,6 +121,26 @@ enum TurboNotificationCategory {
         }
     }
 
+    static func deliveredBeepNotificationUserInfos(
+        on center: UNUserNotificationCenter = .current()
+    ) async -> [[AnyHashable: Any]] {
+        await withCheckedContinuation { continuation in
+            center.getDeliveredNotifications { notifications in
+                let userInfos = notifications.compactMap { notification -> [AnyHashable: Any]? in
+                    let userInfo = notification.request.content.userInfo
+                    guard isBeepNotification(
+                        categoryIdentifier: notification.request.content.categoryIdentifier,
+                        userInfo: userInfo
+                    ) else {
+                        return nil
+                    }
+                    return userInfo
+                }
+                continuation.resume(returning: userInfos)
+            }
+        }
+    }
+
     static func isBeepNotification(
         categoryIdentifier: String,
         userInfo: [AnyHashable: Any]
@@ -137,22 +157,14 @@ final class TurboAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificatio
         AppAudioSessionBootstrapper.configureCategoryForPushToTalk()
         UNUserNotificationCenter.current().delegate = self
         TurboNotificationCategory.register()
-        TurboNotificationCategory.clearDeliveredBeepNotifications()
         Task { @MainActor in
             await PTTViewModel.shared.initializeIfNeeded()
+            await PTTViewModel.shared.consumeDeliveredBeepNotificationsWithoutForegroundBanner(reason: "application-launch")
             if !AppRuntimeEnvironment.isRunningAutomatedTests {
                 await PTTViewModel.shared.configureAlertNotificationsIfNeeded()
             }
         }
         return true
-    }
-
-    func applicationWillEnterForeground(_ application: UIApplication) {
-        TurboNotificationCategory.clearDeliveredBeepNotifications()
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        TurboNotificationCategory.clearDeliveredBeepNotifications()
     }
 
     func application(
