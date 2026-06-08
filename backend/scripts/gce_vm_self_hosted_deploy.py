@@ -623,9 +623,9 @@ def build_remote_deploy_script(
     )
     registry_login_script = remote_registry_login_script(image) if not build_on_vm else ""
     compose_step_script = (
-        f"{compose_prefix} up -d --build {services}"
+        f"{compose_prefix} up -d --build postgres redis\napply_runtime_schema\n{compose_prefix} up -d --build runtime"
         if build_on_vm
-        else f"{compose_prefix} pull {services}\n{compose_prefix} up -d --no-build {services}"
+        else f"{compose_prefix} pull {services}\n{compose_prefix} up -d --no-build postgres redis\napply_runtime_schema\n{compose_prefix} up -d --no-build runtime"
     )
     optional_runtime_env = {
         key: os.environ.get(key, "")
@@ -692,6 +692,25 @@ upsert_env() {{
 }}
 {optional_runtime_env_script}
 cd "$RELEASE_DIR"
+wait_for_postgres() {{
+  ATTEMPTS=0
+  until sudo docker compose --env-file "$REMOTE_DIR/.env" -f backend/infra/vm/docker-compose.yml exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; do
+    ATTEMPTS=$((ATTEMPTS + 1))
+    if [ "$ATTEMPTS" -ge 60 ]; then
+      echo "postgres did not become ready for runtime schema apply" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}}
+apply_runtime_schema() {{
+  if [ ! -f backend/infra/self-hosted/sql/001_runtime_schema.sql ]; then
+    echo "runtime schema file missing from release archive" >&2
+    return 1
+  fi
+  wait_for_postgres
+  sudo docker compose --env-file "$REMOTE_DIR/.env" -f backend/infra/vm/docker-compose.yml exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < backend/infra/self-hosted/sql/001_runtime_schema.sql
+}}
 {compose_step_script}
 sudo docker compose --env-file "$REMOTE_DIR/.env" -f backend/infra/vm/docker-compose.yml ps
 curl -fsS "http://127.0.0.1:{runtime_port}/s/turbo/v1/health" >/dev/null

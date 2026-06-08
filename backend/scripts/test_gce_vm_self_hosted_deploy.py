@@ -24,7 +24,20 @@ class GCEVMSelfHostedDeployTests(unittest.TestCase):
 
         self.assertIn("docker compose", script)
         self.assertIn("pull postgres redis runtime", script)
-        self.assertIn("up -d --no-build postgres redis runtime", script)
+        self.assertIn("up -d --no-build postgres redis", script)
+        self.assertIn("apply_runtime_schema", script)
+        self.assertIn("up -d --no-build runtime", script)
+        postgres_start = script.index("up -d --no-build postgres redis")
+        schema_apply = script.index("\napply_runtime_schema\n", postgres_start)
+        runtime_start = script.index("up -d --no-build runtime")
+        self.assertLess(
+            postgres_start,
+            schema_apply,
+        )
+        self.assertLess(
+            schema_apply,
+            runtime_start,
+        )
         self.assertNotIn("up -d --build", script)
         self.assertNotIn("COMPOSE_PROFILES=relay", script)
         self.assertNotIn("runtime relay", script)
@@ -68,7 +81,9 @@ class GCEVMSelfHostedDeployTests(unittest.TestCase):
             build_on_vm=True,
         )
 
-        self.assertIn("up -d --build postgres redis runtime", script)
+        self.assertIn("up -d --build postgres redis", script)
+        self.assertIn("apply_runtime_schema", script)
+        self.assertIn("up -d --build runtime", script)
         self.assertNotIn("up -d --no-build", script)
 
     def test_registry_image_defaults_to_artifact_registry(self):
