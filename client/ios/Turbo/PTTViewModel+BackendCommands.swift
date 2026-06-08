@@ -1476,7 +1476,10 @@ extension PTTViewModel {
         request: BackendJoinRequest
     ) async {
         do {
-            _ = try await backend.heartbeatPresence()
+            _ = try await refreshPresenceForCurrentLifecycle(
+                backend,
+                reason: "backend-join-\(String(describing: request.intent))"
+            )
             diagnostics.record(
                 .backend,
                 message: "Refreshed backend Conversation evidence before join",

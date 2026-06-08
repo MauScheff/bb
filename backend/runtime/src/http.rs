@@ -3997,6 +3997,79 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_explicit_foreground_restores_reachability_after_stale_keepalive() {
+        let mut service = service();
+        let remember = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/contacts/remember".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "otherHandle": "@blake"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(remember.status, 200);
+
+        let offline = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/offline".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-offline"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(offline.status, 200);
+
+        let stale_keepalive = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/keepalive".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-keepalive"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(stale_keepalive.status, 200);
+        assert_eq!(stale_keepalive.body["status"], "offline");
+
+        let stale_summary = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(stale_summary.status, 200);
+        assert_eq!(stale_summary.body[0]["isOnline"], false);
+        assert_eq!(stale_summary.body[0]["beepReachability"], "not-reachable");
+
+        let foreground = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/presence/foreground".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "commandKind": "presence-foreground"
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(foreground.status, 200);
+        assert_eq!(foreground.body["status"], "online");
+
+        let foreground_summary = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/contacts/summaries/device-a".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(foreground_summary.status, 200);
+        assert_eq!(foreground_summary.body[0]["isOnline"], true);
+        assert_eq!(foreground_summary.body[0]["beepReachability"], "foreground");
+    }
+
+    #[test]
     fn self_hosted_beep_create_rejects_background_recipient_without_alert_token() {
         let mut service = service();
         let create = service.handle(HttpRequest {

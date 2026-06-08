@@ -2466,6 +2466,33 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         }
     }
 
+    @discardableResult
+    func refreshPresenceForCurrentLifecycle(
+        _ backend: BackendServices,
+        reason: String
+    ) async throws -> TurboPresenceHeartbeatResponse {
+        let response: TurboPresenceHeartbeatResponse
+        let commandKind: String
+        if shouldPublishForegroundPresence() {
+            response = try await backend.foregroundPresence()
+            commandKind = "presence-foreground"
+        } else {
+            response = try await backend.heartbeatPresence()
+            commandKind = "presence-keepalive"
+        }
+        backendRuntime.markPresenceHeartbeatSent()
+        diagnostics.record(
+            .backend,
+            message: "Presence refresh published",
+            metadata: [
+                "reason": reason,
+                "commandKind": commandKind,
+                "status": response.status,
+            ]
+        )
+        return response
+    }
+
     private func lifecyclePresenceTransitionKindForBackground() -> LifecyclePresenceTransitionKind {
         if shouldPublishActiveSessionPresenceDuringBackground(applicationState: .background) {
             return .activeSession

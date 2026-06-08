@@ -762,9 +762,21 @@ extension PTTViewModel {
             if let directQuicIdentity {
                 directQuicRegisteredFingerprint = directQuicIdentity.fingerprint
             }
-            bootstrapStep = "presence-keepalive"
-            _ = try await client.heartbeatPresence()
+            bootstrapStep = "presence-refresh"
+            let presenceCommandKind: String
+            if shouldPublishForegroundPresence() {
+                _ = try await client.foregroundPresence()
+                presenceCommandKind = "presence-foreground"
+            } else {
+                _ = try await client.heartbeatPresence()
+                presenceCommandKind = "presence-keepalive"
+            }
             backendRuntime.markPresenceHeartbeatSent()
+            diagnostics.record(
+                .backend,
+                message: "Bootstrap presence refresh succeeded",
+                metadata: ["commandKind": presenceCommandKind]
+            )
             guard backendConfigurationIsCurrent(key: key) else {
                 diagnostics.record(
                     .backend,

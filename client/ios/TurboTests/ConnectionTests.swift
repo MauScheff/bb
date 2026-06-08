@@ -28367,6 +28367,31 @@ struct ConnectionTests {
         )
     }
 
+    @MainActor
+    @Test func foregroundBackendSyncHeartbeatPublishesForegroundPresenceLease() async {
+        let viewModel = PTTViewModel()
+        viewModel.applicationStateOverride = .active
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        var httpPath: String?
+        var commandKind: String?
+        client.controlCommandHTTPResponseForTesting = { path, envelope in
+            httpPath = path
+            commandKind = envelope.commandKind
+            return makePresenceHeartbeatResponseData(status: "online")
+        }
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+
+        await viewModel.runBackendSyncEffect(.heartbeatPresence)
+
+        #expect(httpPath == "/v1/presence/foreground")
+        #expect(commandKind == "presence-foreground")
+        #expect(viewModel.diagnosticsTranscript.contains("Presence refresh published"))
+    }
+
     @Test func controlPlaneReducerPublishesReceiverAudioReadinessWithoutWebSocket() {
         let contactID = UUID()
         let intent = ReceiverAudioReadinessIntent(

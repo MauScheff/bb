@@ -228,10 +228,13 @@ private struct TurboContactRow: View {
                         Circle()
                             .fill(pill.tint)
                             .frame(width: 7, height: 7)
-                        Text(pill.text)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+                        if pill.text != "Online" {
+                            Text(pill.text)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .accessibilityLabel(pill.text)
                 }
 
                 Image(systemName: "chevron.right")
@@ -516,10 +519,13 @@ struct TurboContactActionView: View {
                             .fill(status.tint)
                             .frame(width: 8, height: 8)
 
-                        Text(status.text)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+                        if status.text != "Online" {
+                            Text(status.text)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .accessibilityLabel(status.text)
                     .lineLimit(1)
                     .minimumScaleFactor(0.88)
                 }

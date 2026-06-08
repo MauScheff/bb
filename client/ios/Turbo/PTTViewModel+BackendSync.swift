@@ -1815,7 +1815,11 @@ extension PTTViewModel {
             guard backendRuntime.consumePresenceHeartbeatSlot(
                 minimumInterval: minimumInterval
             ) else { return }
-            _ = try? await backendServices?.heartbeatPresence()
+            guard let backendServices else { return }
+            _ = try? await refreshPresenceForCurrentLifecycle(
+                backendServices,
+                reason: "backend-sync-heartbeat"
+            )
         case .refreshContactSummaries:
             await refreshContactSummaries()
         case .refreshBeeps:
