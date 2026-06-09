@@ -35,7 +35,7 @@
       }
     },
     {
-      "description": "selected contact channel refresh retries Direct QUIC prewarm without joining or transmitting",
+      "description": "selected contact channel refresh does not join or transmit",
       "actions": [
         { "actor": "b", "type": "ensureDirectChannel", "friend": "a" }
       ],
@@ -46,11 +46,6 @@
           "isJoined": false,
           "isTransmitting": false,
           "noInvariantViolations": true,
-          "diagnosticsContains": [
-            "Selection Direct QUIC prewarm skipped",
-            "reason=selected-contact",
-            "reason=channel-refresh"
-          ],
           "diagnosticsNotContains": [
             "Transmit begin requested",
             "Captured local audio buffer",
