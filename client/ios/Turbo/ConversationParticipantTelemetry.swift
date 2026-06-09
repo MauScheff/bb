@@ -41,7 +41,7 @@ struct ConversationParticipantTelemetry: Codable, Equatable {
     struct Audio: Codable, Equatable {
         static let volumeOffMaximumPercent = 1
         static let veryLowVolumeMaximumPercent = 15
-        static let lowVolumeMaximumPercent = 30
+        static let lowVolumeMaximumPercent = 25
 
         let routeName: String
         let volumePercent: Int

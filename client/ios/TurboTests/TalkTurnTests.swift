@@ -19489,8 +19489,8 @@ struct TalkTurnTests {
     @Test func conversationParticipantTelemetryAudioClassifiesVolumeWarningRanges() {
         let offAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 1)
         let veryLowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 15)
-        let lowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 30)
-        let audibleAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 31)
+        let lowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 25)
+        let audibleAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 26)
 
         #expect(offAudio.isVolumeOff)
         #expect(offAudio.isVolumeVeryLow)
@@ -19582,7 +19582,7 @@ struct TalkTurnTests {
             statusMessage: "Connected",
             canTransmitNow: true
         )
-        let receiverAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 30)
+        let receiverAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 25)
         let blocker: ConversationHoldToTalkBlocker? = receiverAudio.isVolumeOff
             ? .receiverVolumeOff(contactName: "Blake")
             : nil
