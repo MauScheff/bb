@@ -19440,6 +19440,133 @@ struct TalkTurnTests {
         }
     }
 
+    @Test func receiverVolumeOffDisablesReadyHoldToTalkPrimaryAction() {
+        let state = SelectedConversationState(
+            contactName: "Blake",
+            relationship: .none,
+            detail: .ready,
+            statusMessage: "Connected",
+            canTransmitNow: true
+        )
+
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: state,
+            isSelectedChannelJoined: true,
+            isTransmitting: false,
+            beepCooldownRemaining: nil,
+            holdToTalkBlocker: .receiverVolumeOff(contactName: "Blake")
+        )
+
+        #expect(action.kind == .holdToTalk)
+        #expect(action.label == "Blake's Volume Is Off")
+        #expect(action.isEnabled == false)
+        #expect(action.style == .muted)
+    }
+
+    @Test func receiverVolumeOffDoesNotDisableAlreadyActiveHoldToTalkPrimaryAction() {
+        let state = SelectedConversationState(
+            contactName: "Blake",
+            relationship: .none,
+            detail: .transmitting,
+            statusMessage: "Talking to Blake",
+            canTransmitNow: false
+        )
+
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: state,
+            isSelectedChannelJoined: true,
+            isTransmitting: true,
+            beepCooldownRemaining: nil,
+            holdToTalkBlocker: .receiverVolumeOff(contactName: "Blake")
+        )
+
+        #expect(action.kind == .holdToTalk)
+        #expect(action.label == "Talking")
+        #expect(action.isEnabled)
+        #expect(action.style == .active)
+    }
+
+    @Test func conversationParticipantTelemetryAudioClassifiesOffAndVeryLowVolume() {
+        let offAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 1)
+        let veryLowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 5)
+        let audibleAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 6)
+
+        #expect(offAudio.isVolumeOff)
+        #expect(offAudio.isVolumeVeryLow)
+        #expect(veryLowAudio.isVolumeOff == false)
+        #expect(veryLowAudio.isVolumeVeryLow)
+        #expect(audibleAudio.isVolumeOff == false)
+        #expect(audibleAudio.isVolumeVeryLow == false)
+    }
+
+    @MainActor
+    @Test func beginTransmitIgnoresReceiverVolumeOffTelemetry() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+        viewModel.backendRuntime.mode = "local-http"
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: RecordingMediaSession(), contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: true,
+                    remoteAudioReadiness: .ready,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device")
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        #expect(viewModel.canBeginTransmit(for: contactID))
+
+        viewModel.applyRemoteConversationParticipantTelemetry(
+            ConversationParticipantTelemetry(
+                audio: ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 0),
+                connection: nil
+            ),
+            for: contactID,
+            source: "test"
+        )
+
+        viewModel.beginTransmit()
+
+        #expect(viewModel.transmitRuntime.isPressingTalk == false)
+        #expect(viewModel.diagnosticsTranscript.contains("Ignored begin transmit request"))
+        #expect(viewModel.diagnosticsTranscript.contains("receiver-volume-off"))
+    }
+
     @Test func holdToTalkButtonPolicyKeepsActivePresentationWhileGestureIsHeld() {
         let action = ConversationPrimaryAction(
             kind: .holdToTalk,

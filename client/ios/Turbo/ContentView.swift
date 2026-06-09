@@ -472,6 +472,7 @@ struct ContentView: View {
                     isTransmitPressActive: viewModel.isTransmitPressActive,
                     selectedConversationState: viewModel.selectedConversationState(for:),
                     beepCooldownRemaining: viewModel.beepCooldownRemaining(for:now:),
+                    holdToTalkBlocker: { contactID in holdToTalkBlocker(for: contactID) },
                     joinChannel: {
                         ensureContactSelected(focusedContact, reason: "focused-contact-action")
                         viewModel.joinChannel()
@@ -524,6 +525,7 @@ struct ContentView: View {
                     isTransmitPressActive: viewModel.isTransmitPressActive,
                     selectedConversationState: viewModel.selectedConversationState(for:),
                     beepCooldownRemaining: viewModel.beepCooldownRemaining(for:now:),
+                    holdToTalkBlocker: { contactID in holdToTalkBlocker(for: contactID) },
                     joinChannel: viewModel.joinChannel,
                     beginTransmit: viewModel.beginTransmit,
                     noteTransmitTouchReleased: viewModel.noteTransmitTouchReleased,
@@ -933,8 +935,27 @@ struct ContentView: View {
             selectedConversationState: selectedConversationState,
             isSelectedChannelJoined: isSelectedChannelJoined,
             isTransmitting: viewModel.isTransmitting,
-            beepCooldownRemaining: viewModel.beepCooldownRemaining(for: contact.id, now: Date())
+            beepCooldownRemaining: viewModel.beepCooldownRemaining(for: contact.id, now: Date()),
+            holdToTalkBlocker: holdToTalkBlocker(for: contact)
         )
+    }
+
+    private func holdToTalkBlocker(for contact: Contact) -> ConversationHoldToTalkBlocker? {
+        holdToTalkBlocker(for: contact.id, contactName: contact.name)
+    }
+
+    private func holdToTalkBlocker(for contactID: UUID) -> ConversationHoldToTalkBlocker? {
+        holdToTalkBlocker(for: contactID, contactName: viewModel.contact(for: contactID)?.name)
+    }
+
+    private func holdToTalkBlocker(
+        for contactID: UUID,
+        contactName: String?
+    ) -> ConversationHoldToTalkBlocker? {
+        guard viewModel.conversationParticipantTelemetry(for: contactID)?.audio?.isVolumeOff == true else {
+            return nil
+        }
+        return .receiverVolumeOff(contactName: contactName)
     }
 
     private func ensureContactSelected(_ contact: Contact, reason: String) {

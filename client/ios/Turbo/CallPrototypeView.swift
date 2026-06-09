@@ -445,6 +445,43 @@ struct TurboCallPrototypeView: View {
     @State private var displayedTalkEnergy: Double = 0
     @State private var hasReachedReadyCloudMotion = false
 
+    private enum AudioBlockerPresentation: Equatable {
+        case localVolumeOff(contactName: String)
+        case localVolumeVeryLow(contactName: String)
+        case remoteVolumeOff(contactName: String)
+        case remoteVolumeVeryLow(contactName: String)
+
+        var title: String {
+            switch self {
+            case .localVolumeOff:
+                return "Your volume is off"
+            case .localVolumeVeryLow:
+                return "Your volume is very low"
+            case .remoteVolumeOff(let contactName):
+                return "\(contactName)’s volume is off"
+            case .remoteVolumeVeryLow(let contactName):
+                return "\(contactName)’s volume is very low"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .localVolumeOff(let contactName):
+                return "Turn it up to hear \(contactName)."
+            case .localVolumeVeryLow(let contactName):
+                return "Turn it up so you don’t miss \(contactName)."
+            case .remoteVolumeOff:
+                return "They need to turn it up before they can hear you."
+            case .remoteVolumeVeryLow:
+                return "They may not hear you clearly yet."
+            }
+        }
+
+        var accessibilityLabel: String {
+            "\(title). \(message)"
+        }
+    }
+
     @MainActor
     static func prewarmDefaultTexture() {
         let windowSize = UIApplication.shared.connectedScenes.compactMap { scene -> CGSize? in
@@ -469,7 +506,18 @@ struct TurboCallPrototypeView: View {
                     cloudMotion: cloudMotion,
                     topSafePadding: topSafePadding
                 )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+
+                if let audioBlockerPresentation {
+                    audioBlockerOverlay(audioBlockerPresentation)
+                        .frame(maxWidth: min(max(proxy.size.width - 56, 0), 320))
+                        .transition(.scale(scale: 0.94).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                        .zIndex(20)
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .animation(.spring(response: 0.28, dampingFraction: 0.88), value: audioBlockerPresentation)
         }
         .onChange(of: cloudShouldAnimate) { _, isAnimating in
             if !isAnimating {
@@ -921,6 +969,65 @@ struct TurboCallPrototypeView: View {
         true
     }
 
+    private var audioBlockerPresentation: AudioBlockerPresentation? {
+        if let localAudio = localTelemetry?.audio {
+            if localAudio.isVolumeOff {
+                return .localVolumeOff(contactName: contactShortName)
+            }
+            if localAudio.isVolumeVeryLow {
+                return .localVolumeVeryLow(contactName: contactShortName)
+            }
+        }
+        if let remoteAudio = remoteParticipantTelemetry?.audio {
+            if remoteAudio.isVolumeOff {
+                return .remoteVolumeOff(contactName: contactShortName)
+            }
+            if remoteAudio.isVolumeVeryLow {
+                return .remoteVolumeVeryLow(contactName: contactShortName)
+            }
+        }
+        return nil
+    }
+
+    private func audioBlockerOverlay(_ presentation: AudioBlockerPresentation) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "speaker.slash.fill")
+                .font(.system(size: 31, weight: .semibold, design: .default))
+                .foregroundStyle(Color(red: 0.10, green: 0.12, blue: 0.14))
+                .frame(width: 48, height: 48)
+                .background(Color.black.opacity(0.055), in: Circle())
+
+            VStack(spacing: 5) {
+                Text(presentation.title)
+                    .font(.system(size: 20, weight: .semibold, design: .default))
+                    .foregroundStyle(Color(red: 0.08, green: 0.09, blue: 0.10))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+
+                Text(presentation.message)
+                    .font(.system(size: 15, weight: .regular, design: .default))
+                    .foregroundStyle(Color(red: 0.28, green: 0.29, blue: 0.31))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.78)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color.white.opacity(0.96))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.75), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 26, y: 16)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.accessibilityLabel)
+    }
+
     private var remoteParticipantConnectionStatusText: String? {
         if selectedConversationState.phase == .wakeReady {
             return "\(contactShortName)’s connection · Background · Wakeable"
@@ -968,6 +1075,9 @@ struct TurboCallPrototypeView: View {
     }
 
     private func audioSymbolName(for audio: ConversationParticipantTelemetry.Audio) -> String {
+        if audio.isVolumeOff {
+            return "speaker.slash.fill"
+        }
         let routeName = audio.routeName.lowercased()
         if routeName.contains("bluetooth") {
             return "headphones"
@@ -981,7 +1091,7 @@ struct TurboCallPrototypeView: View {
         if routeName.contains("speaker") {
             return "speaker.wave.2.fill"
         }
-        return isVolumeOff(audio.volumePercent) ? "speaker.slash.fill" : "speaker.wave.2.fill"
+        return "speaker.wave.2.fill"
     }
 
     private var transportPathLabel: String? {
@@ -1026,7 +1136,9 @@ struct TurboCallPrototypeView: View {
         guard let percent = localTelemetry?.audio?.volumePercent else {
             return conversationParticipantTelemetryColor
         }
-        return isVolumeOff(percent) ? lowVolumeAttentionColor : .white.opacity(0.68)
+        return isVolumeOff(percent)
+            ? lowVolumeAttentionColor
+            : .white.opacity(0.68)
     }
 
     private var localVolumeWarningText: String? {
@@ -1075,11 +1187,11 @@ struct TurboCallPrototypeView: View {
     }
 
     private func isVolumeOff(_ percent: Int) -> Bool {
-        percent <= 1
+        percent <= ConversationParticipantTelemetry.Audio.volumeOffMaximumPercent
     }
 
     private func isVolumeVeryLow(_ percent: Int) -> Bool {
-        percent <= 5
+        percent <= ConversationParticipantTelemetry.Audio.veryLowVolumeMaximumPercent
     }
 
     private var contactShortName: String {
@@ -1115,7 +1227,8 @@ struct TurboCallPrototypeView: View {
             )
             .contentShape(Rectangle())
             .gesture(talkGesture)
-            .accessibilityLabel("Talk")
+            .accessibilityLabel(talkButtonAccessibilityLabel)
+            .accessibilityHint(talkButtonAccessibilityHint)
             .accessibilityAddTraits(.isButton)
         } else {
             TurboCallActionButton(
@@ -1135,6 +1248,24 @@ struct TurboCallPrototypeView: View {
 
     private var talkButtonTint: Color {
         return Color(red: 0.25, green: 0.52, blue: 0.93)
+    }
+
+    private var talkButtonAccessibilityLabel: String {
+        guard primaryAction.kind == .holdToTalk,
+              !primaryAction.isEnabled,
+              remoteParticipantTelemetry?.audio?.isVolumeOff == true else {
+            return "Talk"
+        }
+        return "Talk unavailable. \(contactShortName)'s volume is off."
+    }
+
+    private var talkButtonAccessibilityHint: String {
+        guard primaryAction.kind == .holdToTalk,
+              !primaryAction.isEnabled,
+              remoteParticipantTelemetry?.audio?.isVolumeOff == true else {
+            return ""
+        }
+        return "They need to turn it up before they can hear you."
     }
 
     private var isTalkButtonActive: Bool {

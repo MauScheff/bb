@@ -1305,6 +1305,30 @@ extension PTTViewModel {
         let selectedConversation = selectedConversationState(for: contact.id)
         let isWakeReady = selectedConversation.phase == .wakeReady
 
+        guard canBeginTransmit(for: contact.id) else {
+            diagnostics.record(
+                .media,
+                message: "Ignored begin transmit request",
+                metadata: [
+                    "reason": "selected-conversation-disallows-hold-to-talk",
+                    "contact": contact.handle,
+                    "phase": String(describing: selectedConversation.phase),
+                ]
+            )
+            updateStatusForSelectedContact()
+            return
+        }
+
+        guard conversationParticipantTelemetry(for: contact.id)?.audio?.isVolumeOff != true else {
+            diagnostics.record(
+                .media,
+                message: "Ignored begin transmit request",
+                metadata: ["reason": "receiver-volume-off", "contact": contact.handle]
+            )
+            updateStatusForSelectedContact()
+            return
+        }
+
         guard let backendChannelId = contact.backendChannelId,
               let remoteUserID = contact.remoteUserId,
               let backend = backendServices else {
@@ -1321,20 +1345,6 @@ extension PTTViewModel {
             usesLocalHTTPBackend: usesLocalHTTPBackend,
             backendSupportsWebSocket: backend.supportsWebSocket
         )
-
-        guard canBeginTransmit(for: contact.id) else {
-            diagnostics.record(
-                .media,
-                message: "Ignored begin transmit request",
-                metadata: [
-                    "reason": "selected-conversation-disallows-hold-to-talk",
-                    "contact": contact.handle,
-                    "phase": String(describing: selectedConversation.phase),
-                ]
-            )
-            updateStatusForSelectedContact()
-            return
-        }
 
         guard !hasPendingBeginOrActiveTransmit else {
             guard shouldDeferBeginTransmitUntilPostLiveSettlingCompletes(for: contact.id) else {

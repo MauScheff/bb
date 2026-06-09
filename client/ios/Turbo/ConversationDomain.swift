@@ -410,6 +410,40 @@ struct ConversationPrimaryAction: Equatable {
     let style: ConversationPrimaryActionStyle
 }
 
+enum ConversationHoldToTalkBlocker: Equatable {
+    case receiverVolumeOff(contactName: String?)
+
+    var primaryActionLabel: String {
+        switch self {
+        case .receiverVolumeOff(let contactName):
+            guard let contactName, !contactName.isEmpty else {
+                return "Volume Is Off"
+            }
+            return "\(contactName)'s Volume Is Off"
+        }
+    }
+}
+
+private extension ConversationPrimaryAction {
+    func applyingHoldToTalkBlocker(
+        _ blocker: ConversationHoldToTalkBlocker?,
+        isTransmitting: Bool
+    ) -> ConversationPrimaryAction {
+        guard let blocker,
+              kind == .holdToTalk,
+              isEnabled,
+              !isTransmitting else {
+            return self
+        }
+        return ConversationPrimaryAction(
+            kind: kind,
+            label: blocker.primaryActionLabel,
+            isEnabled: false,
+            style: .muted
+        )
+    }
+}
+
 nonisolated enum FriendAvailability: Equatable {
     case foreground
     case wakeCapable
@@ -2501,7 +2535,8 @@ enum ConversationStateMachine {
         isSelectedChannelJoined: Bool,
         canTransmitNow: Bool,
         isTransmitting: Bool,
-        beepCooldownRemaining: Int?
+        beepCooldownRemaining: Int?,
+        holdToTalkBlocker: ConversationHoldToTalkBlocker? = nil
     ) -> ConversationPrimaryAction {
         let label = talkButtonLabel(
             conversationState: conversationState,
@@ -2516,6 +2551,7 @@ enum ConversationStateMachine {
                 isEnabled: true,
                 style: isTransmitting ? .active : .accent
             )
+            .applyingHoldToTalkBlocker(holdToTalkBlocker, isTransmitting: isTransmitting)
         }
 
         switch conversationState {
@@ -2534,6 +2570,7 @@ enum ConversationStateMachine {
             return ConversationPrimaryAction(kind: .connect, label: label, isEnabled: true, style: .accent)
         case .transmitting:
             return ConversationPrimaryAction(kind: .holdToTalk, label: label, isEnabled: true, style: .active)
+                .applyingHoldToTalkBlocker(holdToTalkBlocker, isTransmitting: isTransmitting)
         }
     }
 
@@ -2541,7 +2578,8 @@ enum ConversationStateMachine {
         selectedConversationState: SelectedConversationState,
         isSelectedChannelJoined: Bool,
         isTransmitting: Bool,
-        beepCooldownRemaining: Int?
+        beepCooldownRemaining: Int?,
+        holdToTalkBlocker: ConversationHoldToTalkBlocker? = nil
     ) -> ConversationPrimaryAction {
         switch selectedConversationState.phase {
         case .blockedByOtherSession, .systemMismatch:
@@ -2581,6 +2619,7 @@ enum ConversationStateMachine {
                 isEnabled: selectedConversationState.allowsHoldToTalk,
                 style: .accent
             )
+            .applyingHoldToTalkBlocker(holdToTalkBlocker, isTransmitting: isTransmitting)
         case .localJoinFailed:
             return ConversationPrimaryAction(
                 kind: .connect,
@@ -2650,7 +2689,8 @@ enum ConversationStateMachine {
                 isSelectedChannelJoined: isSelectedChannelJoined,
                 canTransmitNow: selectedConversationState.canTransmitNow,
                 isTransmitting: isTransmitting,
-                beepCooldownRemaining: beepCooldownRemaining
+                beepCooldownRemaining: beepCooldownRemaining,
+                holdToTalkBlocker: holdToTalkBlocker
             )
         case .ready:
             return ConversationPrimaryAction(
@@ -2659,6 +2699,7 @@ enum ConversationStateMachine {
                 isEnabled: selectedConversationState.allowsHoldToTalk,
                 style: .accent
             )
+            .applyingHoldToTalkBlocker(holdToTalkBlocker, isTransmitting: isTransmitting)
         case .outgoingBeep:
             return ConversationPrimaryAction(
                 kind: .connect,
@@ -2697,7 +2738,8 @@ enum ConversationStateMachine {
                 isSelectedChannelJoined: isSelectedChannelJoined,
                 canTransmitNow: selectedConversationState.canTransmitNow,
                 isTransmitting: isTransmitting,
-                beepCooldownRemaining: beepCooldownRemaining
+                beepCooldownRemaining: beepCooldownRemaining,
+                holdToTalkBlocker: holdToTalkBlocker
             )
         }
     }

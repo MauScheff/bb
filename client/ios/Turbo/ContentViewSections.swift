@@ -339,6 +339,7 @@ struct TurboTalkControlsView: View {
     let isTransmitPressActive: Bool
     let selectedConversationState: (UUID) -> SelectedConversationState
     let beepCooldownRemaining: (UUID, Date) -> Int?
+    let holdToTalkBlocker: (UUID) -> ConversationHoldToTalkBlocker?
     let joinChannel: () -> Void
     let beginTransmit: () -> Void
     let noteTransmitTouchReleased: () -> Void
@@ -356,7 +357,8 @@ struct TurboTalkControlsView: View {
                         selectedConversationState: selectedConversationState,
                         isSelectedChannelJoined: isSelectedChannelJoined,
                         isTransmitting: isTransmitting,
-                        beepCooldownRemaining: cooldownRemaining
+                        beepCooldownRemaining: cooldownRemaining,
+                        holdToTalkBlocker: holdToTalkBlocker(selectedContactID)
                     )
                     let effectiveGestureIsActive = isTransmitPressActive
                     let displayedPrimaryAction = HoldToTalkButtonPolicy.displayAction(
@@ -472,6 +474,7 @@ struct TurboContactActionView: View {
     let isTransmitPressActive: Bool
     let selectedConversationState: (UUID) -> SelectedConversationState
     let beepCooldownRemaining: (UUID, Date) -> Int?
+    let holdToTalkBlocker: (UUID) -> ConversationHoldToTalkBlocker?
     let joinChannel: () -> Void
     let beginTransmit: () -> Void
     let noteTransmitTouchReleased: () -> Void
@@ -542,6 +545,7 @@ struct TurboContactActionView: View {
                 isTransmitPressActive: isTransmitPressActive,
                 selectedConversationState: selectedConversationState,
                 beepCooldownRemaining: beepCooldownRemaining,
+                holdToTalkBlocker: holdToTalkBlocker,
                 joinChannel: joinChannel,
                 beginTransmit: beginTransmit,
                 noteTransmitTouchReleased: noteTransmitTouchReleased,

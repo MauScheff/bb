@@ -39,8 +39,19 @@ enum ConversationNetworkInterface: String, Codable, Equatable {
 
 struct ConversationParticipantTelemetry: Codable, Equatable {
     struct Audio: Codable, Equatable {
+        static let volumeOffMaximumPercent = 1
+        static let veryLowVolumeMaximumPercent = 5
+
         let routeName: String
         let volumePercent: Int
+
+        var isVolumeOff: Bool {
+            volumePercent <= Self.volumeOffMaximumPercent
+        }
+
+        var isVolumeVeryLow: Bool {
+            volumePercent <= Self.veryLowVolumeMaximumPercent
+        }
 
         static func current(audioSession: AVAudioSession = .sharedInstance()) -> Audio {
             let outputs = audioSession.currentRoute.outputs
