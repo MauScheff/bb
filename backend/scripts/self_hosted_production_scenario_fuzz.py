@@ -175,7 +175,7 @@ def wait_for_runtime(bind: str, timeout: float) -> dict[str, Any]:
             body = fetch_json(f"{base_url}/v1/health", timeout=1.0)
             if body.get("status") == "ok" and body.get("runtime") == "self-hosted":
                 config = fetch_json(f"{base_url}/v1/config", timeout=1.0)
-                if config.get("mode") == "self-hosted" and config.get("supportsWebSocket") is True:
+                if runtime_config_is_valid(config):
                     return {
                         "name": "runtime-health",
                         "ok": True,
@@ -193,6 +193,20 @@ def wait_for_runtime(bind: str, timeout: float) -> dict[str, Any]:
         "baseUrl": base_url,
         "error": last_error,
     }
+
+
+def runtime_config_is_valid(config: dict[str, Any]) -> bool:
+    if config.get("mode") != "self-hosted":
+        return False
+    runtime_control = config.get("runtimeControl")
+    if not isinstance(runtime_control, dict):
+        return False
+    http = runtime_control.get("http")
+    if not isinstance(http, dict) or http.get("supported") is not True:
+        return False
+    if config.get("supportsWebSocket") is True:
+        return False
+    return True
 
 
 def run_iteration(args: argparse.Namespace, index: int) -> dict[str, Any]:

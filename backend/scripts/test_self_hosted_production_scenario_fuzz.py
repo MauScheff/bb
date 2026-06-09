@@ -13,6 +13,35 @@ import self_hosted_production_scenario_fuzz
 
 
 class SelfHostedProductionScenarioFuzzTests(unittest.TestCase):
+    def test_runtime_config_accepts_http_control_without_websocket(self) -> None:
+        self.assertTrue(
+            self_hosted_production_scenario_fuzz.runtime_config_is_valid(
+                {
+                    "mode": "self-hosted",
+                    "runtimeControl": {
+                        "http": {"supported": True, "endpoint": None},
+                        "preference": ["runtime-http-request"],
+                        "quic": {"supported": False, "endpoint": None},
+                        "tls": {"supported": False, "endpoint": None},
+                    },
+                    "supportsWebSocket": False,
+                }
+            )
+        )
+
+    def test_runtime_config_rejects_websocket_compatibility(self) -> None:
+        self.assertFalse(
+            self_hosted_production_scenario_fuzz.runtime_config_is_valid(
+                {
+                    "mode": "self-hosted",
+                    "runtimeControl": {
+                        "http": {"supported": True, "endpoint": None},
+                    },
+                    "supportsWebSocket": True,
+                }
+            )
+        )
+
     def test_postgres_query_readiness_waits_for_successful_query(self) -> None:
         attempts = [
             {
