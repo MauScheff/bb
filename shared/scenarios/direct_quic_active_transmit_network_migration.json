@@ -54,7 +54,7 @@
           "phase": "transmitting",
           "isJoined": true,
           "isTransmitting": true,
-          "transportPathState": "relay",
+          "transportPathState": "fast-relay",
           "localNetworkInterface": "cellular",
           "diagnosticsContains": ["Direct QUIC media path lost"],
           "diagnosticsNotContains": ["direct-quic.active_path_surfaced_as_relay"],
