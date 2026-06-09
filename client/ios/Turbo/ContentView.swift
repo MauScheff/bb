@@ -153,23 +153,6 @@ struct ContentView: View {
                 route = viewModel.hasCompletedIdentityOnboarding ? .live : .start
             }
         }
-        .overlay(alignment: .top) {
-            if let activeIncomingBeep = viewModel.activeIncomingBeep {
-                TurboIncomingBeepBanner(
-                    beep: activeIncomingBeep,
-                    onDismiss: viewModel.dismissIncomingBeepSurface,
-                    onAccept: {
-                        viewModel.acceptIncomingBeepSurface(activeIncomingBeep)
-                    }
-                )
-                .padding(.horizontal)
-                .padding(.top, route == .launchSplash ? 18 : 10)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .task(id: activeIncomingBeep.surfaceKey.stableID) {
-                    viewModel.scheduleIncomingBeepSurfaceAutoDismiss(activeIncomingBeep)
-                }
-            }
-        }
         .overlay(alignment: .bottom) {
             if let addContactConfirmation {
                 TurboAddContactToast(message: addContactConfirmation.message)
@@ -197,6 +180,9 @@ struct ContentView: View {
         }
         .overlay {
             callScreenPresentationOverlay
+        }
+        .overlay(alignment: .top) {
+            incomingBeepBannerOverlay
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: viewModel.activeIncomingBeep?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: addContactConfirmation?.id)
@@ -731,6 +717,40 @@ struct ContentView: View {
         reduceMotion
             ? .easeOut(duration: 0.16)
             : .smooth(duration: 0.34, extraBounce: 0)
+    }
+
+    @ViewBuilder
+    private var incomingBeepBannerOverlay: some View {
+        if let activeIncomingBeep = viewModel.incomingBeepSurfaceState.activeIncomingBeep {
+            TurboIncomingBeepBanner(
+                beep: activeIncomingBeep,
+                onDismiss: viewModel.dismissIncomingBeepSurface,
+                onAccept: {
+                    viewModel.acceptIncomingBeepSurface(activeIncomingBeep)
+                }
+            )
+            .padding(.horizontal)
+            .padding(.top, route == .launchSplash ? 18 : 10)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .zIndex(100)
+            .onAppear {
+                viewModel.recordIncomingBeepBannerRendered(
+                    activeIncomingBeep,
+                    route: String(describing: route),
+                    callScreenVisible: callScreenPresentedContactID != nil || isShowingCallPrototype
+                )
+            }
+            .onDisappear {
+                viewModel.recordIncomingBeepBannerRemoved(
+                    activeIncomingBeep,
+                    route: String(describing: route),
+                    activeStillMatches: viewModel.activeIncomingBeep?.surfaceKey == activeIncomingBeep.surfaceKey
+                )
+            }
+            .task(id: activeIncomingBeep.surfaceKey.stableID) {
+                viewModel.scheduleIncomingBeepSurfaceAutoDismiss(activeIncomingBeep)
+            }
+        }
     }
 
     @ViewBuilder

@@ -26,19 +26,26 @@ extension PTTViewModel {
             : presentationPolicy
         expirePendingForegroundBeepSurfaceIfNeeded()
         applyBackgroundDeliveredBeepReceiptsToKnownContacts(reason: "incoming-beep-surface-reconcile")
-        let candidates: [IncomingBeepCandidate] = contacts.compactMap { contact in
-            guard contact.handle != currentDevUserHandle else { return nil }
-            guard !beepNotificationAlreadyHandled(for: contact.id) else { return nil }
-            if let beep = incomingBeepByContactID[contact.id] {
-                return IncomingBeepCandidate(contact: contact, beep: beep)
-            }
+        let previousActiveIncomingBeep = incomingBeepSurfaceState.activeIncomingBeep
+        let candidates: [IncomingBeepCandidate] = contacts.flatMap { contact -> [IncomingBeepCandidate] in
+            guard contact.handle != currentDevUserHandle else { return [] }
+            guard !beepNotificationAlreadyHandled(for: contact.id) else { return [] }
+            var contactCandidates: [IncomingBeepCandidate] = []
             let relationship = beepThreadProjection(for: contact.id)
-            guard relationship.hasIncomingBeep else { return nil }
-            return IncomingBeepCandidate(
-                contact: contact,
-                requestCount: relationship.requestCount ?? 1,
-                source: "relationship"
-            )
+            if let beep = incomingBeepByContactID[contact.id] {
+                contactCandidates.append(IncomingBeepCandidate(contact: contact, beep: beep))
+            }
+            if relationship.hasIncomingBeep {
+                let relationshipRequestCount = relationship.requestCount ?? 1
+                contactCandidates.append(
+                    IncomingBeepCandidate(
+                        contact: contact,
+                        requestCount: relationshipRequestCount,
+                        source: "relationship"
+                    )
+                )
+            }
+            return contactCandidates
         } + contacts.compactMap { contact in
             guard let pendingSurface = pendingForegroundBeepSurface,
                   pendingSurface.contactID == contact.id,
@@ -64,7 +71,74 @@ extension PTTViewModel {
                 allowsAlreadySurfacedBeep: allowsAlreadySurfacedBeep
             )
         )
+        recordIncomingBeepSurfaceActivationIfNeeded(
+            previousActiveIncomingBeep: previousActiveIncomingBeep,
+            applicationState: resolvedApplicationState,
+            presentationPolicy: effectivePresentationPolicy,
+            candidateCount: candidates.count
+        )
         completePendingForegroundBeepAcceptIfReady(reason: "surface-reconcile")
+    }
+
+    private func recordIncomingBeepSurfaceActivationIfNeeded(
+        previousActiveIncomingBeep: IncomingBeepSurface?,
+        applicationState: UIApplication.State,
+        presentationPolicy: IncomingBeepSurfacePresentationPolicy,
+        candidateCount: Int
+    ) {
+        guard let activeIncomingBeep else { return }
+        guard previousActiveIncomingBeep?.surfaceKey != activeIncomingBeep.surfaceKey else { return }
+        diagnostics.record(
+            .pushToTalk,
+            message: "Activated foreground incoming Beep banner",
+            metadata: [
+                "contactId": activeIncomingBeep.contactID.uuidString,
+                "handle": activeIncomingBeep.contactHandle,
+                "beepId": activeIncomingBeep.beepID,
+                "requestCount": "\(activeIncomingBeep.requestCount)",
+                "applicationState": String(describing: applicationState),
+                "presentationPolicy": String(describing: presentationPolicy),
+                "candidateCount": "\(candidateCount)",
+            ]
+        )
+    }
+
+    func recordIncomingBeepBannerRendered(
+        _ surface: IncomingBeepSurface,
+        route: String,
+        callScreenVisible: Bool
+    ) {
+        diagnostics.record(
+            .pushToTalk,
+            message: "Rendered foreground incoming Beep banner",
+            metadata: [
+                "contactId": surface.contactID.uuidString,
+                "handle": surface.contactHandle,
+                "beepId": surface.beepID,
+                "requestCount": "\(surface.requestCount)",
+                "route": route,
+                "callScreenVisible": "\(callScreenVisible)",
+            ]
+        )
+    }
+
+    func recordIncomingBeepBannerRemoved(
+        _ surface: IncomingBeepSurface,
+        route: String,
+        activeStillMatches: Bool
+    ) {
+        diagnostics.record(
+            .pushToTalk,
+            message: "Removed foreground incoming Beep banner view",
+            metadata: [
+                "contactId": surface.contactID.uuidString,
+                "handle": surface.contactHandle,
+                "beepId": surface.beepID,
+                "requestCount": "\(surface.requestCount)",
+                "route": route,
+                "activeStillMatches": "\(activeStillMatches)",
+            ]
+        )
     }
 
     func beginForegroundActivationIncomingBeepBannerSuppression(reason: String) {

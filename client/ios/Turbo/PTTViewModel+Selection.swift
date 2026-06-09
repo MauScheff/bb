@@ -1561,7 +1561,7 @@ extension PTTViewModel {
             message: "Auto-selected contact",
             metadata: ["handle": contact.handle, "reason": reason]
         )
-        selectContact(contact, opensIncomingBeepSurface: false)
+        selectContact(contact, reason: reason, opensIncomingBeepSurface: false)
     }
 
     @discardableResult
@@ -1591,6 +1591,15 @@ extension PTTViewModel {
                 return beepRecencyKey(lhsBeep) < beepRecencyKey(rhsBeep)
             }) {
             return incomingBeepContact
+        }
+
+        if let incomingRelationshipContact = contacts
+            .filter({ beepThreadProjection(for: $0.id).hasIncomingBeep })
+            .max(by: { lhs, rhs in
+                (beepThreadProjection(for: lhs.id).requestCount ?? 1)
+                    < (beepThreadProjection(for: rhs.id).requestCount ?? 1)
+            }) {
+            return incomingRelationshipContact
         }
 
         if let activeChannelId,

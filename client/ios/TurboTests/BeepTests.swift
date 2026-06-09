@@ -3546,6 +3546,81 @@ struct BeepTests {
         #expect(nextState.surfacedBeepKeys == Set([BeepSurfaceKey(contactID: contactID, requestCount: 1)]))
     }
 
+    @MainActor
+    @Test func foregroundRelationshipRequestCountAdvanceSurfacesWhenDetailedBeepCacheIsPreEpoch() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelID = "channel-1"
+        let contact = Contact(
+            id: contactID,
+            name: "Avery",
+            handle: "@avery",
+            isOnline: true,
+            channelId: UUID(),
+            backendChannelId: channelID,
+            remoteUserId: "user-avery"
+        )
+        let staleDetailedBeep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-3",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 3,
+            createdAt: "2026-04-17T19:00:00Z",
+            updatedAt: "2026-04-17T19:00:00Z"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        let epoch = ISO8601DateFormatter().date(from: "2026-04-17T19:01:00Z")!
+        viewModel.incomingBeepSurfaceState = IncomingBeepSurfaceReducer.reduce(
+            state: viewModel.incomingBeepSurfaceState,
+            event: .foregroundBannerEpochStarted(epoch)
+        )
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: staleDetailedBeep)],
+                outgoing: [],
+                now: epoch
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .contactSummariesUpdated([
+                BackendContactSummaryUpdate(
+                    contactID: contactID,
+                    summary: makeContactSummary(
+                        channelId: channelID,
+                        handle: "@avery",
+                        displayName: "Avery",
+                        isOnline: true,
+                        hasIncomingBeep: true,
+                        requestCount: 4,
+                        badgeStatus: "incoming"
+                    )
+                )
+            ])
+        )
+
+        viewModel.reconcileIncomingBeepSurface(
+            applicationState: .active,
+            allowsSelectedContact: true
+        )
+
+        #expect(viewModel.activeIncomingBeep?.contactID == contactID)
+        #expect(viewModel.activeIncomingBeep?.requestCount == 4)
+        #expect(viewModel.activeIncomingBeep?.beepID.hasPrefix("relationship:") == true)
+        #expect(
+            viewModel.incomingBeepSurfaceState.surfacedBeepKeys.contains(
+                BeepSurfaceKey(contactID: contactID, requestCount: 4)
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Activated foreground incoming Beep banner"
+            )
+        )
+    }
+
     @Test func incomingBeepSurfaceCanMarkPendingBeepSeenWithoutBannerWhenAppOpens() {
         let contactID = UUID()
         let candidate = IncomingBeepCandidate(
@@ -3798,6 +3873,76 @@ struct BeepTests {
         #expect(viewModel.selectedContactId == contactID)
         #expect(viewModel.activeIncomingBeep == surface)
         #expect(viewModel.diagnosticsTranscript.contains("Auto-selected contact"))
+    }
+
+    @MainActor
+    @Test func staleDetailedBeepDoesNotEraseActiveRelationshipForegroundBannerForSameRequest() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelID = "channel-1"
+        let contact = Contact(
+            id: contactID,
+            name: "Avery",
+            handle: "@avery",
+            isOnline: true,
+            channelId: UUID(),
+            backendChannelId: channelID,
+            remoteUserId: "user-avery"
+        )
+        let staleDetailedBeep = makeBeep(
+            direction: "incoming",
+            beepId: "beep-1",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 1,
+            createdAt: "2026-04-17T19:00:00Z",
+            updatedAt: "2026-04-17T19:00:00Z"
+        )
+        let epoch = ISO8601DateFormatter().date(from: "2026-04-17T19:01:00Z")!
+
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [contact]
+        viewModel.incomingBeepSurfaceState = IncomingBeepSurfaceReducer.reduce(
+            state: viewModel.incomingBeepSurfaceState,
+            event: .foregroundBannerEpochStarted(epoch)
+        )
+        viewModel.backendSyncCoordinator.send(
+            .contactSummariesUpdated([
+                BackendContactSummaryUpdate(
+                    contactID: contactID,
+                    summary: makeContactSummary(
+                        channelId: channelID,
+                        handle: "@avery",
+                        displayName: "Avery",
+                        isOnline: true,
+                        hasIncomingBeep: true,
+                        requestCount: 1,
+                        badgeStatus: "incoming"
+                    )
+                )
+            ])
+        )
+
+        viewModel.reconcileIncomingBeepSurface(applicationState: .active)
+        let surface = try #require(viewModel.activeIncomingBeep)
+        #expect(surface.beepID.hasPrefix("relationship:"))
+
+        viewModel.reconcileContactSelectionIfNeeded(
+            reason: "beep-sync",
+            allowSelectingFallbackContact: false
+        )
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: staleDetailedBeep)],
+                outgoing: [],
+                now: epoch
+            )
+        )
+        viewModel.reconcileIncomingBeepSurface(applicationState: .active)
+
+        #expect(viewModel.selectedContactId == contactID)
+        #expect(viewModel.activeIncomingBeep?.surfaceKey == surface.surfaceKey)
+        #expect(viewModel.activeIncomingBeep?.beepID == surface.beepID)
     }
 
     @MainActor

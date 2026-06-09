@@ -90,6 +90,10 @@ nonisolated struct CanonicalIncomingBeep: Equatable, Identifiable {
     }
 
     func wasSentBeforeForegroundBannerEpoch(_ epochStartedAt: Date?) -> Bool {
+        guard !sources.contains(.foregroundNotification),
+              !sources.contains(.relationshipProjection) else {
+            return false
+        }
         guard let epochStartedAt,
               let sentAt,
               let sentDate = Self.parseBackendInstant(sentAt) else {
