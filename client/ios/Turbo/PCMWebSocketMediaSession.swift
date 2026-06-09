@@ -68,11 +68,36 @@ nonisolated private struct DecodedRemoteAudioPayload {
     let acceptedForPlayback: Bool
 }
 
+nonisolated final class AudioSendGenerationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeGeneration: UInt64?
+
+    func begin(_ generation: UInt64) {
+        lock.withLock {
+            activeGeneration = generation
+        }
+    }
+
+    func cancel() {
+        lock.withLock {
+            activeGeneration = nil
+        }
+    }
+
+    func allows(_ generation: UInt64?) -> Bool {
+        guard let generation else { return true }
+        return lock.withLock {
+            activeGeneration == generation
+        }
+    }
+}
+
 actor AudioChunkSender {
     private var sendChunk: (@Sendable (String) async throws -> Void)?
     private let reportFailure: @Sendable (String) async -> Void
     private let reportRecovery: (@Sendable () async -> Void)?
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
+    private let sendGenerationGate: AudioSendGenerationGate?
     // Keep sender-side live audio bounded; receiver-side wake buffering happens
     // after transport delivery, so stale outbound chunks are worse than drops.
     private var maximumPendingPayloads: Int
@@ -88,10 +113,19 @@ actor AudioChunkSender {
     private let payloadBatchCollectionPollNanoseconds: UInt64 = 10_000_000
     private let transportAvailabilityPollNanoseconds: UInt64
     private let transportAvailabilityMaxAttempts: Int
-    private var pendingPayloads: [String] = []
+    private struct PendingTransportPayload {
+        let payload: String
+        let generation: UInt64?
+    }
+    private struct TransportPayload {
+        let payload: String
+        let generation: UInt64?
+    }
+    private var pendingPayloads: [PendingTransportPayload] = []
     private struct InFlightTransportSend {
         let id: UInt64
         let payload: String
+        let generation: UInt64?
         let pendingPayloadCount: Int
         let createdAt: UInt64
         var startedAt: UInt64?
@@ -116,6 +150,7 @@ actor AudioChunkSender {
         reportFailure: @escaping @Sendable (String) async -> Void,
         reportRecovery: (@Sendable () async -> Void)? = nil,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
+        sendGenerationGate: AudioSendGenerationGate? = nil,
         configuration: MediaTransportSenderConfiguration = .websocketContinuity,
         maximumPendingPayloads: Int? = nil,
         maximumPayloadsPerMessage: Int? = nil,
@@ -131,6 +166,7 @@ actor AudioChunkSender {
         self.reportFailure = reportFailure
         self.reportRecovery = reportRecovery
         self.reportEvent = reportEvent
+        self.sendGenerationGate = sendGenerationGate
         self.maximumPendingPayloads = 0
         self.maximumPayloadsPerMessage = 1
         self.payloadBatchCollectionNanoseconds = 0
@@ -178,9 +214,14 @@ actor AudioChunkSender {
         await enqueue([payload])
     }
 
-    func enqueue(_ payloads: [String]) async {
+    func enqueue(_ payloads: [String], generation: UInt64? = nil) async {
         guard !payloads.isEmpty else { return }
-        pendingPayloads.append(contentsOf: payloads)
+        guard allowsSendGeneration(generation) else { return }
+        pendingPayloads.append(
+            contentsOf: payloads.map {
+                PendingTransportPayload(payload: $0, generation: generation)
+            }
+        )
         if pendingPayloads.count > maximumPendingPayloads {
             let droppedPayloadCount = pendingPayloads.count - maximumPendingPayloads
             pendingPayloads.removeFirst(droppedPayloadCount)
@@ -327,13 +368,17 @@ actor AudioChunkSender {
 
     private func drain() async {
         while !pendingPayloads.isEmpty || !inFlightSends.isEmpty {
+            cancelStaleInFlightSendsIfNeeded()
+            dropPendingPayloadsForCancelledGenerationIfNeeded()
             guard !pendingPayloads.isEmpty else {
                 await waitForInFlightSendProgress()
                 continue
             }
             await waitForInFlightSendCapacity()
+            dropPendingPayloadsForCancelledGenerationIfNeeded()
             guard !pendingPayloads.isEmpty else { continue }
-            let payload = await nextTransportPayload()
+            let transportPayload = await nextTransportPayload()
+            guard allowsSendGeneration(transportPayload.generation) else { continue }
             guard let sendChunk = await waitForTransportIfNeeded() else {
                 if dropPendingPayloadAfterUnavailableTransportIfPolicyAllows() {
                     break
@@ -351,19 +396,21 @@ actor AudioChunkSender {
             let sendCreatedAt = DispatchTime.now().uptimeNanoseconds
             lastPayloadDispatchNanoseconds = sendCreatedAt
             reportTransportDispatchIfNeeded(
-                payload: payload,
+                payload: transportPayload.payload,
                 pendingPayloadCount: pendingPayloadCount
             )
             let sendID = nextInFlightSendID
             nextInFlightSendID += 1
             inFlightSends[sendID] = InFlightTransportSend(
                 id: sendID,
-                payload: payload,
+                payload: transportPayload.payload,
+                generation: transportPayload.generation,
                 pendingPayloadCount: pendingPayloadCount,
                 createdAt: sendCreatedAt,
                 startedAt: nil
             )
-            let sendTask = Task.detached(priority: .userInitiated) { [sendChunk] in
+            let generationGate = sendGenerationGate
+            let sendTask = Task.detached(priority: .userInitiated) { [sendChunk, generationGate, transportPayload] in
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
                 await self.markTransportSendStarted(
                     sendID: sendID,
@@ -372,7 +419,13 @@ actor AudioChunkSender {
                 let result: Result<Void, Error>
                 do {
                     try Task.checkCancellation()
-                    try await sendChunk(payload)
+                    if generationGate?.allows(transportPayload.generation) == false {
+                        throw CancellationError()
+                    }
+                    try await sendChunk(transportPayload.payload)
+                    if generationGate?.allows(transportPayload.generation) == false {
+                        throw CancellationError()
+                    }
                     try Task.checkCancellation()
                     result = .success(())
                 } catch {
@@ -380,7 +433,7 @@ actor AudioChunkSender {
                 }
                 await self.completeTransportSend(
                     sendID: sendID,
-                    payload: payload,
+                    payload: transportPayload.payload,
                     pendingPayloadCount: pendingPayloadCount,
                     sendStartedAt: sendStartedAt,
                     result: result
@@ -416,6 +469,7 @@ actor AudioChunkSender {
     ) async {
         inFlightSendTasks.removeValue(forKey: sendID)
         guard let inFlightSend = inFlightSends.removeValue(forKey: sendID) else { return }
+        guard allowsSendGeneration(inFlightSend.generation) else { return }
         let effectiveSendStartedAt = inFlightSend.startedAt ?? sendStartedAt
         switch result {
         case .success:
@@ -490,12 +544,15 @@ actor AudioChunkSender {
     }
 
     private func waitForInFlightSendProgress() async {
+        cancelStaleInFlightSendsIfNeeded()
+        dropPendingPayloadsForCancelledGenerationIfNeeded()
         expireTimedOutInFlightSendsIfNeeded()
         guard !inFlightSends.isEmpty else { return }
         try? await Task.sleep(nanoseconds: 1_000_000)
     }
 
     private func expireTimedOutInFlightSendsIfNeeded() {
+        cancelStaleInFlightSendsIfNeeded()
         guard let sendTimeoutNanoseconds else { return }
         let now = DispatchTime.now().uptimeNanoseconds
         let timedOutSendIDs = inFlightSends.compactMap { entry -> UInt64? in
@@ -544,7 +601,7 @@ actor AudioChunkSender {
         }
     }
 
-    private func nextTransportPayload() async -> String {
+    private func nextTransportPayload() async -> TransportPayload {
         await waitForBatchCollectionIfNeeded()
 
         let batchCount = min(maximumPayloadsPerMessage, pendingPayloads.count)
@@ -553,7 +610,32 @@ actor AudioChunkSender {
         if pendingPayloads.isEmpty {
             flushPendingImmediately = false
         }
-        return AudioChunkPayloadCodec.encode(batch)
+        let generation = batch.first?.generation
+        return TransportPayload(
+            payload: AudioChunkPayloadCodec.encode(batch.map(\.payload)),
+            generation: generation
+        )
+    }
+
+    private func allowsSendGeneration(_ generation: UInt64?) -> Bool {
+        sendGenerationGate?.allows(generation) ?? true
+    }
+
+    private func dropPendingPayloadsForCancelledGenerationIfNeeded() {
+        guard sendGenerationGate != nil else { return }
+        pendingPayloads.removeAll { !allowsSendGeneration($0.generation) }
+    }
+
+    private func cancelStaleInFlightSendsIfNeeded() {
+        guard sendGenerationGate != nil else { return }
+        let staleSendIDs = inFlightSends.compactMap { sendID, inFlightSend in
+            allowsSendGeneration(inFlightSend.generation) ? nil : sendID
+        }
+        guard !staleSendIDs.isEmpty else { return }
+        for sendID in staleSendIDs {
+            inFlightSendTasks.removeValue(forKey: sendID)?.cancel()
+            inFlightSends.removeValue(forKey: sendID)
+        }
     }
 
     private func reportRecoveryIfNeeded() async {
@@ -1072,6 +1154,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     private let reportEvent: (@Sendable (String, [String: String]) async -> Void)?
     private let senderConfigurationLock = NSLock()
     private var senderConfiguration: MediaTransportSenderConfiguration
+    private let audioSendGenerationGate = AudioSendGenerationGate()
     private lazy var audioChunkSender =
         AudioChunkSender(
             sendChunk: initialSendAudioChunk,
@@ -1099,6 +1182,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
                 guard let self else { return }
                 await self.report(message, metadata: metadata)
             },
+            sendGenerationGate: audioSendGenerationGate,
             configuration: senderConfigurationSnapshot()
         )
     private let captureEngine = AVAudioEngine()
@@ -1197,6 +1281,9 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
 
     func updateSendAudioChunk(_ handler: (@Sendable (String) async throws -> Void)?) {
         currentSendAudioChunk = handler
+        if handler == nil {
+            audioSendGenerationGate.cancel()
+        }
         Task {
             await audioChunkSender.updateSendChunk(handler)
         }
@@ -1473,6 +1560,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         await audioChunkSender.resetReportingBudgets()
         resetPlaybackForTransmit()
         resetOutboundFrameAccumulator()
+        audioSendGenerationGate.begin(cancellationGeneration)
         setSendingAudio(true)
     }
 
@@ -1488,6 +1576,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     }
 
     func abortSendingAudio() async {
+        audioSendGenerationGate.cancel()
         cancelCaptureSendState()
         await audioChunkSender.reset()
         await report(
@@ -2241,7 +2330,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         captureSendState = .idle
     }
 
-    private func shouldSendCapturedBuffer(nowNanoseconds: UInt64) -> Bool {
+    private func capturedBufferSendGeneration(nowNanoseconds: UInt64) -> UInt64? {
         stateLock.lock()
         defer { stateLock.unlock() }
 
@@ -2253,7 +2342,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
            case .stopping = captureSendState {
             captureSendState = .idle
         }
-        return shouldAccept
+        return shouldAccept ? captureSendCancellationGeneration : nil
     }
 
     private func prepareCapturePathIfNeeded() throws {
@@ -2325,17 +2414,20 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     private func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
         let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
         reportLocalAudioLevelIfNeeded(buffer, nowNanoseconds: nowNanoseconds)
-        guard shouldSendCapturedBuffer(nowNanoseconds: nowNanoseconds), state == .connected else { return }
+        guard let sendGeneration = capturedBufferSendGeneration(nowNanoseconds: nowNanoseconds),
+              state == .connected else { return }
         guard let copiedBuffer = Self.copyAudioPCMBuffer(buffer) else { return }
         captureProcessingQueue.async { [weak self] in
-            self?.processCapturedBuffer(copiedBuffer)
+            self?.processCapturedBuffer(copiedBuffer, sendGeneration: sendGeneration)
         }
     }
 
-    private func processCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func processCapturedBuffer(_ buffer: AVAudioPCMBuffer, sendGeneration: UInt64) {
+        guard audioSendGenerationGate.allows(sendGeneration) else { return }
         guard state == .connected else { return }
         reportCapturedBufferIfNeeded(buffer)
         guard let convertedBuffer = convertCapturedBuffer(buffer) else { return }
+        guard audioSendGenerationGate.allows(sendGeneration) else { return }
         reportConvertedBufferIfNeeded(convertedBuffer)
         let payloads = payloadsFromPCMBuffer(convertedBuffer)
         guard !payloads.isEmpty else { return }
@@ -2344,7 +2436,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         }
 
         Task {
-            await audioChunkSender.enqueue(payloads)
+            await audioChunkSender.enqueue(payloads, generation: sendGeneration)
         }
     }
 

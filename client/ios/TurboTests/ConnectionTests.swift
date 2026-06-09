@@ -19818,6 +19818,77 @@ struct ConnectionTests {
         #expect(dropMetadata?["scope"] == "local")
     }
 
+    @Test func packetAudioSenderCancelsAbortedGenerationWithoutSlowSendContract() async {
+        actor Recorder {
+            var startedPayloads: [String] = []
+            var completedPayloads: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func recordStarted(_ payload: String) {
+                startedPayloads.append(payload)
+            }
+
+            func recordCompleted(_ payload: String) {
+                completedPayloads.append(payload)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let generationGate = AudioSendGenerationGate()
+        generationGate.begin(1)
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                await recorder.recordStarted(payload)
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                try Task.checkCancellation()
+                await recorder.recordCompleted(payload)
+            },
+            reportFailure: { _ in },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            sendGenerationGate: generationGate,
+            configuration: .directLowLatency,
+            maximumPendingPayloads: 32,
+            maximumPayloadsPerMessage: 1
+        )
+
+        let enqueueTask = Task {
+            await sender.enqueue((0..<16).map { "chunk-\($0)" }, generation: 1)
+        }
+
+        for _ in 0..<100 {
+            if await !recorder.startedPayloads.isEmpty { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(await recorder.startedPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-0"])
+
+        generationGate.cancel()
+        await sender.enqueue(["late-0", "late-1"], generation: 1)
+        await enqueueTask.value
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        #expect(await recorder.completedPayloads.isEmpty)
+        #expect(
+            await recorder.firstMetadata(
+                for: "Outbound audio transport send was slow"
+            ) == nil
+        )
+        #expect(
+            await recorder.firstMetadata(
+                for: "Dropped stale outbound audio transport payload"
+            ) == nil
+        )
+    }
+
     @Test func balancedPacketAudioSenderKeepsBacklogAfterDeviceObservedSlowSend() async {
         actor Delay {
             var shouldDelayNextSend = true
