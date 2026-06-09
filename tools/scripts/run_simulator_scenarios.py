@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def write_runtime_config(path: Path, args: argparse.Namespace, scenario_filter: str | None = None) -> None:
+    scenario_directory = args.scenario_directory
+    if not args.scenario_file and not scenario_directory:
+        scenario_directory = str((Path.cwd() / "shared" / "scenarios").resolve())
     payload = {
         "enabledUntilEpochSeconds": time.time() + 600,
         "filter": args.scenario if scenario_filter is None else scenario_filter,
@@ -63,7 +66,7 @@ def write_runtime_config(path: Path, args: argparse.Namespace, scenario_filter: 
         "deviceIDB": args.device_id_b,
         "controlCommandTransportPolicy": args.control_command_transport_policy or None,
         "scenarioFile": args.scenario_file,
-        "scenarioDirectory": args.scenario_directory,
+        "scenarioDirectory": scenario_directory,
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 

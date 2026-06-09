@@ -50,7 +50,6 @@ All `just simulator-scenario*` commands run through `tools/scripts/run_simulator
 - `restart_ready_session_recovery_with_offline_repair`: local fuzz regression from seed 124; restart, delayed receiver signaling, and background/foreground disconnect must avoid `presence.offline_retained_connected_session`.
 - `disconnect_clears_stale_friend_presence_during_state_refresh`: local fuzz regression from seed 123; receiver disconnect racing channel-state refreshes must repair stale presence and keep strict diagnostics clean.
 - `restart_partial_join_recovery`: sender restart during partial join must restore sender `friendReady`, preserve recipient `waitingForPeer`, and allow second join to reach `ready`.
-- `websocket_ready_session_recovery`: websocket-only loss during `ready` preserves local PTT session, disables normal Hold To Talk while transmit readiness is untrusted, degrades remote readiness through `peerDeviceConnected`, and recovers after websocket reconnect plus refresh.
 - `fast_relay_idle_network_migration`: local transport-policy hardening; idle Wi-Fi to cellular migration keeps selected path `fast-relay`.
 - `fast_relay_active_transmit_network_migration`: active Fast Relay transmit survives Wi-Fi to cellular migration.
 - `direct_quic_active_transmit_network_migration`: Direct QUIC path loss during transmit surfaces explicit relay fallback instead of stale Direct UI or `direct-quic.active_path_surfaced_as_relay`.
@@ -60,7 +59,8 @@ All `just simulator-scenario*` commands run through `tools/scripts/run_simulator
 - `beep_decline`: recipient declines incoming Beep.
 - `simultaneous_beep_conflict`: simultaneous Beeps converge to one ready Conversation.
 
-`websocket_ready_session_recovery` and `backend_reconnect_ready_session_recovery` prove different failures: websocket transport loss must not tear down local session, while full backend reconnect must reassert ready-session truth deterministically.
+`backend_reconnect_ready_session_recovery` proves that runtime-control reconnect
+and explicit refresh reassert ready-session truth deterministically.
 
 For transmit scenarios, `ready` means `phase=ready` and `canTransmitNow=true`. Simulator scenarios prove hold-to-talk enablement; physical-device smoke still proves first real transmit produced audible audio through Apple/PTT/media boundaries.
 
@@ -83,7 +83,9 @@ For transmit scenarios, `ready` means `phase=ready` and `canTransmitNow=true`. S
 
 ## DSL
 
-The DSL supports user intents plus control-plane forcing actions: refreshes, waits, presence heartbeats, direct-channel establishment, websocket disconnect/reconnect, backend reconnect, and `restartApp`.
+The DSL supports user intents plus control-plane forcing actions: refreshes,
+waits, presence heartbeats, direct-channel establishment, backend reconnect, and
+`restartApp`.
 
 | Field/action | Contract |
 | --- | --- |

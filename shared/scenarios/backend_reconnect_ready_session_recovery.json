@@ -103,8 +103,7 @@
             "remoteAudioReadiness": "ready",
             "membership": "both(peerDeviceConnected: true)",
             "beepThreadProjection": "none",
-            "canTransmit": true,
-            "webSocketConnected": true
+            "canTransmit": true
           }
         },
         "b": {
@@ -119,8 +118,7 @@
             "remoteAudioReadiness": "ready",
             "membership": "both(peerDeviceConnected: true)",
             "beepThreadProjection": "none",
-            "canTransmit": true,
-            "webSocketConnected": true
+            "canTransmit": true
           }
         }
       }

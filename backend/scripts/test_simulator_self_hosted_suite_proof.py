@@ -21,7 +21,8 @@ class SimulatorSelfHostedSuiteProofTests(unittest.TestCase):
                 "/s/turbo/v1/health": {"status": "ok", "runtime": "self-hosted"},
                 "/s/turbo/v1/config": {
                     "mode": "self-hosted",
-                    "supportsWebSocket": True,
+                    "runtimeControl": {"http": {"supported": True}},
+                    "supportsWebSocket": False,
                 },
             }
         )
@@ -37,7 +38,8 @@ class SimulatorSelfHostedSuiteProofTests(unittest.TestCase):
                 "/s/turbo/v1/health": {"status": "ok"},
                 "/s/turbo/v1/config": {
                     "mode": "cloud",
-                    "supportsWebSocket": True,
+                    "runtimeControl": {"http": {"supported": True}},
+                    "supportsWebSocket": False,
                 },
             }
         )
@@ -49,6 +51,23 @@ class SimulatorSelfHostedSuiteProofTests(unittest.TestCase):
         self.assertFalse(health["ok"])
         self.assertFalse(config["ok"])
         self.assertEqual(result["reason"], "self-hosted health/config preflight failed")
+
+    def test_health_preflight_rejects_websocket_compatibility(self) -> None:
+        server = JsonServer(
+            {
+                "/s/turbo/v1/health": {"status": "ok", "runtime": "self-hosted"},
+                "/s/turbo/v1/config": {
+                    "mode": "self-hosted",
+                    "runtimeControl": {"http": {"supported": True}},
+                    "supportsWebSocket": True,
+                },
+            }
+        )
+        with server:
+            result = simulator_self_hosted_suite_proof.health_preflight(server.base_url, 1.0)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["checks"][1]["ok"])
 
 
 class JsonServer:

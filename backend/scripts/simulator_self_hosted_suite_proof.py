@@ -146,7 +146,8 @@ def health_preflight(base_url: str, timeout: float, insecure: bool = False) -> d
             "ok": config.get("ok") is True
             and config.get("httpCode") == 200
             and config.get("body", {}).get("mode") == "self-hosted"
-            and config.get("body", {}).get("supportsWebSocket") is True,
+            and config_has_runtime_http_control(config.get("body", {}))
+            and config.get("body", {}).get("supportsWebSocket") is not True,
         },
     ]
     ok = all(check["ok"] is True for check in checks)
@@ -159,6 +160,14 @@ def health_preflight(base_url: str, timeout: float, insecure: bool = False) -> d
     if not ok:
         result["reason"] = "self-hosted health/config preflight failed"
     return result
+
+
+def config_has_runtime_http_control(body: dict[str, Any]) -> bool:
+    runtime_control = body.get("runtimeControl")
+    if not isinstance(runtime_control, dict):
+        return False
+    http = runtime_control.get("http")
+    return isinstance(http, dict) and http.get("supported") is True
 
 
 def fetch_json(url: str, timeout: float, *, insecure: bool = False) -> dict[str, Any]:
