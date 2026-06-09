@@ -136,6 +136,16 @@ behind nginx on `443/tcp`; runtime control must not carry live media.
 The runtime service mounts host `/etc/letsencrypt` read-only so the same
 certificate chain used by nginx can be used by runtime QUIC/TLS control.
 
+The nginx API TLS server block must allow bounded debug/scenario diagnostics
+uploads:
+
+```nginx
+client_max_body_size 25m;
+```
+
+A lower default can make hosted simulator gates fail with `413 Request Entity
+Too Large` before strict merged diagnostics can run.
+
 The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials. The VM service account needs Artifact Registry read access for the selected repository.
 
 ## Current Production VMs

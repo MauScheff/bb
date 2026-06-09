@@ -104,19 +104,21 @@
       }
     },
     {
-      "description": "recipient disconnects while sender stays live",
+      "description": "recipient disconnect clears both joined states",
       "actions": [
         { "actor": "b", "type": "disconnect" }
       ],
       "expectEventually": {
         "a": {
           "selectedHandle": "@blake",
-          "isJoined": true,
+          "phase": "idle",
+          "isJoined": false,
           "isTransmitting": false,
           "noInvariantViolations": true
         },
         "b": {
           "selectedHandle": "@avery",
+          "phase": "idle",
           "isJoined": false,
           "isTransmitting": false,
           "noInvariantViolations": true
