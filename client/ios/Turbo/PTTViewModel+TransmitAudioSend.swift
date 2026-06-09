@@ -12,6 +12,22 @@ import UIKit
 import TurboEngine
 
 extension PTTViewModel {
+    private final class MediaSessionCleanupHandle: @unchecked Sendable {
+        private let mediaSession: (any MediaSession)?
+
+        init(_ mediaSession: (any MediaSession)?) {
+            self.mediaSession = mediaSession
+        }
+
+        func abortSendingAudio() async {
+            await mediaSession?.abortSendingAudio()
+        }
+
+        func stopSendingAudio() async {
+            try? await mediaSession?.stopSendingAudio()
+        }
+    }
+
     func isMediaRelayPeerUnavailable(_ error: Error) -> Bool {
         guard case let DirectQuicProbeError.connectionFailed(message) = error else { return false }
         return message == "media relay peer is unavailable"
@@ -859,6 +875,7 @@ extension PTTViewModel {
         target: TransmitTarget
     ) async {
         guard let mediaSession else { return }
+        let cleanupHandle = MediaSessionCleanupHandle(mediaSession)
         if shouldAbortAudioTailOnExplicitStop(target: target) {
             diagnostics.record(
                 .media,
@@ -870,9 +887,9 @@ extension PTTViewModel {
                     "transportPolicy": mediaTransportPolicyForOutgoingAudio(for: target.contactID).rawValue,
                 ]
             )
-            await mediaSession.abortSendingAudio()
+            await cleanupHandle.abortSendingAudio()
         } else {
-            try? await mediaSession.stopSendingAudio()
+            await cleanupHandle.stopSendingAudio()
         }
     }
 
@@ -899,12 +916,26 @@ extension PTTViewModel {
                 "transportPolicy": mediaTransportPolicyForOutgoingAudio(for: target.contactID).rawValue,
             ]
         )
-        Task { [weak self, weak mediaSession] in
-            guard let self else { return }
-            await self.stopOutgoingAudioForExplicitTransmitStop(
-                mediaSession,
-                target: target
+        let shouldAbortTail = shouldAbortAudioTailOnExplicitStop(target: target)
+        let cleanupHandle = MediaSessionCleanupHandle(mediaSession)
+        if shouldAbortTail {
+            diagnostics.record(
+                .media,
+                message: "Aborting live packet audio tail on explicit transmit stop",
+                metadata: [
+                    "contactId": target.contactID.uuidString,
+                    "channelId": target.channelID,
+                    "transportPath": mediaTransportPathState.rawValue,
+                    "transportPolicy": mediaTransportPolicyForOutgoingAudio(for: target.contactID).rawValue,
+                ]
             )
+            Task.detached(priority: .userInitiated) {
+                await cleanupHandle.abortSendingAudio()
+            }
+        } else {
+            Task.detached(priority: .userInitiated) {
+                await cleanupHandle.stopSendingAudio()
+            }
         }
     }
 
