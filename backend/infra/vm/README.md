@@ -9,7 +9,7 @@ Use process/service boundaries for each backend role:
 
 | Service | Role | Durable truth |
 | --- | --- | --- |
-| `runtime` | Rust HTTP/WebSocket control plane and effect executor. | Postgres |
+| `runtime` | Rust runtime QUIC/TLS/HTTP control plane and effect executor. | Postgres |
 | `postgres` | Durable runtime state. | Persistent Docker volume |
 | `redis` | TTL presence, owner records, pub/sub, and short-lived coordination. | Rebuildable cache only |
 | compiled Unison kernel | Pure Talk Turn decisions. | Versioned `.uc` artifacts in the image |
@@ -23,8 +23,8 @@ router while keeping the operational model simple.
 Redis is allowed for fast ephemeral coordination only:
 
 - presence TTLs
-- WebSocket owner records
-- pub/sub fanout
+- short-lived runtime owner records when a compatibility feature explicitly needs them
+- pub/sub for ephemeral coordination
 - short-lived idempotency/leases
 
 Postgres remains the recovery source. A Redis flush must degrade or force reconnects, not corrupt Conversation, Participant, Device, or Talk Turn truth.

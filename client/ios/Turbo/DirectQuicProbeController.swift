@@ -1386,7 +1386,20 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         )
     }
 
-    func connect() async throws -> TurboMediaRelayTransport {
+    func connect(preferredTransport: TurboMediaRelayTransport? = nil) async throws -> TurboMediaRelayTransport {
+        if let preferredTransport {
+            let transport = try await connect(using: preferredTransport)
+            await report(
+                preferredTransport == .tcpTls
+                    ? "Media relay TCP ordered fallback connected"
+                    : "Media relay QUIC packet connected",
+                metadata: baseMetadata(transport: transport).merging(
+                    ["preferredTransport": preferredTransport.rawValue],
+                    uniquingKeysWith: { _, new in new }
+                )
+            )
+            return transport
+        }
         do {
             let transport = try await connect(using: .quic)
             await report("Media relay QUIC packet connected", metadata: baseMetadata(transport: transport))
@@ -1433,7 +1446,10 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     }
 
     @discardableResult
-    func sendAudioPayload(_ payload: String) async throws -> TurboMediaRelayMediaMode {
+    func sendAudioPayload(
+        _ payload: String,
+        forcedMediaMode: TurboMediaRelayMediaMode? = nil
+    ) async throws -> TurboMediaRelayMediaMode {
         let sequenceNumber = nextSequenceNumber()
         let sentAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
         let packetFrame: TurboMediaRelayFrame
@@ -1474,6 +1490,28 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         if hasFreshPeerUnavailable() {
             throw DirectQuicProbeError.connectionFailed("media relay peer is unavailable")
         }
+        if forcedMediaMode == .tcpOrdered {
+            guard connections.transport == .tcpTls else {
+                throw DirectQuicProbeError.connectionFailed("media relay TCP/TLS path is unavailable")
+            }
+            do {
+                try await send(tcpFrame, on: stream)
+                return .tcpOrdered
+            } catch {
+                await report(
+                    "Media relay TCP ordered audio send failed",
+                    metadata: baseMetadata().merging(
+                        [
+                            "error": error.localizedDescription,
+                            "sequenceNumber": String(sequenceNumber),
+                            "forcedMediaMode": TurboMediaRelayMediaMode.tcpOrdered.rawValue,
+                        ],
+                        uniquingKeysWith: { _, new in new }
+                    )
+                )
+                throw error
+            }
+        }
         if let datagramConnection = connections.datagram {
             do {
                 try await sendDatagram(
@@ -1512,6 +1550,9 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                 }
                 throw error
             }
+        }
+        if forcedMediaMode == .quicDatagram {
+            throw DirectQuicProbeError.connectionFailed("media relay QUIC datagram path is unavailable")
         }
         guard connections.transport == .tcpTls else {
             throw DirectQuicProbeError.connectionFailed("media relay packet path is unavailable")

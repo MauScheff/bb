@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 struct TurboBackendCriticalHTTPClient: Sendable {
     let baseURL: URL
@@ -87,6 +88,8 @@ private func configuredSessionConfiguration(
 @MainActor
 final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     enum ControlCommandTransportTrace: String {
+        case runtimeQuic = "runtime-quic-control"
+        case runtimeTls = "runtime-tls-control"
         case webSocket = "websocket"
         case http
     }
@@ -152,12 +155,16 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private var pendingControlCommandResponses: [String: CheckedContinuation<Data, Error>] = [:]
     private var pendingControlCommandKinds: [String: String] = [:]
     private var webSocketPresenceCommandsRejected = false
+    private let runtimeControlQueue = DispatchQueue(label: "TurboBackendClient.runtime-control")
+    private var runtimeControlConnection: RuntimeControlConnection?
 #if DEBUG
     var channelStateResponseForTesting: (@MainActor (String) async throws -> TurboChannelStateResponse)?
     var channelReadinessResponseForTesting: (@MainActor (String) async throws -> TurboChannelReadinessResponse)?
 #endif
     var controlCommandHTTPResponseForTesting: (@MainActor (String, TurboControlCommandEnvelope) async throws -> Data)?
     var controlCommandWebSocketResponseForTesting: (@MainActor (TurboControlCommandEnvelope) async throws -> Data)?
+    var controlCommandRuntimePersistentResponseForTesting:
+        (@MainActor (TurboRuntimeControlLane, TurboControlCommandEnvelope) async throws -> Data)?
 
     var onSignal: (@MainActor (TurboSignalEnvelope) -> Void)?
     var onServerNotice: (@MainActor (String) -> Void)?
@@ -172,7 +179,9 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     var deviceID: String { config.deviceID }
     var devUserHandle: String { config.devUserHandle }
     var criticalHTTPClient: TurboBackendCriticalHTTPClient { TurboBackendCriticalHTTPClient(config: config) }
-    var controlCommandTransportPolicy: TurboControlCommandTransportPolicy { config.controlCommandTransportPolicy }
+    var controlCommandTransportPolicy: TurboControlCommandTransportPolicy {
+        TurboControlCommandTransportDebugOverride.policy() ?? config.controlCommandTransportPolicy
+    }
     var supportsWebSocket: Bool { runtimeConfig?.supportsWebSocket ?? false }
     var canSendPresenceCommandsOverWebSocket: Bool {
         canAttemptWebSocketControlCommand && !webSocketPresenceCommandsRejected
@@ -182,6 +191,19 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     var supportsSignalSessionIds: Bool { runtimeConfig?.supportsSignalSessionIds ?? false }
     var supportsTransmitIds: Bool { runtimeConfig?.supportsTransmitIds ?? false }
     var supportsProjectionEpochs: Bool { runtimeConfig?.supportsProjectionEpochs ?? false }
+    var supportsRuntimeQuicControl: Bool { runtimeConfig?.supportsRuntimeQuicControl ?? false }
+    var supportsRuntimeTlsControl: Bool { runtimeConfig?.supportsRuntimeTlsControl ?? false }
+    var runtimeControlPreference: [TurboRuntimeControlLane] {
+        runtimeConfig?.runtimeControl?.preference ?? [.runtimeHttpRequest]
+    }
+    var runtimeControlSelection: TurboRuntimeControlSelection {
+        runtimeConfig?.runtimeControlSelection(requestedPolicy: controlCommandTransportPolicy)
+            ?? TurboRuntimeControlSelection(
+                requestedPolicy: controlCommandTransportPolicy,
+                effectiveLane: .runtimeHttpRequest,
+                fallbackReason: "runtime-config-unavailable"
+            )
+    }
     var directQuicPolicy: TurboDirectQuicPolicy? { runtimeConfig?.directQuicPolicy }
     var modeDescription: String { runtimeConfig?.mode ?? "unknown" }
     var isWebSocketConnected: Bool { webSocketConnectionState == .connected }
@@ -190,11 +212,13 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     func fetchRuntimeConfig() async throws -> TurboBackendRuntimeConfig {
         let response: TurboBackendRuntimeConfig = try await request(path: "/v1/config")
         runtimeConfig = response
+        invalidateRuntimeControlConnection()
         return response
     }
 
     func setRuntimeConfigForTesting(_ config: TurboBackendRuntimeConfig) {
         runtimeConfig = config
+        invalidateRuntimeControlConnection()
     }
 
     func setControlCommandHedgeDelayForTesting(nanoseconds: UInt64) {
@@ -372,6 +396,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     ) async throws -> TurboJoinResponse {
         let envelope = TurboControlCommandEnvelope(
             commandKind: "join-channel",
+            userHandle: config.devUserHandle,
             deviceId: config.deviceID,
             operationId: operationId,
             channelId: channelId,
@@ -386,6 +411,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     func leaveChannel(channelId: String, operationId: String? = nil) async throws -> TurboLeaveResponse {
         let envelope = TurboControlCommandEnvelope(
             commandKind: "leave-channel",
+            userHandle: config.devUserHandle,
             deviceId: config.deviceID,
             operationId: operationId,
             channelId: channelId
@@ -453,6 +479,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     ) async throws -> TurboBeepResponse {
         let envelope = TurboControlCommandEnvelope(
             commandKind: "connect-request",
+            userHandle: config.devUserHandle,
             deviceId: config.deviceID,
             operationId: operationId,
             friendHandle: friendHandle,
@@ -918,6 +945,25 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         path: String,
         body: TurboControlCommandEnvelope
     ) async throws -> Response {
+        let requestStartedAt = DispatchTime.now().uptimeNanoseconds
+        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
+            do {
+                return try decodeControlCommandResponse(
+                    try await controlCommandData(
+                        path: path,
+                        body: body,
+                        transport: runtimeTransport,
+                        requestStartedAt: requestStartedAt
+                    ),
+                    body: body,
+                    transport: runtimeTransport
+                )
+            } catch {
+                onServerNotice?(
+                    "\(runtimeTransport.label) command failed; using HTTP fallback: \(error.localizedDescription)"
+                )
+            }
+        }
         if canAttemptWebSocketControlCommand {
             do {
                 return try await webSocketControlCommand(body)
@@ -929,11 +975,17 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private enum ControlCommandTransport {
+        case runtimeQuic
+        case runtimeTls
         case webSocket
         case http
 
         var label: String {
             switch self {
+            case .runtimeQuic:
+                return "Runtime QUIC"
+            case .runtimeTls:
+                return "Runtime TLS"
             case .webSocket:
                 return "WebSocket"
             case .http:
@@ -943,12 +995,48 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
 
         var trace: ControlCommandTransportTrace {
             switch self {
+            case .runtimeQuic:
+                return .runtimeQuic
+            case .runtimeTls:
+                return .runtimeTls
             case .webSocket:
                 return .webSocket
             case .http:
                 return .http
             }
         }
+
+        var runtimeLane: TurboRuntimeControlLane? {
+            switch self {
+            case .runtimeQuic:
+                return .runtimeQuicControl
+            case .runtimeTls:
+                return .runtimeTlsControl
+            case .webSocket, .http:
+                return nil
+            }
+        }
+
+        static func persistentRuntime(_ lane: TurboRuntimeControlLane) -> ControlCommandTransport? {
+            switch lane {
+            case .runtimeQuicControl:
+                return .runtimeQuic
+            case .runtimeTlsControl:
+                return .runtimeTls
+            case .runtimeHttpRequest:
+                return nil
+            }
+        }
+    }
+
+    private var selectedPersistentRuntimeControlTransport: ControlCommandTransport? {
+        let selection = runtimeControlSelection
+        guard selection.usesPersistentTransport else { return nil }
+        guard let transport = ControlCommandTransport.persistentRuntime(selection.effectiveLane) else {
+            return nil
+        }
+        guard canAttemptRuntimePersistentControlCommand(transport) else { return nil }
+        return transport
     }
 
     private func hedgedControlCommandRequest<Response: Decodable>(
@@ -956,6 +1044,44 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         body: TurboControlCommandEnvelope
     ) async throws -> Response {
         let requestStartedAt = DispatchTime.now().uptimeNanoseconds
+        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
+            do {
+                return try decodeControlCommandResponse(
+                    try await controlCommandData(
+                        path: path,
+                        body: body,
+                        transport: runtimeTransport,
+                        requestStartedAt: requestStartedAt
+                    ),
+                    body: body,
+                    transport: runtimeTransport
+                )
+            } catch {
+                emitControlCommandTrace(
+                    commandKind: body.commandKind,
+                    transport: .http,
+                    phase: .hedgeStarted,
+                    operationId: body.operationId,
+                    channelId: body.channelId,
+                    requestId: nil,
+                    startedAtNanoseconds: requestStartedAt,
+                    detail: "\(runtimeTransport.trace.rawValue)-failed"
+                )
+                onServerNotice?(
+                    "\(runtimeTransport.label) \(body.commandKind) failed; using HTTP fallback: \(error.localizedDescription)"
+                )
+                return try decodeControlCommandResponse(
+                    try await controlCommandData(
+                        path: path,
+                        body: body,
+                        transport: .http,
+                        requestStartedAt: requestStartedAt
+                    ),
+                    body: body,
+                    transport: .http
+                )
+            }
+        }
         guard canAttemptWebSocketControlCommand else {
             return try decodeControlCommandResponse(
                 try await controlCommandData(
@@ -1029,9 +1155,48 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     ) async throws -> Response {
         let envelope = TurboControlCommandEnvelope(
             commandKind: commandKind,
+            userHandle: config.devUserHandle,
             deviceId: config.deviceID
         )
         let requestStartedAt = DispatchTime.now().uptimeNanoseconds
+        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
+            do {
+                return try decodeControlCommandResponse(
+                    try await controlCommandData(
+                        path: path,
+                        body: envelope,
+                        transport: runtimeTransport,
+                        requestStartedAt: requestStartedAt
+                    ),
+                    body: envelope,
+                    transport: runtimeTransport
+                )
+            } catch {
+                emitControlCommandTrace(
+                    commandKind: envelope.commandKind,
+                    transport: .http,
+                    phase: .hedgeStarted,
+                    operationId: envelope.operationId,
+                    channelId: envelope.channelId,
+                    requestId: nil,
+                    startedAtNanoseconds: requestStartedAt,
+                    detail: "\(runtimeTransport.trace.rawValue)-failed"
+                )
+                onServerNotice?(
+                    "\(runtimeTransport.label) \(envelope.commandKind) failed; using HTTP fallback: \(error.localizedDescription)"
+                )
+                return try decodeControlCommandResponse(
+                    try await controlCommandData(
+                        path: path,
+                        body: envelope,
+                        transport: .http,
+                        requestStartedAt: requestStartedAt
+                    ),
+                    body: envelope,
+                    transport: .http
+                )
+            }
+        }
         guard canSendPresenceCommandsOverWebSocket else {
             return try decodeControlCommandResponse(
                 try await controlCommandData(
@@ -1106,11 +1271,27 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private var canAttemptWebSocketControlCommand: Bool {
-        guard controlCommandTransportPolicy != .httpOnly else { return false }
+        guard !controlCommandTransportPolicy.disablesWebSocketCompatibility else { return false }
         guard supportsWebSocket, webSocketConnectionState == .connected else { return false }
         return webSocketTask != nil
             || currentWebSocketSessionID != nil
             || controlCommandWebSocketResponseForTesting != nil
+    }
+
+    private func canAttemptRuntimePersistentControlCommand(_ transport: ControlCommandTransport) -> Bool {
+        guard let lane = transport.runtimeLane else { return false }
+        if controlCommandRuntimePersistentResponseForTesting != nil {
+            return true
+        }
+        guard runtimeControlEndpoint(for: lane) != nil else { return false }
+        switch lane {
+        case .runtimeQuicControl:
+            return supportsRuntimeQuicControl && runtimeConfig?.runtimeControl?.quic?.supported == true
+        case .runtimeTlsControl:
+            return supportsRuntimeTlsControl && runtimeConfig?.runtimeControl?.tls?.supported == true
+        case .runtimeHttpRequest:
+            return false
+        }
     }
 
     private func controlCommandData(
@@ -1133,6 +1314,12 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         do {
             let data: Data
             switch transport {
+            case .runtimeQuic, .runtimeTls:
+                data = try await runtimePersistentControlCommandData(
+                    body,
+                    transport: transport,
+                    requestStartedAt: requestStartedAt
+                )
             case .webSocket:
                 data = try await webSocketControlCommandData(
                     body,
@@ -1196,6 +1383,303 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                 detail: detail
             )
         )
+    }
+
+    private func runtimePersistentControlCommandData(
+        _ envelope: TurboControlCommandEnvelope,
+        transport: ControlCommandTransport,
+        requestStartedAt: UInt64
+    ) async throws -> Data {
+        guard let lane = transport.runtimeLane else {
+            throw TurboBackendError.invalidConfiguration
+        }
+
+        let requestID = UUID().uuidString.lowercased()
+        if let controlCommandRuntimePersistentResponseForTesting {
+            let frameData = try await controlCommandRuntimePersistentResponseForTesting(lane, envelope)
+            return try decodeRuntimeControlResponseBody(
+                frameData,
+                requestID: nil,
+                body: envelope,
+                transport: transport
+            )
+        }
+
+        guard let endpoint = runtimeControlEndpoint(for: lane) else {
+            throw TurboBackendError.invalidConfiguration
+        }
+
+        let frameData = try runtimeControlFrameData(for: envelope, requestID: requestID)
+        let connection = try await activeRuntimeControlConnection(
+            lane: lane,
+            endpoint: endpoint
+        )
+        do {
+            try await sendRuntimeControlFrame(frameData, on: connection)
+            emitControlCommandTrace(
+                commandKind: envelope.commandKind,
+                transport: transport.trace,
+                phase: .sendCompleted,
+                operationId: envelope.operationId,
+                channelId: envelope.channelId,
+                requestId: requestID,
+                startedAtNanoseconds: requestStartedAt,
+                detail: nil
+            )
+            let responseData = try await receiveRuntimeControlLine(on: connection)
+            return try decodeRuntimeControlResponseBody(
+                responseData,
+                requestID: requestID,
+                body: envelope,
+                transport: transport
+            )
+        } catch {
+            invalidateRuntimeControlConnection(connection)
+            throw error
+        }
+    }
+
+    private func runtimeControlFrameData(
+        for envelope: TurboControlCommandEnvelope,
+        requestID: String
+    ) throws -> Data {
+        let frame = TurboRuntimeControlCommandRequest(
+            requestId: requestID,
+            sessionId: currentWebSocketSessionID,
+            envelope: envelope
+        )
+        var data = try JSONEncoder().encode(frame)
+        data.append(0x0A)
+        return data
+    }
+
+    private func decodeRuntimeControlResponseBody(
+        _ data: Data,
+        requestID: String?,
+        body: TurboControlCommandEnvelope,
+        transport: ControlCommandTransport
+    ) throws -> Data {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TurboBackendError.invalidResponseDetails(
+                "\(transport.label) \(body.commandKind) returned a non-object runtime control frame"
+            )
+        }
+        guard let type = object["type"] as? String,
+              type == "control-command-response" || type == "presence-command-response" else {
+            throw TurboBackendError.invalidResponseDetails(
+                "\(transport.label) \(body.commandKind) returned an unexpected runtime control frame"
+            )
+        }
+        if let requestID,
+           let responseRequestID = object["requestId"] as? String,
+           responseRequestID != requestID {
+            throw TurboBackendError.invalidResponseDetails(
+                "\(transport.label) \(body.commandKind) response requestId mismatch"
+            )
+        }
+        guard object["status"] as? String == "ok" else {
+            let message = object["error"] as? String
+                ?? (object["body"] as? [String: Any])?["error"] as? String
+                ?? "\(transport.label) command failed"
+            throw TurboBackendError.server(message)
+        }
+        guard let responseBody = object["body"],
+              JSONSerialization.isValidJSONObject(responseBody) else {
+            throw TurboBackendError.invalidResponseDetails(
+                "\(transport.label) \(body.commandKind) response frame did not include a JSON body"
+            )
+        }
+        return try JSONSerialization.data(withJSONObject: responseBody)
+    }
+
+    private struct RuntimeControlEndpoint: Equatable {
+        let host: String
+        let port: UInt16
+    }
+
+    private struct RuntimeControlConnection {
+        let lane: TurboRuntimeControlLane
+        let endpoint: RuntimeControlEndpoint
+        let connection: NWConnection
+    }
+
+    private func runtimeControlEndpoint(for lane: TurboRuntimeControlLane) -> RuntimeControlEndpoint? {
+        let endpoint: String?
+        switch lane {
+        case .runtimeQuicControl:
+            endpoint = runtimeConfig?.runtimeControl?.quic?.endpoint
+        case .runtimeTlsControl:
+            endpoint = runtimeConfig?.runtimeControl?.tls?.endpoint
+        case .runtimeHttpRequest:
+            endpoint = nil
+        }
+        guard let endpoint else { return nil }
+        return parseRuntimeControlEndpoint(endpoint)
+    }
+
+    private func parseRuntimeControlEndpoint(_ rawEndpoint: String) -> RuntimeControlEndpoint? {
+        let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed),
+           let host = url.host,
+           !host.isEmpty {
+            return RuntimeControlEndpoint(host: host, port: UInt16(url.port ?? 443))
+        }
+        if trimmed.hasPrefix("["),
+           let closeBracket = trimmed.firstIndex(of: "]") {
+            let hostStart = trimmed.index(after: trimmed.startIndex)
+            let host = String(trimmed[hostStart ..< closeBracket])
+            let afterBracket = trimmed.index(after: closeBracket)
+            if afterBracket < trimmed.endIndex,
+               trimmed[afterBracket] == ":" {
+                let portStart = trimmed.index(after: afterBracket)
+                if let port = UInt16(trimmed[portStart...]) {
+                    return RuntimeControlEndpoint(host: host, port: port)
+                }
+            }
+            return RuntimeControlEndpoint(host: host, port: 443)
+        }
+        let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        if parts.count == 2,
+           let port = UInt16(parts[1]) {
+            return RuntimeControlEndpoint(host: String(parts[0]), port: port)
+        }
+        return RuntimeControlEndpoint(host: trimmed, port: 443)
+    }
+
+    private func runtimeControlParameters(for lane: TurboRuntimeControlLane) -> NWParameters {
+        switch lane {
+        case .runtimeQuicControl:
+            let alpn = runtimeConfig?.runtimeControl?.quic?.alpn ?? "beep-runtime-control-v1"
+            let quicOptions = NWProtocolQUIC.Options(alpn: [alpn])
+            sec_protocol_options_set_min_tls_protocol_version(
+                quicOptions.securityProtocolOptions,
+                .TLSv13
+            )
+            let parameters = NWParameters(quic: quicOptions)
+            parameters.includePeerToPeer = false
+            return parameters
+        case .runtimeTlsControl:
+            let tlsOptions = NWProtocolTLS.Options()
+            sec_protocol_options_set_min_tls_protocol_version(
+                tlsOptions.securityProtocolOptions,
+                .TLSv13
+            )
+            let parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+            parameters.includePeerToPeer = false
+            return parameters
+        case .runtimeHttpRequest:
+            return .tcp
+        }
+    }
+
+    private func activeRuntimeControlConnection(
+        lane: TurboRuntimeControlLane,
+        endpoint: RuntimeControlEndpoint
+    ) async throws -> NWConnection {
+        if let runtimeControlConnection,
+           runtimeControlConnection.lane == lane,
+           runtimeControlConnection.endpoint == endpoint {
+            return runtimeControlConnection.connection
+        }
+
+        invalidateRuntimeControlConnection()
+        let connection = NWConnection(
+            host: NWEndpoint.Host(endpoint.host),
+            port: NWEndpoint.Port(rawValue: endpoint.port) ?? .https,
+            using: runtimeControlParameters(for: lane)
+        )
+        try await startRuntimeControlConnection(connection)
+        runtimeControlConnection = RuntimeControlConnection(
+            lane: lane,
+            endpoint: endpoint,
+            connection: connection
+        )
+        return connection
+    }
+
+    private func invalidateRuntimeControlConnection(_ connection: NWConnection? = nil) {
+        guard let existing = runtimeControlConnection else { return }
+        guard connection == nil || existing.connection === connection else { return }
+        runtimeControlConnection = nil
+        existing.connection.cancel()
+    }
+
+    private func startRuntimeControlConnection(_ connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let gate = TurboRuntimeControlContinuationGate()
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    gate.resumeOnce(.success(()), continuation: continuation)
+                case .failed(let error):
+                    gate.resumeOnce(.failure(error), continuation: continuation)
+                case .cancelled:
+                    gate.resumeOnce(.failure(CancellationError()), continuation: continuation)
+                case .waiting(let error):
+                    gate.resumeOnce(.failure(error), continuation: continuation)
+                case .setup, .preparing:
+                    break
+                @unknown default:
+                    break
+                }
+            }
+            connection.start(queue: runtimeControlQueue)
+        }
+    }
+
+    private func sendRuntimeControlFrame(_ data: Data, on connection: NWConnection) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(
+                content: data,
+                contentContext: .defaultMessage,
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            )
+        }
+    }
+
+    private func receiveRuntimeControlLine(on connection: NWConnection) async throws -> Data {
+        var buffer = Data()
+        while true {
+            let chunk = try await receiveRuntimeControlChunk(on: connection)
+            if !chunk.isEmpty {
+                buffer.append(chunk)
+            }
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                return Data(buffer[..<newline])
+            }
+            if buffer.count > 1_048_576 {
+                throw TurboBackendError.invalidResponseDetails("Runtime control response exceeded 1 MiB")
+            }
+        }
+    }
+
+    private func receiveRuntimeControlChunk(on connection: NWConnection) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { data, _, isComplete, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                if let data, !data.isEmpty {
+                    continuation.resume(returning: data)
+                    return
+                }
+                if isComplete {
+                    continuation.resume(throwing: TurboBackendError.invalidResponse)
+                    return
+                }
+                continuation.resume(returning: Data())
+            }
+        }
     }
 
     private func webSocketControlCommandData(
@@ -1473,6 +1957,27 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
 
 private struct TurboEmptyRequest: Encodable {}
 
+private nonisolated final class TurboRuntimeControlContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+
+    func resumeOnce(
+        _ result: Result<Void, Error>,
+        continuation: CheckedContinuation<Void, Error>
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return }
+        didResume = true
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+}
+
 private struct TurboRegisterDeviceRequest: Encodable {
     let deviceId: String
     let deviceLabel: String?
@@ -1489,6 +1994,7 @@ private struct TurboDirectChannelRequest: Encodable {
 
 struct TurboControlCommandEnvelope: Encodable {
     let commandKind: String
+    let userHandle: String?
     let deviceId: String
     let operationId: String?
     let channelId: String?
@@ -1503,6 +2009,7 @@ struct TurboControlCommandEnvelope: Encodable {
 
     init(
         commandKind: String,
+        userHandle: String? = nil,
         deviceId: String,
         operationId: String? = nil,
         channelId: String? = nil,
@@ -1516,6 +2023,7 @@ struct TurboControlCommandEnvelope: Encodable {
         deviceSessionProof: String? = nil
     ) {
         self.commandKind = commandKind
+        self.userHandle = userHandle
         self.deviceId = deviceId
         self.operationId = operationId
         self.channelId = channelId
@@ -1535,6 +2043,7 @@ private struct TurboControlCommandWebSocketRequest: Encodable {
     let requestId: String
     let sessionId: String?
     let commandKind: String
+    let userHandle: String?
     let deviceId: String
     let operationId: String?
     let channelId: String?
@@ -1551,6 +2060,7 @@ private struct TurboControlCommandWebSocketRequest: Encodable {
         self.requestId = requestId
         self.sessionId = sessionId
         commandKind = envelope.commandKind
+        userHandle = envelope.userHandle
         deviceId = envelope.deviceId
         operationId = envelope.operationId
         channelId = envelope.channelId
@@ -1566,6 +2076,7 @@ private struct TurboPresenceCommandWebSocketRequest: Encodable {
     let requestId: String
     let sessionId: String?
     let commandKind: String
+    let userHandle: String?
     let deviceId: String
 
     init(
@@ -1576,7 +2087,52 @@ private struct TurboPresenceCommandWebSocketRequest: Encodable {
         self.requestId = requestId
         self.sessionId = sessionId
         commandKind = envelope.commandKind
+        userHandle = envelope.userHandle
         deviceId = envelope.deviceId
+    }
+}
+
+private struct TurboRuntimeControlCommandRequest: Encodable {
+    let type: String
+    let requestId: String
+    let sessionId: String?
+    let commandKind: String
+    let userHandle: String?
+    let deviceId: String
+    let operationId: String?
+    let channelId: String?
+    let contactId: String?
+    let friendHandle: String?
+    let friendUserId: String?
+    let otherHandle: String?
+    let otherUserId: String?
+    let transmitId: String?
+    let subject: String?
+    let deviceSessionProof: String?
+
+    init(
+        requestId: String,
+        sessionId: String?,
+        envelope: TurboControlCommandEnvelope
+    ) {
+        self.type = envelope.commandKind.hasPrefix("presence-")
+            ? "presence-command"
+            : "control-command"
+        self.requestId = requestId
+        self.sessionId = sessionId
+        commandKind = envelope.commandKind
+        userHandle = envelope.userHandle
+        deviceId = envelope.deviceId
+        operationId = envelope.operationId
+        channelId = envelope.channelId
+        contactId = envelope.contactId
+        friendHandle = envelope.friendHandle
+        friendUserId = envelope.friendUserId
+        otherHandle = envelope.otherHandle
+        otherUserId = envelope.otherUserId
+        transmitId = envelope.transmitId
+        subject = envelope.subject
+        deviceSessionProof = envelope.deviceSessionProof
     }
 }
 

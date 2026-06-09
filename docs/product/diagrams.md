@@ -10,16 +10,16 @@ Required diagrams:
 
 ## Principles
 
-- Control plane is authoritative: requests, joins, readiness, wake targeting, websocket signaling authorization, and active-transmit ownership are backend-owned.
+- Control plane is authoritative: requests, joins, readiness, wake targeting, runtime signaling authorization, and active-transmit ownership are backend-owned.
 - Fast paths are optimizations: Direct QUIC, Fast Relay, receiver prewarm hints, and warm pings reduce latency but never replace backend Conversation truth.
-- Audio transport is dynamic: prefer Direct QUIC when active, fall back to Fast Relay when enabled, then backend WebSocket relay.
-- Media is end-to-end encrypted before entering Direct QUIC, Fast Relay, or WebSocket relay.
+- Audio transport is dynamic: prefer Direct QUIC when proven active, fall back to Fast Relay QUIC, then Fast Relay TCP/TLS ordered continuity.
+- Media is end-to-end encrypted before entering Direct QUIC or Fast Relay.
 
 ## Legend
 
 ```text
 [AUTH]  backend-owned session/transmit truth
-[WS]    backend WebSocket signaling; authoritative routing, opaque signal payloads
+[CTRL]  backend runtime control signaling; authoritative routing, opaque signal payloads
 [HTTP]  backend HTTP route
 [HINT]  Friend hint or prewarm signal; useful but not authoritative
 [MEDIA] media startup, control, or payload delivery path
@@ -120,7 +120,7 @@ Selected contact prewarm
 - Wake-ready path: Friend is not foreground-audio-ready, but backend `wakeReadiness.peer.kind == wake-capable`; sender can talk to wake-capable Friend.
 - Direct path warmed: Direct QUIC active or warming; first talk can use direct media and receiver prewarm.
 - Fast Relay warmed: relay is connected or prejoined; first talk can use relay media/control frames.
-- Relayed fallback: backend WebSocket remains available for control and fallback audio relay.
+- Relay fallback: Fast Relay QUIC/TCP remains available for live media; runtime control remains available for authoritative signaling.
 
 ## Diagram 2: Hold-To-Talk Audio + Wake + Fallback
 
@@ -162,14 +162,14 @@ Press HOLD
   |        sendAudioPayload(sealedPayload) ----------------------------------------------------->|
   |        on send/path failure: fall back                                                      |
   |                                                                                             |
-  | 2. [MEDIA] Fast Relay if enabled/forced/configured                                          |
-  |        QUIC 443 or TCP 443                                                                  |
+  | 2. [MEDIA] Fast Relay QUIC if enabled/forced/configured                                    |
+  |        QUIC datagrams on 443                                                                |
   |        sendAudioPayload(sealedPayload) ----------------------------------------------------->|
   |        on Friend-unavailable/send failure: clear stale relay client, fall back              |
   |                                                                                             |
-  | 3. [WS] backend WebSocket relay fallback                                                     |
-  |        TurboSignalEnvelope(type: audio-chunk, payload: sealedPayload)                       |
-  |-----------------------------------> backend routes authorized signal ----------------------->|
+  | 3. [MEDIA] Fast Relay TCP/TLS ordered continuity                                            |
+  |        bounded ordered fallback; stale backlog is dropped, not replayed                     |
+  |        sendAudioPayload(sealedPayload) ----------------------------------------------------->|
   +=============================================================================================+
                                                                                                  |
                                                                                                  v
@@ -296,7 +296,7 @@ Encoding:
 - green thick arrows = encrypted audio payload delivery
 - orange arrows = APNs / Apple PushToTalk wake
 - red dotted arrows = fallback after transport failure
-- lock icon or "E2EE seal/open" around media before Direct QUIC, Fast Relay, or WebSocket relay
+- lock icon or "E2EE seal/open" around media before Direct QUIC or Fast Relay
 - labels directly on arrows; technical, readable, not marketing
 
 Panel 1 content:
@@ -305,11 +305,11 @@ Panel 1 content:
 - Friend A presses Connect; backend creates/refreshes a Beep Thread/channel; Friend B sees incomingBeep.
 - Friend B accepts and joins through local Apple PushToTalk/session plus backend join.
 - Backend stores membership/current device, PushToTalk token, Direct QUIC identity, and media encryption identity.
-- WebSocket join-accepted hint goes from Friend B to Friend A and is labeled "hint; backend remains authority".
+- Runtime join-accepted hint goes from Friend B to Friend A and is labeled "hint; backend remains authority".
 - Friend A finishes join.
 - Readiness projection includes audioReadiness, wakeReadiness, peerTargetDeviceId, peerDirectQuicIdentity, peerMediaEncryptionIdentity.
 - Final states: ready, waitingForPeer, wakeReady.
-- Fast Media lane shows selected-friend-prewarm; Direct QUIC signaling (`direct-quic-upgrade-request`, offer, answer, ice-candidate, hangup); Direct QUIC probing `promoting -> direct` with certificate fingerprint verification; receiver-prewarm request/ack and warm ping/pong; Fast Relay prejoin through `relay.beepbeep.to` on QUIC 443 or TCP 443; WebSocket fallback receiver-ready/receiver-not-ready.
+- Fast Media lane shows selected-friend-prewarm; Direct QUIC signaling (`direct-quic-upgrade-request`, offer, answer, ice-candidate, hangup); Direct QUIC probing `promoting -> direct` with certificate fingerprint verification; receiver-prewarm request/ack and warm ping/pong; Fast Relay prejoin through `relay.beepbeep.to` on QUIC 443 or TCP/TLS 443.
 - Make explicit that Direct QUIC and Fast Relay do not establish the Conversation; they only warm or carry media/control hints after backend truth exists.
 
 Panel 2 content:
@@ -317,18 +317,18 @@ Panel 2 content:
 - Optional fast prepare over Direct QUIC or Fast Relay: receiver transmit-prepare / receiver-prewarm.
 - Friend A calls backend `begin-transmit`.
 - Backend verifies sender membership, resolves target as foreground-ready or token-backed wake-capable, writes active `TransmitState` lease, returns `transmitId`, `expiresAt`, `targetDeviceId`, enforces one active transmitter per channel, and sender renews while holding.
-- Backend sends websocket transmit-start `ptt-prepare` when target has a current connected session.
-- Backend wake side effect unless target is already audio-ready with open socket: current hosted path backend -> Cloudflare Worker -> APNs -> Apple PushToTalk -> Friend B; desired future path backend -> APNs directly.
+- Backend sends runtime-control transmit-start `ptt-prepare` when target has a current connected session.
+- Backend wake side effect unless target is already audio-ready with current runtime control presence: backend -> APNs -> Apple PushToTalk -> Friend B.
 - Friend A PushToTalk handoff: request system transmit, Apple start beep, PTT audio session activated, rebind capture to live PlayAndRecord route, capture microphone, encode chunks.
 - E2EE: media identities establish X25519-derived key, payload is sealed with ChaCha20-Poly1305 before transport and opened on Friend B.
-- Dynamic transport priority: Direct QUIC sendAudioPayload if active; Fast Relay sendAudioPayload if enabled/forced/configured over QUIC 443 or TCP 443; backend WebSocket relay fallback with `TurboSignalEnvelope(type: audio-chunk)`.
-- Red dotted fallback arrows from Direct QUIC to Fast Relay and from Fast Relay to WebSocket relay.
+- Dynamic media priority: Direct QUIC datagrams if active/proven; Fast Relay QUIC datagrams if enabled/forced/configured; Fast Relay TCP/TLS ordered continuity when UDP/QUIC datagrams are unavailable.
+- Red dotted fallback arrows from Direct QUIC to Fast Relay QUIC and from Fast Relay QUIC to Fast Relay TCP/TLS.
 - Friend B foreground path: receive transmit-start/prewarm/audio, set active remote participant, ensure playback session, open E2EE, schedule playback, show receiving.
 - Friend B background/locked path: PushToTalk push, pending wake candidate, awaitingSystemActivation/signalBuffered, buffer early encrypted audio, Apple activates PTT audio session, drain buffered audio, open E2EE, play during same transmit window.
-- Release: Friend A releases HOLD, stops capture, sends websocket transmit-stop `ptt-end`, calls backend `end-transmit(transmitId)`, backend clears active lease, Friends converge to ready/wakeReady/waitingForPeer.
-- Callout: warm Direct QUIC fast-start can send receiver transmit-prepare, start prewarmed direct capture, send transmit-start `ptt-begin` over WebSocket, and carry sealed audio over Direct QUIC when Direct QUIC is active and startup policy allows. Draw as optimization, not authority.
+- Release: Friend A releases HOLD, stops capture, sends runtime-control transmit-stop `ptt-end`, calls backend `end-transmit(transmitId)`, backend clears active lease, Friends converge to ready/wakeReady/waitingForPeer.
+- Callout: warm Direct QUIC fast-start can send receiver transmit-prepare, start prewarmed direct capture, send transmit-start `ptt-begin` over runtime control, and carry sealed audio over Direct QUIC when Direct QUIC is active and startup policy allows. Draw as optimization, not authority.
 
-Do not draw UDP/TCP as connection setup paths. UDP/QUIC and relay TCP belong only in media transport. Backend WebSocket is required control-plane signaling. Direct QUIC and Fast Relay are media/hint fast paths.
+Do not draw UDP/TCP as Conversation setup paths. UDP/QUIC and relay TCP/TLS belong only in media transport. Runtime control is authoritative signaling. Direct QUIC and Fast Relay are media/hint fast paths.
 ```
 
 ## Source Pointers

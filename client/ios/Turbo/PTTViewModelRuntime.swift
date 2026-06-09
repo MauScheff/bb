@@ -3562,6 +3562,7 @@ final class MediaRuntimeState {
     var contactID: UUID?
     var connectionState: MediaConnectionState = .idle
     var transportPathState: MediaTransportPathState = .relay
+    var activeMediaEpochPathState: MediaTransportPathState?
     private(set) var networkPathGeneration: UInt64 = 0
     let directQuicUpgrade = DirectQuicUpgradeRuntimeState()
     var directQuicProbeController: DirectQuicProbeController?
@@ -3885,6 +3886,7 @@ final class MediaRuntimeState {
         } else {
             transportPathState = .relay
         }
+        activeMediaEpochPathState = nil
         if !preserveDirectQuic {
             directQuicUpgrade.reset()
             directQuicWarmPongIDByContactID = [:]
@@ -4250,6 +4252,29 @@ final class MediaRuntimeState {
 
     func updateTransportPathState(_ state: MediaTransportPathState) {
         transportPathState = state
+    }
+
+    func clearActiveMediaEpochPathState() {
+        activeMediaEpochPathState = nil
+    }
+
+    func markActiveMediaEpochPathState(_ state: MediaTransportPathState) {
+        activeMediaEpochPathState = state
+    }
+
+    func markActiveMediaEpochTransport(_ transport: String) {
+        switch transport {
+        case "direct-quic":
+            activeMediaEpochPathState = .direct
+        case "media-relay-packet":
+            activeMediaEpochPathState = .fastRelay
+        case "media-relay-tcp":
+            activeMediaEpochPathState = .fastRelayTcp
+        case "relay-websocket":
+            activeMediaEpochPathState = .relay
+        default:
+            break
+        }
     }
 
     func advanceNetworkPathGeneration() -> UInt64 {
@@ -5461,6 +5486,7 @@ struct BackendServices {
     var isWebSocketSuspended: Bool { client.isWebSocketSuspended }
     var webSocketSessionID: String? { client.webSocketSessionID }
     var controlCommandTransportPolicy: TurboControlCommandTransportPolicy { client.controlCommandTransportPolicy }
+    var runtimeControlSelection: TurboRuntimeControlSelection { client.runtimeControlSelection }
     var shouldSendHTTPPresenceHeartbeat: Bool {
         if controlCommandTransportPolicy == .httpOnly {
             return true

@@ -90,7 +90,7 @@ Engine truth uses explicit phases with state-specific evidence:
 | `EngineConversationPhase` | `none`, `selected`, `requesting`, `incomingBeep`, `joining`, `joined`, `disconnecting`, `recovering` |
 | `EngineTransmitPhase` | `idle`, `beginning`, `active`, `stopping`, `failed` |
 | `EngineReceivePhase` | `idle`, `prepared`, `awaitingPTTActivation`, `receiving`, `draining`, `failed` |
-| `EngineTransportPhase` | `relayWebSocket`, `fastRelay`, `directQuic`, `multipath`, `recovering`, `unavailable` |
+| `EngineTransportPhase` | `fastRelay`, `directQuic`, `recovering`, `unavailable` |
 | `EnginePTTAudioActivationState` | `inactive`, `activating`, `active`, `failed` |
 
 Put data inside the case that owns it. For example, joined Conversation readiness belongs inside `JoinedConversationEvidence`, active Talk Turn transmit facts belong inside `TransmitEpoch`, and buffered wake playback belongs inside `WakeBufferedReceive`.
@@ -115,18 +115,17 @@ Every failure and recovery path should carry a typed reason. Every stale callbac
 
 Friend receive addressability is explicit evidence, not a boolean. `ReceiverAddressability` is the existing engine type name; its cases are `foreground`, `wakeCapable`, and `unavailable(reason)`. Local transmit cannot begin, recover, or remain active without foreground or wake-capable receiver evidence; membership loss, wake-token revocation, and backend active-transmit clears must move active transmit into stop/idle instead of preserving a stale talking state.
 
-Media capability is explicit evidence, not a transport label. `EngineMediaTransportCapability` distinguishes unordered packet media, ordered reliable media, reliable control, unavailable, and degraded states. Control traffic stays ordered/reliable; live audio uses sequence, timestamp, epoch, jitter, late-drop, duplicate-drop, and missing-frame skip semantics. Ordered media is limited to explicit fallback lanes and must report backlog degradation instead of draining stale catch-up audio.
+Media capability is explicit evidence, not a transport label. `EngineMediaTransportCapability` distinguishes unordered packet media, ordered reliable media, reliable control, unavailable, and degraded states. Control traffic stays ordered/reliable; live audio uses sequence, timestamp, epoch, jitter, late-drop, duplicate-drop, and missing-frame skip semantics. Ordered media is limited to Fast Relay TCP/TLS fallback and must report backlog degradation instead of draining stale catch-up audio.
 
 Current app lane mapping:
 
 | Lane | Control semantics | Media semantics | Engine capability |
 | --- | --- | --- | --- |
-| Backend websocket | ordered reliable | ordered reliable fallback | `orderedReliableMedia(.webSocketFallback)` |
 | Fast Relay packet | ordered reliable control stream | QUIC datagram packet media | `unorderedPacketMedia(.fastRelayPacketRelay)` |
 | Fast Relay TCP | ordered reliable TCP/TLS stream | ordered reliable fallback | `orderedReliableMedia(.fastRelayTcpFallback)` |
 | Direct QUIC packet | ordered reliable control stream | QUIC datagram packet media | `unorderedPacketMedia(.directQuicDatagram)` |
 
-Direct QUIC does not send live audio over ordered reliable streams. Fast Relay packet media does not fall back to QUIC stream audio; when QUIC datagram media is unavailable, lane selection may use the explicitly named Fast Relay TCP fallback (`media-relay-tcp`) or the backend websocket fallback. No ordered stream path may masquerade as packet media.
+Direct QUIC does not send live audio over ordered reliable streams. Fast Relay packet media does not fall back to QUIC stream audio; when QUIC datagram media is unavailable, lane selection may use the explicitly named Fast Relay TCP/TLS fallback (`media-relay-tcp`). Runtime/backend transports must not be selected as live media. No ordered stream path may masquerade as packet media.
 
 Voice codec capability is also explicit app-side evidence. The current app advertises `VoiceMediaCapabilities` in receiver-ready and Direct QUIC receiver-prewarm payloads, then sends `turbo-audio-frame-v2` Opus only after fresh Friend/Participant evidence proves Opus v2 support. Legacy PCM remains the fallback for older receivers, stale evidence, codec unavailability, and debugging. The engine owns media lane semantics; the iOS media adapter owns AVAudio conversion, Opus encode/decode, and adaptive playout execution.
 
@@ -138,9 +137,9 @@ The reducer does not perform side effects. It returns typed effects:
 
 | Effect | Examples |
 | --- | --- |
-| `BackendEngineEffect` | websocket connect, begin/end transmit, send audio signal, fetch channel state |
+| `BackendEngineEffect` | runtime-control connect, begin/end transmit, fetch channel state |
 | `PTTEngineEffect` | request begin/stop transmit, activate receive audio |
-| `MediaEngineEffect` | start/stop capture, schedule playback, drop chunk with reason |
+| `MediaEngineEffect` | start/stop capture, send live audio through a legal media lane, schedule playback, drop chunk with reason |
 | `TransportEngineEffect` | prewarm path, fall back with recovery reason |
 | `DiagnosticsEngineEffect` | record diagnostic or invariant violation |
 
@@ -154,9 +153,9 @@ Transmit startup is a three-evidence gate, independent of transport lane:
 2. Apple PushToTalk reports system transmit began for the current channel.
 3. Apple PushToTalk/AVAudio reports the PTT audio session active for the same channel.
 
-The effect executor requests Apple system transmit only after the backend Talk Turn lease is granted. It may prewarm websocket control, Fast Relay, Direct QUIC control/readiness, route computation, receiver prewarm, and remote-participant clearing before all evidence is present.
+The effect executor requests Apple system transmit only after the backend Talk Turn lease is granted. It may prewarm runtime control, Fast Relay, Direct QUIC control/readiness, route computation, receiver prewarm, and remote-participant clearing before all evidence is present.
 
-No lane may start microphone capture, send `transmit-start`, project local UI as `transmitting`, or use a provisional route as live capture authority until all three evidence items are current and the local press/epoch still matches. This applies equally to websocket relay, Fast Relay, and Direct QUIC. Direct QUIC may preserve or warm the path, but it must not bypass the backend lease or Apple audio activation.
+No lane may start microphone capture, send `transmit-start`, project local UI as `transmitting`, or use a provisional route as live capture authority until all three evidence items are current and the local press/epoch still matches. This applies equally to Fast Relay and Direct QUIC. Direct QUIC may preserve or warm the path, but it must not bypass the backend lease or Apple audio activation.
 
 If Apple reports system transmit but audio activation does not arrive before the Apple-gated deadline, fail closed: stop system transmit, end or clean up the backend lease, mark the local press release-required, and do not send `transmit-start`.
 
@@ -189,14 +188,13 @@ The engine boundary to the backend is `EngineBackendPort`:
 public protocol EngineBackendPort {
     func seed(handle: String) async throws
     func reset(handle: String) async throws
-    func connectWebSocket() async throws
+    func connectRealtimeControl() async throws
     func sendControlCommand(_ command: EngineControlCommand) async throws -> EngineControlResponse
-    func sendSignal(_ signal: EngineSignalEnvelope) async throws
     func fetchChannelState(_ channelID: EngineChannelID) async throws -> EngineChannelState
 }
 ```
 
-`InMemoryEngineBackendPort` is a fault-injection simulation adapter. It must stay thin and intentionally incomplete; do not mirror backend business logic there. `LiveHTTPWebSocketEngineBackendPort` points the same runner at the active self-hosted runtime, normally `http://127.0.0.1:8091/s/turbo`, and is the preferred proof when backend route semantics matter.
+`InMemoryEngineBackendPort` is a fault-injection simulation adapter. It must stay thin and intentionally incomplete; do not mirror backend business logic there. The live runtime backend port points the same runner at the active self-hosted runtime, normally `http://127.0.0.1:8091/s/turbo`, and is the preferred proof when backend route semantics matter. Live audio is not part of this backend port; engine media effects must be executed by media adapters over Direct QUIC or Fast Relay lanes.
 
 Keep backend wire strings and compatibility shapes at this edge; normalize them into typed engine evidence before reducer logic depends on them.
 
@@ -224,13 +222,13 @@ Scenarios should cover the engine-level versions of:
 - membership loss clearing active transmit
 - idle network migration followed by transmit
 - QUIC unavailable to Fast Relay fallback
-- Fast Relay packet unavailable to explicit TCP or websocket fallback
+- Fast Relay packet unavailable to explicit Fast Relay TCP/TLS fallback
 - Direct QUIC send failure to relay fallback
 - duplicate/reordered chunks without duplicate playback
 - Direct datagram-style loss/reorder/duplicate with jitter deadline skip
 - Fast Relay packet-style loss/reorder/duplicate with jitter deadline skip
 - ordered fallback lanes dropping stale catch-up frames
-  (`websocket_ordered_burst_drop`, `fast_relay_tcp_ordered_burst_drop`)
+  (`fast_relay_tcp_ordered_burst_drop`)
 - stale stop rejected behind a newer transmit epoch
 - incoming audio buffers before PTT activation, then drains
 - no playback before active transmit epoch
@@ -296,7 +294,7 @@ Do not use physical devices as the first proof for engine logic. Physical device
 
 When moving or adjusting app behavior in the engine-owned domains:
 
-1. Convert UI gestures, backend updates, websocket notices, Apple callbacks, media callbacks, transport faults, lifecycle changes, and timers into typed engine intents/events.
+1. Convert UI gestures, backend updates, runtime-control notices, Apple callbacks, media callbacks, transport faults, lifecycle changes, and timers into typed engine intents/events.
 2. Move the rule into the reducer or a focused engine domain helper.
 3. Return typed effects instead of calling app services directly.
 4. Derive `PTTViewModel` observable fields from `TurboEngineSnapshot` or typed app projections.

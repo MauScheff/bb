@@ -72,11 +72,46 @@ Packet-level evidence belongs in backend latest diagnostics:
 - sender: `Captured local audio buffer`, `Converted local audio buffer`, `Enqueued outbound audio chunk`, outbound dispatch/delivery digests
 - receiver: `Audio chunk received`, `Playback buffer scheduled`, playback start/readiness
 
-Default logs record the first few sender capture/convert/enqueue events and first few relay receive chunks, then emit suppression such as `Suppressing repetitive WebSocket audio chunk diagnostics`. That proves startup, silence/non-silence, payload size, and digest continuity without huge payloads.
+Default logs record the first few sender capture/convert/enqueue events and first few relay receive chunks, then emit bounded suppression diagnostics. That proves startup, silence/non-silence, payload size, and digest continuity without huge payloads.
 
 Deep-audio mode, when needed, should be debug/dev or explicit test config only; emit compact per-chunk sequence facts, not raw PCM or full payloads; include digest, sequence/index, chunk count, payload length, frame count, local monotonic timing; summarize captured/enqueued/dispatched/received/scheduled/dropped/suppressed counts and largest inter-arrival/playback gaps; flow into backend latest diagnostics.
 
-Debug transport overrides are `DEBUG`-build behavior. TestFlight and release builds must ignore persisted Direct QUIC relay-only, Direct QUIC auto-upgrade-disabled, media relay force/disable, media relay config, control-command transport, and packet-metadata flags, even when installed over a development build with the same app container. Shipping builds should resolve to production defaults: Direct upgrade allowed when the backend advertises it, Fast Relay enabled but not forced, production relay host/ports, automatic control transport, and packet metadata diagnostics off.
+Debug transport overrides are `DEBUG`-build behavior. TestFlight and release builds must ignore persisted media-lane override, Direct QUIC relay-only, Direct QUIC auto-upgrade-disabled, media relay force/disable, media relay config, control-command transport, and packet-metadata flags, even when installed over a development build with the same app container. Shipping builds should resolve to production defaults: Direct upgrade allowed when the backend advertises it, Fast Relay enabled but not forced, production relay host/ports, automatic control transport, and packet metadata diagnostics off.
+
+The diagnostics sheet exposes one media lane selector:
+
+| Override | Meaning |
+| --- | --- |
+| `automatic` | Use Direct QUIC when proven/current, otherwise Fast Relay. |
+| `force-direct-quic` | Local sender policy tries Direct QUIC and disables relay rescue for the test cell. |
+| `force-fast-relay-quic` | Local sender policy selects Fast Relay QUIC packet media. |
+| `force-fast-relay-tls` | Local sender policy selects Fast Relay TCP/TLS ordered fallback. |
+
+Reports include requested override, effective path, active proven lane, and
+fallback/rescue reason. Requested override is local policy only; it must not
+become backend truth. The sender's chosen current-epoch media lane is carried
+by authenticated media/hint metadata. The peer accepts any valid current-epoch
+lane even when its own local selector differs, and receive-side relay prejoin may
+adapt without changing the peer's stored override. Forced Fast Relay QUIC/TLS
+also replaces any cached relay client whose transport does not match the forced
+lane before sending live audio.
+
+The diagnostics sheet also exposes one runtime control selector. This selector
+is separate from media lane forcing and never authorizes runtime live media.
+
+| Override | Meaning |
+| --- | --- |
+| `automatic` | Follow runtime config preference and use the first supported authoritative control lane. |
+| `http-only` | Force stateless HTTP control for compatibility and bisection. |
+| `force-runtime-quic` | Require runtime QUIC control when advertised; otherwise fall back to HTTP and record `runtime-quic-unavailable`. |
+| `force-runtime-tls` | Require runtime TLS control when advertised; otherwise fall back to HTTP and record `runtime-tls-unavailable`. |
+| `force-runtime-http` | Force runtime HTTP request/response control. |
+
+Forced runtime QUIC/TLS/HTTP policies disable backend WebSocket command
+compatibility for control commands. Reports include requested control policy,
+effective control lane, persistent/non-persistent classification, and fallback
+reason. WebSocket remains a compatibility and scenario fault-injection surface;
+it is not a target lane for new authoritative control work.
 
 Current Opus diagnostics:
 
@@ -110,13 +145,12 @@ Media lane interpretation:
 | `direct-quic` | Direct QUIC datagram packet media | Control remains ordered; live audio must arrive through datagrams. Opus is expected when both sides advertise fresh Opus v2 support; otherwise legacy PCM is expected. |
 | `media-relay-packet` | Fast Relay QUIC datagram packet media | Loss/reorder/duplicate should be handled by sequence/jitter policy without ordered backlog drops. Opus uses the same peer capability gate as Direct QUIC. |
 | `media-relay-tcp` | Fast Relay TCP/TLS ordered stream | Explicit degraded fallback after relay QUIC/datagram failure; inspect ordered backlog/catch-up drops before device retest. Opus may still be used, but the lane is ordered and higher-latency. |
-| `relay-websocket` | websocket/TCP ordered stream | Compatibility fallback; inspect backlog/catch-up behavior before device retest. Opus may still be used when negotiated, because backend payload strings remain opaque. |
 
 Live packet media sends are best-effort at the transport boundary. Direct QUIC and Fast Relay QUIC datagram audio must not await ordered/reliable send completion such as Network.framework `.contentProcessed`; waiting there can recreate sender-side head-of-line stalls. Keep ordered/reliable completion for control and ordered fallback lanes.
 
 Fast Relay selection has two QUIC steps: ordered control-stream join, then separate QUIC datagram media join. A log pair like `Media relay QUIC datagram unavailable ... datagram handshake timed out` followed by `Media relay TCP ordered fallback connected` means UDP/datagram Fast Relay failed and the app intentionally selected the degraded TCP lane. That is not expected for a Fast Relay packet-media test cell; inspect relay UDP reachability, server datagram ack behavior, or local network UDP blocking.
 
-First-playback ACKs for packet media prove that the receiver played a current-or-newer packet on the expected transport, not necessarily the first packet digest. Accept encrypted ACK sequence `>=` the armed expectation for the same channel/sender/receiver/transport; reject older sequence ACKs. Direct packet media must return after Direct send succeeds; fallback lanes are used when Direct send fails or when selected as the explicit degraded lane.
+First-playback ACKs for packet media prove that the receiver played a current-or-newer packet on the expected transport, not necessarily the first packet digest. Accept encrypted ACK sequence `>=` the armed expectation for the same channel/sender/receiver/transport; reject older sequence ACKs. Direct packet media must return after Direct send succeeds; sequential rescue is used when Direct send fails or when Fast Relay is selected as the explicit degraded lane.
 
 ## Client-Only UX Shortcut
 
@@ -211,7 +245,7 @@ App-owned invariants:
 
 - local interactive media is prewarmed before hold-to-talk enables
 - first transmit rebinds capture to live `PlayAndRecord` only after Apple grants the PTT audio session
-- websocket, Fast Relay, and Direct QUIC share the same backend-lease plus Apple-transmit plus Apple-audio live gate
+- runtime control, Fast Relay, and Direct QUIC share the same backend-lease plus Apple-transmit plus Apple-audio live gate
 - no transport lane may send `transmit-start`, capture microphone audio, or project `Talking` from provisional route evidence
 - remote `transmit-stop` does not recreate interactive audio while PTT audio session is deactivating
 - unexpected system transmit end cleans up or retries without stale transmit
@@ -269,7 +303,7 @@ Friend offline is not enough to infer wake is possible. A joined Friend that bac
 
 ## Background PTT Wake
 
-Foreground signaling can use websocket. Background receive needs PushToTalk wake:
+Foreground signaling uses runtime control. Background receive needs PushToTalk wake:
 
 - direct APNs from Unison is intended long-term path, pending upstream runtime rollout
 - interim path uses backend-triggered Cloudflare sender in [`APNS_DELIVERY_PLAN.md`](/Users/mau/Development/bb/docs/client/APNS_DELIVERY_PLAN.md)

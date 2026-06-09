@@ -24,6 +24,8 @@ struct TurboDiagnosticsView: View {
     let onSetRelayOnlyForced: (Bool) -> Void
     let onSetDirectQuicAutoUpgradeDisabled: (Bool) -> Void
     let onSetDirectQuicTransmitStartupPolicy: (DirectQuicTransmitStartupPolicy) -> Void
+    let onSetControlCommandTransportPolicy: (TurboControlCommandTransportPolicy) -> Void
+    let onSetMediaLaneOverride: (TurboMediaLaneOverride) -> Void
     let onSetMediaRelayEnabled: (Bool) -> Void
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
@@ -181,6 +183,10 @@ struct TurboDiagnosticsView: View {
                     diagnosticsRow("Identity status", directQuic.identityStatus)
                     diagnosticsRow("Installed identities", "\(directQuic.installedIdentityCount)")
                     diagnosticsRow("Path state", directQuic.transportPathState.label)
+                    diagnosticsRow("Runtime control policy", directQuic.controlCommandTransportPolicy.label)
+                    diagnosticsRow("Runtime control lane", directQuic.runtimeControlEffectiveLane.label)
+                    diagnosticsRow("Runtime control fallback", directQuic.runtimeControlFallbackReason ?? "none")
+                    diagnosticsRow("Media lane override", directQuic.mediaLaneOverride.label)
                     diagnosticsRow("Relay-only override", directQuic.relayOnlyOverride ? "on" : "off")
                     diagnosticsRow("Auto-upgrade", directQuic.autoUpgradeDisabled ? "off" : "on")
                     diagnosticsRow("Media relay enabled", directQuic.mediaRelayEnabled ? "yes" : "no")
@@ -221,13 +227,24 @@ struct TurboDiagnosticsView: View {
                     diagnosticsRow("Base retry backoff", "\(directQuic.retryBackoffBaseMilliseconds) ms")
                     diagnosticsRow("Transmit startup", directQuic.transmitStartupPolicy.rawValue)
 
-                    Toggle(
-                        "Relay-only override",
-                        isOn: Binding(
-                            get: { directQuic.relayOnlyOverride },
-                            set: onSetRelayOnlyForced
-                        )
-                    )
+                    Picker("Media lane", selection: Binding(
+                        get: { directQuic.mediaLaneOverride },
+                        set: onSetMediaLaneOverride
+                    )) {
+                        ForEach(TurboMediaLaneOverride.allCases) { override in
+                            Text(override.label).tag(override)
+                        }
+                    }
+                    .disabled(isRunningDirectQuicDebugAction)
+
+                    Picker("Runtime control", selection: Binding(
+                        get: { directQuic.controlCommandTransportPolicy },
+                        set: onSetControlCommandTransportPolicy
+                    )) {
+                        ForEach(TurboControlCommandTransportPolicy.allCases) { policy in
+                            Text(policy.label).tag(policy)
+                        }
+                    }
                     .disabled(isRunningDirectQuicDebugAction)
 
                     Button {
@@ -249,24 +266,6 @@ struct TurboDiagnosticsView: View {
                         Text("Apple-gated").tag(DirectQuicTransmitStartupPolicy.appleGated)
                     }
                     .disabled(isRunningDirectQuicDebugAction)
-
-                    Toggle(
-                        "Enable media relay",
-                        isOn: Binding(
-                            get: { directQuic.mediaRelayEnabled },
-                            set: onSetMediaRelayEnabled
-                        )
-                    )
-                    .disabled(isRunningDirectQuicDebugAction)
-
-                    Toggle(
-                        "Force media relay",
-                        isOn: Binding(
-                            get: { directQuic.mediaRelayForced },
-                            set: onSetMediaRelayForced
-                        )
-                    )
-                    .disabled(isRunningDirectQuicDebugAction || !directQuic.mediaRelayEnabled)
 
                     Toggle(
                         "Audio packet metadata",
@@ -596,6 +595,8 @@ struct TurboDiagnosticsSheet: View {
     let onSetRelayOnlyForced: (Bool) -> Void
     let onSetDirectQuicAutoUpgradeDisabled: (Bool) -> Void
     let onSetDirectQuicTransmitStartupPolicy: (DirectQuicTransmitStartupPolicy) -> Void
+    let onSetControlCommandTransportPolicy: (TurboControlCommandTransportPolicy) -> Void
+    let onSetMediaLaneOverride: (TurboMediaLaneOverride) -> Void
     let onSetMediaRelayEnabled: (Bool) -> Void
     let onSetMediaRelayForced: (Bool) -> Void
     let onSetMediaRelayConfig: (String, UInt16, UInt16, String) -> Void
@@ -639,6 +640,8 @@ struct TurboDiagnosticsSheet: View {
                 onSetRelayOnlyForced: onSetRelayOnlyForced,
                 onSetDirectQuicAutoUpgradeDisabled: onSetDirectQuicAutoUpgradeDisabled,
                 onSetDirectQuicTransmitStartupPolicy: onSetDirectQuicTransmitStartupPolicy,
+                onSetControlCommandTransportPolicy: onSetControlCommandTransportPolicy,
+                onSetMediaLaneOverride: onSetMediaLaneOverride,
                 onSetMediaRelayEnabled: onSetMediaRelayEnabled,
                 onSetMediaRelayForced: onSetMediaRelayForced,
                 onSetMediaRelayConfig: onSetMediaRelayConfig,

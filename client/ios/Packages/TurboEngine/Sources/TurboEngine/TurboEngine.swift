@@ -93,7 +93,7 @@ public enum TransportLane: String, Codable, Equatable, Sendable, CaseIterable {
         case .fastRelayTcp:
             return 2
         case .webSocketTcp:
-            return 1
+            return 0
         }
     }
 
@@ -122,7 +122,7 @@ public enum TransportLane: String, Codable, Equatable, Sendable, CaseIterable {
     }
 
     public static var priorityOrder: [TransportLane] {
-        [.directQuic, .fastRelayQuic, .fastRelayTcp, .webSocketTcp]
+        [.directQuic, .fastRelayQuic, .fastRelayTcp]
     }
 }
 
@@ -165,7 +165,7 @@ public enum TransportCapability: Equatable, Codable, Sendable {
                 TransportCapabilityEvidence(lane: lane, reason: .fastRelayTcpFallback)
             )
         case .webSocketTcp:
-            return .orderedReliableMedia(
+            return .controlOnly(
                 TransportCapabilityEvidence(lane: lane, reason: .webSocketFallback)
             )
         }
@@ -197,8 +197,8 @@ public enum TransportCapability: Equatable, Codable, Sendable {
                     OrderedReliableMediaEvidence(path: .fastRelay, reason: .fastRelayTcpFallback)
                 )
             case .webSocketTcp:
-                return .orderedReliableMedia(
-                    OrderedReliableMediaEvidence(path: .relayWebSocket, reason: .webSocketFallback)
+                return .controlReliable(
+                    ControlReliableEvidence(path: .relayWebSocket, reason: .backendControlPlane)
                 )
             }
         case .orderedReliableMedia(let evidence):
@@ -216,8 +216,8 @@ public enum TransportCapability: Equatable, Codable, Sendable {
                     OrderedReliableMediaEvidence(path: .fastRelay, reason: .fastRelayTcpFallback)
                 )
             case .webSocketTcp:
-                return .orderedReliableMedia(
-                    OrderedReliableMediaEvidence(path: .relayWebSocket, reason: .webSocketFallback)
+                return .controlReliable(
+                    ControlReliableEvidence(path: .relayWebSocket, reason: .backendControlPlane)
                 )
             }
         case .controlOnly:
@@ -272,6 +272,236 @@ public struct TransportLaneFailure: Equatable, Codable, Sendable {
     }
 }
 
+public struct MediaEpochID: Equatable, Hashable, Codable, Sendable {
+    public let channelID: EngineChannelID
+    public let senderDeviceID: EngineDeviceID
+    public let receiverDeviceID: EngineDeviceID
+    public let transmitID: EngineTransmitID
+
+    public init(
+        channelID: EngineChannelID,
+        senderDeviceID: EngineDeviceID,
+        receiverDeviceID: EngineDeviceID,
+        transmitID: EngineTransmitID
+    ) {
+        self.channelID = channelID
+        self.senderDeviceID = senderDeviceID
+        self.receiverDeviceID = receiverDeviceID
+        self.transmitID = transmitID
+    }
+}
+
+public enum MediaLaneState: Equatable, Codable, Sendable {
+    case unavailable(reason: TransportUnavailableReason, generation: UInt64)
+    case warming(attemptID: EngineAttemptID, generation: UInt64)
+    case available(proof: TransportCapability, generation: UInt64)
+    case failed(reason: TransportUnavailableReason, generation: UInt64)
+
+    public var generation: UInt64 {
+        switch self {
+        case .unavailable(_, let generation),
+             .warming(_, let generation),
+             .available(_, let generation),
+             .failed(_, let generation):
+            return generation
+        }
+    }
+
+    public var isMediaViable: Bool {
+        switch self {
+        case .available(let proof, _):
+            return proof.isMediaViable
+        case .unavailable, .warming, .failed:
+            return false
+        }
+    }
+}
+
+public struct MediaLaneAvailabilityMap: Equatable, Codable, Sendable {
+    public private(set) var states: [TransportLane: MediaLaneState]
+
+    public init(states: [TransportLane: MediaLaneState] = [:]) {
+        self.states = states
+    }
+
+    @discardableResult
+    public mutating func join(_ state: MediaLaneState, for lane: TransportLane) -> Bool {
+        if let current = states[lane], current.generation > state.generation {
+            return false
+        }
+        states[lane] = state
+        return true
+    }
+
+    public func state(for lane: TransportLane) -> MediaLaneState? {
+        states[lane]
+    }
+
+    public var viableLanes: [TransportLane] {
+        TransportLane.priorityOrder.filter { states[$0]?.isMediaViable == true }
+    }
+}
+
+public enum MediaDeliveryProof: Equatable, Codable, Sendable {
+    case firstAudioQueued(frameIndex: UInt64?)
+    case playbackAck(frameIndex: UInt64?, transport: TransportLane)
+    case receiveAccepted(frameIndex: UInt64?, transport: TransportLane)
+}
+
+public struct ProvenMediaLane: Equatable, Codable, Sendable {
+    public let lane: TransportLane
+    public let proof: MediaDeliveryProof
+
+    public init(lane: TransportLane, proof: MediaDeliveryProof) {
+        self.lane = lane
+        self.proof = proof
+    }
+}
+
+public enum MediaEpochRescueState: Equatable, Codable, Sendable {
+    case none(primary: TransportLane)
+    case available(primary: TransportLane, rescue: TransportLane)
+    case attempting(primary: TransportLane, rescue: TransportLane, reason: TransportUnavailableReason)
+    case rescued(primary: TransportLane, rescue: TransportLane)
+    case broken(reason: TransportUnavailableReason)
+
+    public var primaryLane: TransportLane? {
+        switch self {
+        case .none(let primary),
+             .available(let primary, _),
+             .attempting(let primary, _, _),
+             .rescued(let primary, _):
+            return primary
+        case .broken:
+            return nil
+        }
+    }
+
+    public var rescueLane: TransportLane? {
+        switch self {
+        case .available(_, let rescue),
+             .attempting(_, let rescue, _),
+             .rescued(_, let rescue):
+            return rescue
+        case .none, .broken:
+            return nil
+        }
+    }
+
+    public var plannedLanes: [TransportLane] {
+        switch self {
+        case .none(let primary):
+            return [primary]
+        case .available(let primary, let rescue),
+             .attempting(let primary, let rescue, _),
+             .rescued(let primary, let rescue):
+            return [primary, rescue]
+        case .broken:
+            return []
+        }
+    }
+
+    public var activeAttemptLanes: [TransportLane] {
+        switch self {
+        case .none(let primary), .available(let primary, _):
+            return [primary]
+        case .attempting(_, let rescue, _), .rescued(_, let rescue):
+            return [rescue]
+        case .broken:
+            return []
+        }
+    }
+}
+
+public enum FrameAdmission: Equatable, Codable, Sendable {
+    case accepted
+    case duplicate
+    case late
+}
+
+public struct FrameDedupeWindow: Equatable, Codable, Sendable {
+    public let capacity: UInt64
+    public private(set) var baseFrame: UInt64
+    public private(set) var seenOffsets: Set<UInt64>
+    public private(set) var maxSeenFrame: UInt64?
+
+    public init(
+        capacity: UInt64 = 512,
+        baseFrame: UInt64 = 0,
+        seenOffsets: Set<UInt64> = [],
+        maxSeenFrame: UInt64? = nil
+    ) {
+        self.capacity = max(1, capacity)
+        self.baseFrame = baseFrame
+        self.seenOffsets = seenOffsets
+        self.maxSeenFrame = maxSeenFrame
+    }
+
+    @discardableResult
+    public mutating func admit(frameIndex: UInt64) -> FrameAdmission {
+        if frameIndex < baseFrame {
+            return .late
+        }
+        if frameIndex >= baseFrame + capacity {
+            let newBase = frameIndex - capacity + 1
+            seenOffsets = Set(seenOffsets.compactMap { offset in
+                let absolute = baseFrame + offset
+                return absolute >= newBase ? absolute - newBase : nil
+            })
+            baseFrame = newBase
+        }
+        let offset = frameIndex - baseFrame
+        guard seenOffsets.insert(offset).inserted else {
+            return .duplicate
+        }
+        maxSeenFrame = max(maxSeenFrame ?? frameIndex, frameIndex)
+        return .accepted
+    }
+}
+
+public struct MediaEpochDeliveryState: Equatable, Codable, Sendable {
+    public let epochID: MediaEpochID
+    public var activeLane: ProvenMediaLane?
+    public var preferredLane: TransportLane?
+    public var availableLanes: MediaLaneAvailabilityMap
+    public var rescueState: MediaEpochRescueState
+    public var receiveWindow: FrameDedupeWindow
+
+    public init(
+        epochID: MediaEpochID,
+        activeLane: ProvenMediaLane? = nil,
+        preferredLane: TransportLane? = nil,
+        availableLanes: MediaLaneAvailabilityMap = MediaLaneAvailabilityMap(),
+        rescueState: MediaEpochRescueState = .broken(reason: .noRoute),
+        receiveWindow: FrameDedupeWindow = FrameDedupeWindow()
+    ) {
+        self.epochID = epochID
+        self.activeLane = activeLane
+        self.preferredLane = preferredLane
+        self.availableLanes = availableLanes
+        self.rescueState = rescueState
+        self.receiveWindow = receiveWindow
+    }
+
+    public mutating func markAvailable(_ availability: TransportLaneAvailability) -> Bool {
+        availableLanes.join(
+            .available(proof: availability.capability, generation: availability.networkPathGeneration),
+            for: availability.lane
+        )
+    }
+
+    public mutating func markFailed(_ failure: TransportLaneFailure) -> Bool {
+        availableLanes.join(
+            .failed(reason: failure.reason, generation: failure.networkPathGeneration),
+            for: failure.lane
+        )
+    }
+
+    public mutating func proveActiveLane(_ lane: TransportLane, proof: MediaDeliveryProof) {
+        activeLane = ProvenMediaLane(lane: lane, proof: proof)
+    }
+}
+
 public struct TransportSelection: Equatable, Codable, Sendable {
     public var currentLane: TransportLane?
     public var bestViableLane: TransportLane?
@@ -281,9 +511,9 @@ public struct TransportSelection: Equatable, Codable, Sendable {
     public var laneCapabilities: [TransportLaneStatus]
 
     public init(
-        currentLane: TransportLane? = .webSocketTcp,
-        bestViableLane: TransportLane? = .webSocketTcp,
-        fallbackLane: TransportLane? = .webSocketTcp,
+        currentLane: TransportLane? = nil,
+        bestViableLane: TransportLane? = nil,
+        fallbackLane: TransportLane? = nil,
         upgradeTarget: TransportLane? = nil,
         networkPathGeneration: UInt64 = 0,
         laneCapabilities: [TransportLaneStatus] = [
@@ -320,7 +550,7 @@ public struct TransportSelection: Equatable, Codable, Sendable {
         }
         self.init(
             currentLane: lane,
-            bestViableLane: lane ?? .webSocketTcp,
+            bestViableLane: lane,
             fallbackLane: TransportSelection.fallbackLane(below: lane, statuses: statuses),
             upgradeTarget: nil,
             networkPathGeneration: networkPathGeneration,
@@ -390,7 +620,7 @@ public struct TransportSelection: Equatable, Codable, Sendable {
         }
     }
 
-    private mutating func reconcile(activeMedia _: Bool) {
+    private mutating func reconcile(activeMedia: Bool) {
         bestViableLane = selectBestViableLane()
         if let currentLane, !capability(for: currentLane).isMediaViable {
             self.currentLane = bestViableLane
@@ -399,6 +629,16 @@ public struct TransportSelection: Equatable, Codable, Sendable {
             currentLane = bestViableLane
         }
         fallbackLane = TransportSelection.fallbackLane(below: currentLane, statuses: laneCapabilities)
+        guard !activeMedia else {
+            if let currentLane,
+               let bestViableLane,
+               bestViableLane.priority > currentLane.priority {
+                upgradeTarget = bestViableLane
+            } else {
+                upgradeTarget = nil
+            }
+            return
+        }
         if let currentLane,
            let bestViableLane,
            bestViableLane.priority > currentLane.priority {
@@ -457,8 +697,8 @@ public enum EngineMediaTransportCapability: Equatable, Codable, Sendable {
                 UnorderedPacketMediaEvidence(path: path, reason: .fastRelayPacketRelay)
             )
         case .relayWebSocket:
-            return .orderedReliableMedia(
-                OrderedReliableMediaEvidence(path: path, reason: .webSocketFallback)
+            return .controlReliable(
+                ControlReliableEvidence(path: path, reason: .backendControlPlane)
             )
         }
     }
@@ -1369,10 +1609,6 @@ public struct EngineMediaPlayoutState: Equatable, Codable, Sendable {
     }
 
     private func shouldDropOrderedBacklog(_ chunk: EngineAudioChunk) -> Bool {
-        if case .orderedReliableMedia(let evidence) = chunk.effectiveMediaCapability,
-           evidence.path == .relayWebSocket {
-            return false
-        }
         guard let lastSequence = lastScheduledSequence,
               let lastReceivedAtTick = lastScheduledReceivedAtTick,
               let receivedAtTick = chunk.receivedAtTick,
@@ -1448,6 +1684,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
     public internal(set) var receive: EngineReceivePhase
     public internal(set) var transport: EngineTransportPhase
     public internal(set) var transportSelection: TransportSelection
+    public internal(set) var mediaEpochDelivery: MediaEpochDeliveryState?
     public internal(set) var lifecycle: EngineApplicationState
     public internal(set) var pttAudio: EnginePTTAudioActivationState
     public internal(set) var audioOutputPreference: EngineAudioOutputPreference
@@ -1461,6 +1698,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
         receive: EngineReceivePhase = .idle,
         transport: EngineTransportPhase = .relayWebSocket(RelayWebSocketEvidence()),
         transportSelection: TransportSelection? = nil,
+        mediaEpochDelivery: MediaEpochDeliveryState? = nil,
         lifecycle: EngineApplicationState = .active,
         pttAudio: EnginePTTAudioActivationState = .inactive,
         audioOutputPreference: EngineAudioOutputPreference = .speaker,
@@ -1473,6 +1711,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
         self.receive = receive
         self.transport = transport
         self.transportSelection = transportSelection ?? TransportSelection(legacyPhase: transport)
+        self.mediaEpochDelivery = mediaEpochDelivery
         self.lifecycle = lifecycle
         self.pttAudio = pttAudio
         self.audioOutputPreference = audioOutputPreference
@@ -1487,6 +1726,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
         case receive
         case transport
         case transportSelection
+        case mediaEpochDelivery
         case lifecycle
         case pttAudio
         case audioOutputPreference
@@ -1506,6 +1746,10 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
             TransportSelection.self,
             forKey: .transportSelection
         ) ?? TransportSelection(legacyPhase: transport)
+        let mediaEpochDelivery = try container.decodeIfPresent(
+            MediaEpochDeliveryState.self,
+            forKey: .mediaEpochDelivery
+        )
         let lifecycle = try container.decodeIfPresent(EngineApplicationState.self, forKey: .lifecycle) ?? .active
         let pttAudio = try container.decodeIfPresent(EnginePTTAudioActivationState.self, forKey: .pttAudio)
             ?? .inactive
@@ -1525,6 +1769,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
             receive: receive,
             transport: transport,
             transportSelection: transportSelection,
+            mediaEpochDelivery: mediaEpochDelivery,
             lifecycle: lifecycle,
             pttAudio: pttAudio,
             audioOutputPreference: audioOutputPreference,
@@ -1541,6 +1786,7 @@ public struct TurboEngineState: Equatable, Codable, Sendable {
         try container.encode(receive, forKey: .receive)
         try container.encode(transport, forKey: .transport)
         try container.encode(transportSelection, forKey: .transportSelection)
+        try container.encodeIfPresent(mediaEpochDelivery, forKey: .mediaEpochDelivery)
         try container.encode(lifecycle, forKey: .lifecycle)
         try container.encode(pttAudio, forKey: .pttAudio)
         try container.encode(audioOutputPreference, forKey: .audioOutputPreference)
@@ -1555,6 +1801,7 @@ public struct TurboEngineSnapshot: Equatable, Codable, Sendable {
     public let receive: EngineReceivePhase
     public let transport: EngineTransportPhase
     public let transportSelection: TransportSelection
+    public let mediaEpochDelivery: MediaEpochDeliveryState?
     public let lifecycle: EngineApplicationState
     public let pttAudio: EnginePTTAudioActivationState
     public let localTalkCapability: EngineCapability<TransmitCapabilityEvidence>
@@ -1666,7 +1913,6 @@ public enum BackendEngineEffect: Equatable, Codable, Sendable {
     case connectWebSocket
     case beginTransmit(EngineChannelID)
     case endTransmit(EngineChannelID, EngineTransmitID)
-    case sendAudio(EngineSignalEnvelope)
     case fetchChannelState(EngineChannelID)
 }
 
@@ -1679,6 +1925,7 @@ public enum PTTEngineEffect: Equatable, Codable, Sendable {
 public enum MediaEngineEffect: Equatable, Codable, Sendable {
     case startCapture(TransmitEpoch)
     case stopCapture(TransmitEpoch)
+    case sendLiveAudio(EngineAudioChunk)
     case schedulePlayback(EngineAudioChunk)
     case dropChunk(EngineAudioChunk, MediaDropReason)
 }
@@ -1746,31 +1993,6 @@ public struct EngineControlResponse: Equatable, Codable, Sendable {
     }
 }
 
-public enum EngineSignalKind: String, Codable, Sendable {
-    case audioChunk = "audio-chunk"
-}
-
-public struct EngineSignalEnvelope: Equatable, Codable, Sendable {
-    public let type: EngineSignalKind
-    public let channelID: EngineChannelID
-    public let fromDeviceID: EngineDeviceID
-    public let toDeviceID: EngineDeviceID
-    public let payloadDigest: EnginePayloadDigest
-    public init(
-        type: EngineSignalKind,
-        channelID: EngineChannelID,
-        fromDeviceID: EngineDeviceID,
-        toDeviceID: EngineDeviceID,
-        payloadDigest: EnginePayloadDigest
-    ) {
-        self.type = type
-        self.channelID = channelID
-        self.fromDeviceID = fromDeviceID
-        self.toDeviceID = toDeviceID
-        self.payloadDigest = payloadDigest
-    }
-}
-
 public enum EngineChannelStatus: Equatable, Codable, Sendable {
     case idle
     case waitingForPeer
@@ -1794,7 +2016,6 @@ public protocol EngineBackendPort {
     func reset(handle: String) async throws
     func connectWebSocket() async throws
     func sendControlCommand(_ command: EngineControlCommand) async throws -> EngineControlResponse
-    func sendSignal(_ signal: EngineSignalEnvelope) async throws
     func fetchChannelState(_ channelID: EngineChannelID) async throws -> EngineChannelState
 }
 
@@ -2018,6 +2239,7 @@ public struct TurboEngine: Sendable {
             receive: state.receive,
             transport: state.transport,
             transportSelection: state.transportSelection,
+            mediaEpochDelivery: state.mediaEpochDelivery,
             lifecycle: state.lifecycle,
             pttAudio: state.pttAudio,
             localTalkCapability: localTalkCapability(for: state),
@@ -2103,6 +2325,71 @@ private enum EngineReducer {
                     message: message,
                     metadata: metadata
                 )
+            )
+        }
+
+        func mediaLaneAvailabilityMap(
+            from selection: TransportSelection
+        ) -> MediaLaneAvailabilityMap {
+            var map = MediaLaneAvailabilityMap()
+            for status in selection.laneCapabilities {
+                let state: MediaLaneState = status.capability.isMediaViable
+                    ? .available(proof: status.capability, generation: selection.networkPathGeneration)
+                    : .unavailable(reason: .noRoute, generation: selection.networkPathGeneration)
+                _ = map.join(state, for: status.lane)
+            }
+            return map
+        }
+
+        func rescueState(
+            for selection: TransportSelection
+        ) -> MediaEpochRescueState {
+            guard let primary = selection.currentLane ?? selection.bestViableLane else {
+                return .broken(reason: .noRoute)
+            }
+            guard let fallback = selection.fallbackLane,
+                  fallback != primary else {
+                return .none(primary: primary)
+            }
+            return .available(
+                primary: primary,
+                rescue: fallback
+            )
+        }
+
+        func makeMediaEpochDelivery(
+            epoch: TransmitEpoch,
+            localDeviceID: EngineDeviceID,
+            transportSelection: TransportSelection
+        ) -> MediaEpochDeliveryState {
+            MediaEpochDeliveryState(
+                epochID: MediaEpochID(
+                    channelID: epoch.conversation.channelID,
+                    senderDeviceID: localDeviceID,
+                    receiverDeviceID: epoch.conversation.peerDeviceID ?? EngineDeviceID("unknown-peer-device"),
+                    transmitID: epoch.transmitID
+                ),
+                preferredLane: transportSelection.bestViableLane,
+                availableLanes: mediaLaneAvailabilityMap(from: transportSelection),
+                rescueState: rescueState(for: transportSelection)
+            )
+        }
+
+        func makeMediaEpochDelivery(
+            prepare: RemoteTransmitPrepareEvidence,
+            localDeviceID: EngineDeviceID,
+            transportSelection: TransportSelection
+        ) -> MediaEpochDeliveryState {
+            MediaEpochDeliveryState(
+                epochID: MediaEpochID(
+                    channelID: prepare.channelID,
+                    senderDeviceID: prepare.senderDeviceID,
+                    receiverDeviceID: localDeviceID,
+                    transmitID: prepare.transmitID
+                ),
+                preferredLane: transportSelection.bestViableLane,
+                availableLanes: mediaLaneAvailabilityMap(from: transportSelection),
+                rescueState: rescueState(for: transportSelection)
             )
         }
 
@@ -2218,6 +2505,7 @@ private enum EngineReducer {
             switch next.transmit {
             case .active(let epoch):
                 next.transmit = .stopping(TransmitStopAttempt(epoch: epoch, reason: .userReleased))
+                next.mediaEpochDelivery = nil
                 effects.append(.media(.stopCapture(epoch)))
                 effects.append(.backend(.endTransmit(epoch.conversation.channelID, epoch.transmitID)))
                 effects.append(.ptt(.requestStopTransmit(epoch.conversation.channelID)))
@@ -2229,10 +2517,12 @@ private enum EngineReducer {
                         startedAtTick: attempt.systemStartedAtTick ?? next.tick
                     )
                     next.transmit = .stopping(TransmitStopAttempt(epoch: epoch, reason: .userReleased))
+                    next.mediaEpochDelivery = nil
                     effects.append(.backend(.endTransmit(epoch.conversation.channelID, epoch.transmitID)))
                     effects.append(.ptt(.requestStopTransmit(epoch.conversation.channelID)))
                 } else {
                     next.transmit = .idle
+                    next.mediaEpochDelivery = nil
                     next.pttAudio = .inactive
                     effects.append(.ptt(.requestStopTransmit(attempt.conversation.channelID)))
                 }
@@ -2329,6 +2619,11 @@ private enum EngineReducer {
                 startedAtTick: updatedAttempt.systemStartedAtTick ?? next.tick
             )
             next.transmit = .active(epoch)
+            next.mediaEpochDelivery = makeMediaEpochDelivery(
+                epoch: epoch,
+                localDeviceID: next.localDeviceID,
+                transportSelection: next.transportSelection
+            )
             next.pttAudio = .active(
                 PTTActivationEvidence(channelID: updatedAttempt.conversation.channelID, activatedAtTick: next.tick)
             )
@@ -2355,6 +2650,11 @@ private enum EngineReducer {
                     startedAtTick: updatedAttempt.systemStartedAtTick ?? next.tick
                 )
                 next.transmit = .active(epoch)
+                next.mediaEpochDelivery = makeMediaEpochDelivery(
+                    epoch: epoch,
+                    localDeviceID: next.localDeviceID,
+                    transportSelection: next.transportSelection
+                )
                 record(
                     "Activated transmit after backend lease and system transmit begin",
                     ["transmitID": transmitID.rawValue]
@@ -2517,10 +2817,16 @@ private enum EngineReducer {
                 break
             }
             next.transmit = .idle
+            next.mediaEpochDelivery = nil
             next.pttAudio = .inactive
 
         case .event(.backend(.remoteTransmitStarted(let prepare))):
             next.receive = .prepared(prepare)
+            next.mediaEpochDelivery = makeMediaEpochDelivery(
+                prepare: prepare,
+                localDeviceID: next.localDeviceID,
+                transportSelection: next.transportSelection
+            )
 
         case .event(.backend(.remoteTransmitStopped(let transmitID))):
             switch next.receive {
@@ -2528,6 +2834,7 @@ private enum EngineReducer {
                 next.receive = .draining(PlaybackDrain(epoch: epoch, stoppedAtTick: next.tick))
             case .prepared(let prepare) where prepare.transmitID == transmitID:
                 next.receive = .idle
+                next.mediaEpochDelivery = nil
             case .awaitingPTTActivation(let buffered) where buffered.prepare.transmitID == transmitID:
                 next.receive = .draining(
                     PlaybackDrain(
@@ -2553,6 +2860,11 @@ private enum EngineReducer {
             }
 
         case .event(.ptt(.incomingPush(let prepare))):
+            next.mediaEpochDelivery = makeMediaEpochDelivery(
+                prepare: prepare,
+                localDeviceID: next.localDeviceID,
+                transportSelection: next.transportSelection
+            )
             next.receive = .awaitingPTTActivation(
                 WakeBufferedReceive(
                     prepare: prepare,
@@ -2619,28 +2931,58 @@ private enum EngineReducer {
                 )
                 break
             }
-            effects.append(
-                .backend(
-                    .sendAudio(
-                        EngineSignalEnvelope(
-                            type: .audioChunk,
-                            channelID: epoch.conversation.channelID,
-                            fromDeviceID: chunk.fromDeviceID,
-                            toDeviceID: chunk.toDeviceID,
-                            payloadDigest: chunk.payloadDigest
-                        )
-                    )
-                )
+            let capturedLane = chunk.transport.defaultLane
+            next.mediaEpochDelivery?.proveActiveLane(
+                capturedLane,
+                proof: .firstAudioQueued(frameIndex: UInt64(chunk.sequence.rawValue))
             )
+            effects.append(.media(.sendLiveAudio(chunk)))
 
         case .event(.media(.remoteAudioReceived(let chunk))):
-            receiveRemoteAudioChunk(
-                chunk,
-                state: &next,
-                effects: &effects,
-                record: record,
-                invariant: invariant
-            )
+            var shouldReceiveChunk = true
+            if next.mediaEpochDelivery?.epochID.transmitID == chunk.transmitID {
+                let frameIndex = UInt64(chunk.sequence.rawValue)
+                switch next.mediaEpochDelivery?.receiveWindow.admit(frameIndex: frameIndex) {
+                case .accepted:
+                    next.mediaEpochDelivery?.proveActiveLane(
+                        chunk.transport.defaultLane,
+                        proof: .receiveAccepted(frameIndex: frameIndex, transport: chunk.transport.defaultLane)
+                    )
+                case .duplicate:
+                    shouldReceiveChunk = false
+                    record(
+                        "Deduplicated media epoch frame before playback",
+                        [
+                            "transmitID": chunk.transmitID.rawValue,
+                            "sequence": String(chunk.sequence.rawValue),
+                            "transport": chunk.transport.rawValue,
+                        ]
+                    )
+                    effects.append(.media(.dropChunk(chunk, .duplicate)))
+                case .late:
+                    shouldReceiveChunk = false
+                    record(
+                        "Dropped late media epoch frame before receive admission",
+                        [
+                            "transmitID": chunk.transmitID.rawValue,
+                            "sequence": String(chunk.sequence.rawValue),
+                            "transport": chunk.transport.rawValue,
+                        ]
+                    )
+                    effects.append(.media(.dropChunk(chunk, .orderedBacklog)))
+                case .none:
+                    break
+                }
+            }
+            if shouldReceiveChunk {
+                receiveRemoteAudioChunk(
+                    chunk,
+                    state: &next,
+                    effects: &effects,
+                    record: record,
+                    invariant: invariant
+                )
+            }
 
         case .event(.media(.playoutDeadlineElapsed(let transmitID, let sequence))):
             if case .receiving(var epoch) = next.receive,
@@ -2661,6 +3003,7 @@ private enum EngineReducer {
         case .event(.media(.playbackDrained(let transmitID))):
             if case .draining(let drain) = next.receive, drain.epoch.prepare.transmitID == transmitID {
                 next.receive = .idle
+                next.mediaEpochDelivery = nil
             }
 
         case .event(.media(.playbackFailed(let chunk, let message))):
@@ -2713,11 +3056,14 @@ private enum EngineReducer {
                 ),
                 activeMedia: activeMediaIsLive(next)
             )
-            let fallback = next.transportSelection.currentLane?.legacyPath ?? .relayWebSocket
-            next.transport = .recovering(
-                TransportRecoveryEvidence(previous: path, fallback: fallback, reason: .pathFailed(reason))
-            )
-            effects.append(.transport(.fallBack(to: fallback, reason: .pathFailed(reason))))
+            if let fallback = next.transportSelection.currentLane?.legacyPath {
+                next.transport = .recovering(
+                    TransportRecoveryEvidence(previous: path, fallback: fallback, reason: .pathFailed(reason))
+                )
+                effects.append(.transport(.fallBack(to: fallback, reason: .pathFailed(reason))))
+            } else {
+                next.transport = .unavailable(.noRoute)
+            }
 
         case .event(.transport(.fallbackSelected(let fallback))):
             switch fallback {
@@ -2742,6 +3088,9 @@ private enum EngineReducer {
                 availability,
                 activeMedia: activeMediaIsLive(next)
             )
+            if activeMediaIsLive(next) {
+                _ = next.mediaEpochDelivery?.markAvailable(availability)
+            }
             if accepted {
                 next.transport = legacyTransportPhase(for: next.transportSelection.currentLane, state: next)
             } else {
@@ -2760,16 +3109,22 @@ private enum EngineReducer {
                 failure,
                 activeMedia: activeMediaIsLive(next)
             )
+            if activeMediaIsLive(next) {
+                _ = next.mediaEpochDelivery?.markFailed(failure)
+            }
             if accepted {
-                let fallback = next.transportSelection.currentLane?.legacyPath ?? .relayWebSocket
-                next.transport = .recovering(
-                    TransportRecoveryEvidence(
-                        previous: failure.lane.legacyPath,
-                        fallback: fallback,
-                        reason: .pathFailed(failure.reason)
+                if let fallback = next.transportSelection.currentLane?.legacyPath {
+                    next.transport = .recovering(
+                        TransportRecoveryEvidence(
+                            previous: failure.lane.legacyPath,
+                            fallback: fallback,
+                            reason: .pathFailed(failure.reason)
+                        )
                     )
-                )
-                effects.append(.transport(.fallBack(to: fallback, reason: .pathFailed(failure.reason))))
+                    effects.append(.transport(.fallBack(to: fallback, reason: .pathFailed(failure.reason))))
+                } else {
+                    next.transport = .unavailable(.noRoute)
+                }
             } else {
                 record(
                     "Ignored stale transport lane failure",

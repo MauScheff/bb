@@ -734,3 +734,24 @@ func makePresenceHeartbeatResponseData(status: String) -> Data {
         """.utf8
     )
 }
+
+func makeRuntimeControlFrameResponseData(
+    type: String = "control-command-response",
+    transport: String = "runtime-quic-control",
+    body: Data
+) -> Data {
+    let bodyString = String(data: body, encoding: .utf8) ?? "{}"
+    return Data(
+        """
+        {
+          "type": "\(type)",
+          "protocolVersion": "beep-runtime-control-v1",
+          "requestId": "test-request",
+          "status": "ok",
+          "transport": "\(transport)",
+          "persistentTransport": true,
+          "body": \(bodyString)
+        }
+        """.utf8
+    )
+}

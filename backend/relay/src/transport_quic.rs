@@ -6,7 +6,11 @@ pub use relay_protocol::transport_quic::{
     QUIC_MAX_UDP_PAYLOAD_SIZE, QUIC_OUT_BUF_LENGTH, QUIC_STREAM_RECV_BUF_LENGTH,
 };
 
-pub fn server_config(cert_pem: &Path, key_pem: &Path) -> Result<quiche::Config> {
+pub fn server_config(
+    cert_pem: &Path,
+    key_pem: &Path,
+    active_migration_enabled: bool,
+) -> Result<quiche::Config> {
     let mut quic_config =
         quiche::Config::new(quiche::PROTOCOL_VERSION).context("invalid QUIC version")?;
     quic_config
@@ -27,9 +31,13 @@ pub fn server_config(cert_pem: &Path, key_pem: &Path) -> Result<quiche::Config> 
     quic_config.set_initial_max_stream_data_uni(1_000_000);
     quic_config.set_initial_max_streams_bidi(100);
     quic_config.set_initial_max_streams_uni(100);
-    quic_config.set_disable_active_migration(true);
+    quic_config.set_disable_active_migration(disable_active_migration(active_migration_enabled));
     quic_config.enable_dgram(true, QUIC_DGRAM_QUEUE_LENGTH, QUIC_DGRAM_QUEUE_LENGTH);
     Ok(quic_config)
+}
+
+pub fn disable_active_migration(active_migration_enabled: bool) -> bool {
+    !active_migration_enabled
 }
 
 fn path_as_utf8<'a>(path: &'a Path, label: &str) -> Result<&'a str> {
@@ -53,5 +61,11 @@ mod tests {
     #[test]
     fn quic_alpn_is_stable() {
         assert_eq!(QUIC_ALPN, b"turbo-relay-v2");
+    }
+
+    #[test]
+    fn active_migration_config_maps_to_quiche_disable_flag() {
+        assert!(!disable_active_migration(true));
+        assert!(disable_active_migration(false));
     }
 }

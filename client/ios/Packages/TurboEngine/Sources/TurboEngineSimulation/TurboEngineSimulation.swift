@@ -154,7 +154,6 @@ public struct VirtualNetwork: Sendable {
 
 public actor InMemoryEngineBackendPort: EngineBackendPort {
     private var seededHandles: Set<String> = []
-    private var signals: [EngineSignalEnvelope] = []
 
     public init() {}
 
@@ -164,7 +163,6 @@ public actor InMemoryEngineBackendPort: EngineBackendPort {
 
     public func reset(handle: String) async throws {
         seededHandles.remove(handle)
-        signals.removeAll()
     }
 
     public func connectWebSocket() async throws {}
@@ -182,16 +180,8 @@ public actor InMemoryEngineBackendPort: EngineBackendPort {
         }
     }
 
-    public func sendSignal(_ signal: EngineSignalEnvelope) async throws {
-        signals.append(signal)
-    }
-
     public func fetchChannelState(_ channelID: EngineChannelID) async throws -> EngineChannelState {
         EngineChannelState(channelID: channelID, status: .ready)
-    }
-
-    public func sentSignals() async -> [EngineSignalEnvelope] {
-        signals
     }
 }
 
@@ -278,29 +268,6 @@ public final class LiveHTTPWebSocketEngineBackendPort: EngineBackendPort {
             )
             return EngineControlResponse(status: .accepted, channelID: requestedChannelID)
         }
-    }
-
-    public func sendSignal(_ signal: EngineSignalEnvelope) async throws {
-        guard let webSocket = webSockets.last else {
-            throw LiveBackendPortError.unavailable("live-local websocket is not connected")
-        }
-        let channelID = liveChannelID ?? signal.channelID
-        let fromDeviceID = liveDeviceID(forSynthetic: signal.fromDeviceID, fallback: deviceID)
-        let toDeviceID = liveDeviceID(forSynthetic: signal.toDeviceID, fallback: peerDeviceID ?? signal.toDeviceID)
-        let fromUserID = try liveUserID(forDeviceID: fromDeviceID)
-        let toUserID = try liveUserID(forDeviceID: toDeviceID)
-        let message = LiveSignalEnvelope(
-            type: signal.type.rawValue,
-            channelId: channelID.rawValue,
-            fromUserId: fromUserID,
-            fromDeviceId: fromDeviceID.rawValue,
-            toUserId: toUserID,
-            toDeviceId: toDeviceID.rawValue,
-            payload: signal.payloadDigest.rawValue
-        )
-        let data = try JSONEncoder().encode(message)
-        let text = String(decoding: data, as: UTF8.self)
-        try await webSocket.send(.string(text))
     }
 
     public func fetchChannelState(_ channelID: EngineChannelID) async throws -> EngineChannelState {
@@ -597,17 +564,8 @@ public final class LiveHTTPWebSocketEngineBackendPort: EngineBackendPort {
     }
 }
 
-public enum EngineSignalEffectPolicy: Sendable {
-    case requireDelivery
-    case ignoreUnsupportedLiveLocal
-}
-
 public struct EngineEffectDriver: Sendable {
-    public let signalPolicy: EngineSignalEffectPolicy
-
-    public init(signalPolicy: EngineSignalEffectPolicy = .requireDelivery) {
-        self.signalPolicy = signalPolicy
-    }
+    public init() {}
 
     public func events(
         for effects: [TurboEngineEffect],
@@ -642,13 +600,6 @@ public struct EngineEffectDriver: Sendable {
                     events.append(.backend(.stopTransmitAccepted(transmitID)))
                 case .rejected(let reason):
                     throw ScenarioError.backendRejected("end transmit rejected: \(reason)")
-                }
-
-            case .backend(.sendAudio(let signal)):
-                do {
-                    try await backend.sendSignal(signal)
-                } catch LiveBackendPortError.unsupported where signalPolicy == .ignoreUnsupportedLiveLocal {
-                    continue
                 }
 
             case .backend(.fetchChannelState(let channelID)):
@@ -784,8 +735,8 @@ public struct EngineScenarioRunner: Sendable {
             return directActiveNetworkMigrationFastRelayReprobe()
         case "fast_relay_quic_network_migration_preserves":
             return fastRelayQuicNetworkMigrationPreserves()
-        case "fast_relay_quic_failure_tcp_then_websocket":
-            return fastRelayQuicFailureTcpThenWebSocket()
+        case "fast_relay_quic_failure_tcp_then_no_media_route":
+            return fastRelayQuicFailureTcpThenNoMediaRoute()
         case "wake_token_revocation_clears_active_transmit":
             return wakeTokenRevocationClearsActiveTransmit()
         case "active_transmit_membership_loss_clears_transmit":
@@ -801,9 +752,9 @@ public struct EngineScenarioRunner: Sendable {
                 fallback: .fastRelay,
                 reason: .quicBlocked
             )
-        case "fast_relay_unavailable_websocket_fallback":
+        case "fast_relay_unavailable_no_media_route":
             return transportFallback(
-                name: "fast_relay_unavailable_websocket_fallback",
+                name: "fast_relay_unavailable_no_media_route",
                 failedPath: .fastRelay,
                 fallback: .relayWebSocket,
                 reason: .relayUnavailable
@@ -812,7 +763,7 @@ public struct EngineScenarioRunner: Sendable {
             return transportFallback(
                 name: "direct_quic_send_failure_relay_fallback",
                 failedPath: .directQuic,
-                fallback: .relayWebSocket,
+                fallback: .fastRelay,
                 reason: .peerUnavailable
             )
         case "duplicate_reordered_chunks":
@@ -826,16 +777,6 @@ public struct EngineScenarioRunner: Sendable {
             return packetMediaLossReorderDuplicate(
                 name: "fast_relay_packet_loss_reorder_duplicate",
                 transport: .fastRelay
-            )
-        case "websocket_ordered_burst_drop":
-            return orderedBurstDrop(
-                name: "websocket_ordered_burst_drop",
-                transport: .relayWebSocket,
-                capability: .orderedReliableMedia(
-                    OrderedReliableMediaEvidence(path: .relayWebSocket, reason: .webSocketFallback)
-                ),
-                expectedScheduledCount: 8,
-                orderedBacklogDropped: false
             )
         case "fast_relay_tcp_ordered_burst_drop":
             return orderedBurstDrop(
@@ -875,7 +816,7 @@ public struct EngineScenarioRunner: Sendable {
     ) async throws -> EngineScenarioReport {
         let config = EngineFuzzConfig(seed: seed, index: index)
         let scenarioBackend: any EngineBackendPort = backend ?? InMemoryEngineBackendPort()
-        let effectDriver = EngineEffectDriver(signalPolicy: .requireDelivery)
+        let effectDriver = EngineEffectDriver()
         var ledger = EngineFuzzLedger(expectedInvariantIDs: config.expectedInvariantIDs)
         var sender = TurboEngine(localDeviceID: "sender-device")
         var receiver = TurboEngine(localDeviceID: "receiver-device")
@@ -1072,7 +1013,7 @@ public struct EngineScenarioRunner: Sendable {
         backend: (any EngineBackendPort)?
     ) async throws -> EngineScenarioReport {
         let scenarioBackend: any EngineBackendPort = backend ?? InMemoryEngineBackendPort()
-        let effectDriver = EngineEffectDriver(signalPolicy: .requireDelivery)
+        let effectDriver = EngineEffectDriver()
         try await scenarioBackend.seed(handle: "@avery")
         try await scenarioBackend.seed(handle: "@blake")
         try await scenarioBackend.connectWebSocket()
@@ -1252,7 +1193,7 @@ public struct EngineScenarioRunner: Sendable {
         )
     }
 
-    private func fastRelayQuicFailureTcpThenWebSocket() -> EngineScenarioReport {
+    private func fastRelayQuicFailureTcpThenNoMediaRoute() -> EngineScenarioReport {
         var sender = TurboEngine(localDeviceID: "sender-device")
         collect(&sender, .event(.backend(.joined(joinedEvidence(transport: .fastRelay)))))
         collect(
@@ -1297,11 +1238,11 @@ public struct EngineScenarioRunner: Sendable {
         let snapshot = sender.snapshot
         let violations = EngineReducerSnapshot.inspect(snapshot).invariantIDs
         return EngineScenarioReport(
-            name: "fast_relay_quic_failure_tcp_then_websocket",
+            name: "fast_relay_quic_failure_tcp_then_no_media_route",
             passed: violations.isEmpty
                 && afterQuicFailure == .fastRelayTcp
-                && snapshot.transportSelection.currentLane == .webSocketTcp
-                && snapshot.transport.currentPath == .relayWebSocket,
+                && snapshot.transportSelection.currentLane == nil
+                && snapshot.transport.currentPath == nil,
             scheduledPlaybackCount: snapshot.scheduledPlaybackCount,
             invariantIDs: violations,
             notes: [
@@ -1799,8 +1740,8 @@ private struct EngineFuzzConfig: Sendable {
         var rng = SeededGenerator(seed: seed ^ (UInt64(index) &* 0x9E37_79B9_7F4A_7C15))
         reference = EngineFuzzCaseReference(seed: seed, index: index)
 
-        initialTransport = rng.pick([.relayWebSocket, .fastRelay, .directQuic])
-        deliveryTransport = rng.pick([initialTransport, .fastRelay, .relayWebSocket])
+        initialTransport = rng.pick([.fastRelay, .directQuic])
+        deliveryTransport = rng.pick([initialTransport, .fastRelay])
         beginOrdering = rng.pick([.backendFirst, .systemFirst, .backendThenSystemDuplicate])
         receiverLifecycle = rng.pick([.foreground, .background, .locked])
 
@@ -1840,8 +1781,8 @@ private struct EngineFuzzConfig: Sendable {
         idleNetworkMigration = rng.oneIn(3)
         activeNetworkMigration = rng.oneIn(2)
         networkInterface = rng.pick([.wifi, .cellular])
-        idleMigrationFallback = rng.pick([.relayWebSocket, .fastRelay])
-        activeMigrationFallback = rng.pick([.relayWebSocket, .fastRelay])
+        idleMigrationFallback = .fastRelay
+        activeMigrationFallback = .fastRelay
 
         pathFailureBeforeTransmit = rng.oneIn(4)
             ? EngineFuzzConfig.makePathFailure(rng: &rng, initial: initialTransport)
@@ -1920,25 +1861,13 @@ private struct EngineFuzzConfig: Sendable {
 
     private static func makePathFailure(
         rng: inout SeededGenerator,
-        initial: EngineTransportPath
+        initial _: EngineTransportPath
     ) -> EngineFuzzPathFailure {
-        let path = rng.pick([initial, .directQuic, .fastRelay])
-        switch path {
-        case .directQuic:
-            return EngineFuzzPathFailure(
-                path: path,
-                reason: rng.pick([.quicBlocked, .peerUnavailable, .noRoute]),
-                fallback: rng.pick([.fastRelay, .relayWebSocket])
-            )
-        case .fastRelay:
-            return EngineFuzzPathFailure(
-                path: path,
-                reason: rng.pick([.relayUnavailable, .peerUnavailable, .noRoute]),
-                fallback: .relayWebSocket
-            )
-        case .relayWebSocket:
-            return EngineFuzzPathFailure(path: path, reason: .websocketDisconnected, fallback: .relayWebSocket)
-        }
+        EngineFuzzPathFailure(
+            path: .directQuic,
+            reason: rng.pick([.quicBlocked, .peerUnavailable, .noRoute]),
+            fallback: .fastRelay
+        )
     }
 }
 

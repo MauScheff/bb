@@ -534,8 +534,8 @@ extension PTTViewModel {
                 OrderedReliableMediaEvidence(path: .fastRelay, reason: .fastRelayTcpFallback)
             )
         case .relayWebSocket:
-            return .orderedReliableMedia(
-                OrderedReliableMediaEvidence(path: .relayWebSocket, reason: .webSocketFallback)
+            return .controlReliable(
+                ControlReliableEvidence(path: .relayWebSocket, reason: .backendControlPlane)
             )
         }
     }
@@ -945,7 +945,7 @@ extension PTTViewModel {
 
     private func shouldSuppressUnexecutedEngineEffectDiagnostic(_ effect: TurboEngineEffect) -> Bool {
         switch effect {
-        case .backend(.sendAudio),
+        case .media(.sendLiveAudio),
              .media(.schedulePlayback),
              .media(.dropChunk):
             return true

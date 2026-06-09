@@ -1,12 +1,18 @@
 # Turbo
 
+Archived reference. This file describes the old `/Users/mau/Development/Turbo`
+shape and staging-era commands. Active BeepBeep work uses
+[`/Users/mau/Development/bb/README.md`](/Users/mau/Development/bb/README.md),
+[`/Users/mau/Development/bb/TOOLING.md`](/Users/mau/Development/bb/TOOLING.md),
+and the production API base URL `https://api.beepbeep.to`.
+
 Turbo is an iOS Push-to-Talk app backed by the BeepBeep control plane.
 
-The app owns Apple PushToTalk, audio, local projection, and user interaction surfaces. The active backend owns shared control-plane truth through a Rust runtime plus a pure Unison kernel: identity, devices, direct channels, Beeps, membership, readiness, wake targeting, websocket signaling, and Talk Turn ownership.
+The app owns Apple PushToTalk, audio, local projection, and user interaction surfaces. The active backend owns shared control-plane truth through a Rust runtime plus a pure Unison kernel: identity, devices, direct channels, Beeps, membership, readiness, wake targeting, runtime signaling, and Talk Turn ownership.
 
 The backend is the control plane, not the media plane.
 
-Active backend work lives under [`beepbeep/backend`](/Users/mau/Development/Turbo/beepbeep/backend). The canonical deployed base URL is `https://staging.beepbeep.to`.
+Active backend work lives under [`/Users/mau/Development/bb/backend`](/Users/mau/Development/bb/backend). The canonical deployed base URL is `https://api.beepbeep.to`.
 
 ## For Humans
 
@@ -63,9 +69,9 @@ Use [`TOOLING.md`](/Users/mau/Development/Turbo/TOOLING.md) for exact commands a
 | Protocol model checks | `just protocol-model-checks` |
 | Verify an existing deploy | `just postdeploy-check` |
 | Run the BeepBeep backend reliability gate | `just beepbeep-backend-gate` |
-| Run the staging BeepBeep backend gate | `just beepbeep-backend-staging-gate` |
+| Run the hosted BeepBeep backend gate | `just beepbeep-backend-production-gate` |
 | Check BeepBeep backend cutover readiness | `just beepbeep-backend-cutover-readiness` |
-| Staging-grade deploy and verify | `just deploy-staging-verified` |
+| Production preflight, deploy, and verify | `just deploy-production` |
 | Production preflight | `just production-preflight` |
 | Production deploy and verify | `just deploy-production` |
 
@@ -87,13 +93,13 @@ Use `just` for repeated workflows.
 Backend entrypoints:
 
 - `just beepbeep-backend-gate`: local Rust runtime plus Unison kernel reliability gate
-- `just beepbeep-backend-staging-gate`: staging backend reliability gate against `https://staging.beepbeep.to`
+- `just beepbeep-backend-production-gate`: production backend reliability gate against `https://api.beepbeep.to`
 - `just beepbeep-backend-cutover-readiness`: machine-readable readiness report for the canonical backend lane
 - `just serve-local-http`: local HTTP route checks
 - `just serve-local`: local websocket-capable backend for simulator scenarios
 - `just engine-scenario-local <scenario>`: headless engine scenario against `http://localhost:8090/s/turbo`
 - `just engine-fuzz-local <seed> <count>`: replayable live-local engine fuzzing against `http://localhost:8090/s/turbo`
-- `just deploy-staging-verified`: day-to-day verified deploy path
+- `just deploy-production`: strict production deploy plus hosted verification
 - `just production-preflight`: strict local proof gate before production
 - `just deploy-production`: strict production deploy plus hosted verification
 - `just postdeploy-check`: hosted verification after a deploy
@@ -103,7 +109,7 @@ Set `TurboBackendBaseURL` in [`Turbo/Info.plist`](/Users/mau/Development/Turbo/T
 - `http://localhost:8081/s/turbo` for local HTTP route checks
 - `http://localhost:8090/s/turbo` for local websocket-backed simulator scenario work
 - `http://<mac-lan-ip>:8081/s/turbo` for physical device against local HTTP
-- `https://staging.beepbeep.to` for the deployed backend
+- `https://api.beepbeep.to` for the deployed backend
 
 If local UI behavior looks impossible, restart the local backend and clear runtime state before drawing conclusions.
 

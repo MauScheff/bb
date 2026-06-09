@@ -531,6 +531,109 @@
       ]
     },
     {
+      "name": "media.epoch_active_lane_matches_delivery",
+      "invariantID": "media.epoch_active_lane_matches_delivery",
+      "kind": "invariant",
+      "scope": "local",
+      "owner": "engine",
+      "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift -> Turbo/PTTViewModel+Selection.swift",
+      "predicate": "During live transmit or receive, the displayed media lane must match accepted or ACKed audio for the current media epoch.",
+      "evidenceFields": [
+        "epochID",
+        "activeLane",
+        "preferredLane",
+        "proof",
+        "displayedLane",
+        "frameIndex",
+        "transport"
+      ]
+    },
+    {
+      "name": "media.no_live_audio_fanout",
+      "invariantID": "media.no_live_audio_fanout",
+      "kind": "invariant",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/OutboundAudioTransportPlan.swift -> Turbo/PTTViewModel+TransmitAudioSend.swift",
+      "predicate": "A live audio frame must be sent over at most one outbound media lane at a time; fallback is sequential rescue, not concurrent fanout.",
+      "evidenceFields": [
+        "epochID",
+        "frameIndex",
+        "deliveredTransports",
+        "primaryLane",
+        "rescueLane",
+        "transportPlan"
+      ]
+    },
+    {
+      "name": "media.runtime_never_carries_live_audio",
+      "invariantID": "media.runtime_never_carries_live_audio",
+      "kind": "invariant",
+      "scope": "local",
+      "owner": "engine",
+      "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift -> Turbo/PTTViewModel+BackendSyncTransportFaultsAndSignals.swift",
+      "predicate": "Runtime control transports must reject live audio payloads; live media may only arrive over Direct QUIC datagrams, Fast Relay QUIC datagrams, or Fast Relay TCP/TLS ordered fallback.",
+      "evidenceFields": [
+        "contactId",
+        "channelId",
+        "payloadClass",
+        "endpoint",
+        "mechanism",
+        "signalType",
+        "action"
+      ]
+    },
+    {
+      "name": "media.rescue_is_sequential_and_bounded",
+      "invariantID": "media.rescue_is_sequential_and_bounded",
+      "kind": "postcondition",
+      "scope": "local",
+      "owner": "engine",
+      "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift",
+      "predicate": "A concrete primary packet-lane failure during active talk may try at most one sequential rescue lane before breaking the epoch cleanly.",
+      "evidenceFields": [
+        "epochID",
+        "failedLane",
+        "activeLane",
+        "preferredLane",
+        "rescueState",
+        "networkPathGeneration"
+      ]
+    },
+    {
+      "name": "media.receiver_deduplicates_epoch_frames",
+      "invariantID": "media.receiver_deduplicates_epoch_frames",
+      "kind": "invariant",
+      "scope": "local",
+      "owner": "engine",
+      "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift",
+      "predicate": "The receiver must play at most one copy of each media epoch frame when retries, reordering, or duplicate transport arrivals occur.",
+      "evidenceFields": [
+        "epochID",
+        "frameIndex",
+        "transport",
+        "receiveWindowStart",
+        "receiveWindowBits",
+        "admission"
+      ]
+    },
+    {
+      "name": "media.stale_lane_fact_ignored",
+      "invariantID": "media.stale_lane_fact_ignored",
+      "kind": "invariant",
+      "scope": "local",
+      "owner": "engine",
+      "authoritativeSeam": "client/ios/Packages/TurboEngine/Sources/TurboEngine/TurboEngine.swift",
+      "predicate": "Lane availability or failure callbacks from older network-path generations must not overwrite newer lane state.",
+      "evidenceFields": [
+        "lane",
+        "incomingGeneration",
+        "currentGeneration",
+        "previousState",
+        "nextState"
+      ]
+    },
+    {
       "name": "engine.ptt_activation_deadline_elapsed",
       "invariantID": "engine.ptt_activation_deadline_elapsed",
       "kind": "liveness",

@@ -17,6 +17,7 @@ use crate::{
         RequestTalkTurnKernelWorker, RequestTalkTurnSnapshotLoader, TalkTurnReleaseCommitter,
         TalkTurnRenewalCommitter,
     },
+    quic_protocol::runtime_quic_alpn,
     routes::{RuntimeRouteError, SelfHostedRouteService},
     shadow::LegacyBeginTransmitInput,
 };
@@ -64,13 +65,56 @@ pub struct RuntimeHttpService<S, W, C = crate::postgres::DurableConversationStor
     state: RuntimeHttpState,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeHttpConfig {
     pub supports_websocket: bool,
     pub supports_direct_quic_upgrade: bool,
     pub supports_direct_quic_provisioning: bool,
     pub supports_media_end_to_end_encryption: bool,
+    pub supports_runtime_quic_control: bool,
+    pub runtime_quic_control_endpoint: Option<String>,
+    pub runtime_quic_active_migration_enabled: bool,
+    pub supports_runtime_tls_control: bool,
+    pub runtime_tls_control_endpoint: Option<String>,
+    pub runtime_http_endpoint: Option<String>,
+    pub runtime_control_preference: Vec<RuntimeControlTransport>,
     pub apns_worker: Option<RuntimeApnsWorkerConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RuntimeControlTransport {
+    RuntimeQuicControl,
+    RuntimeTlsControl,
+    RuntimeHttpRequest,
+}
+
+impl RuntimeControlTransport {
+    fn config_label(&self) -> &'static str {
+        match self {
+            Self::RuntimeQuicControl => "runtime-quic-control",
+            Self::RuntimeTlsControl => "runtime-tls-control",
+            Self::RuntimeHttpRequest => "runtime-http-request",
+        }
+    }
+}
+
+impl Default for RuntimeHttpConfig {
+    fn default() -> Self {
+        Self {
+            supports_websocket: false,
+            supports_direct_quic_upgrade: false,
+            supports_direct_quic_provisioning: false,
+            supports_media_end_to_end_encryption: false,
+            supports_runtime_quic_control: false,
+            runtime_quic_control_endpoint: None,
+            runtime_quic_active_migration_enabled: false,
+            supports_runtime_tls_control: false,
+            runtime_tls_control_endpoint: None,
+            runtime_http_endpoint: None,
+            runtime_control_preference: default_runtime_control_preference(false, false),
+            apns_worker: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,8 +128,14 @@ pub struct RuntimeApnsWorkerConfig {
 
 impl RuntimeHttpConfig {
     pub fn live_from_env() -> Self {
+        let supports_runtime_quic_control =
+            env_flag_default_false("BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL");
+        let supports_runtime_tls_control =
+            env_flag_default_false("BEEP_RUNTIME_SUPPORTS_TLS_CONTROL");
         Self {
-            supports_websocket: true,
+            supports_websocket: env_flag_default_false(
+                "TURBO_RUNTIME_WEBSOCKET_COMPATIBILITY_ENABLED",
+            ),
             supports_direct_quic_upgrade: env_flag_default_true(
                 "BEEP_RUNTIME_SUPPORTS_DIRECT_QUIC_UPGRADE",
             ),
@@ -95,8 +145,27 @@ impl RuntimeHttpConfig {
             supports_media_end_to_end_encryption: env_flag_default_true(
                 "BEEP_RUNTIME_SUPPORTS_MEDIA_E2EE",
             ),
+            supports_runtime_quic_control,
+            runtime_quic_control_endpoint: optional_env("BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT"),
+            runtime_quic_active_migration_enabled: env_flag_default_true(
+                "BEEP_RUNTIME_QUIC_ACTIVE_MIGRATION_ENABLED",
+            ),
+            supports_runtime_tls_control,
+            runtime_tls_control_endpoint: optional_env("BEEP_RUNTIME_TLS_CONTROL_ENDPOINT"),
+            runtime_http_endpoint: optional_env("BEEP_RUNTIME_HTTP_ENDPOINT"),
+            runtime_control_preference: runtime_control_preference_from_env(
+                supports_runtime_quic_control,
+                supports_runtime_tls_control,
+            ),
             apns_worker: RuntimeApnsWorkerConfig::from_env(),
         }
+    }
+
+    fn runtime_control_preference_labels(&self) -> Vec<&'static str> {
+        self.runtime_control_preference
+            .iter()
+            .map(RuntimeControlTransport::config_label)
+            .collect()
     }
 }
 
@@ -107,6 +176,65 @@ fn env_flag_default_true(name: &str) -> bool {
             "0" | "false" | "no" | "off"
         ),
         Err(_) => true,
+    }
+}
+
+fn env_flag_default_false(name: &str) -> bool {
+    match env::var(name) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    let value = env::var(name).ok()?.trim().to_owned();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn runtime_control_preference_from_env(
+    supports_quic: bool,
+    supports_tls: bool,
+) -> Vec<RuntimeControlTransport> {
+    optional_env("BEEP_RUNTIME_CONTROL_PREFERENCE")
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(parse_runtime_control_transport)
+                .collect::<Vec<_>>()
+        })
+        .filter(|preference| !preference.is_empty())
+        .unwrap_or_else(|| default_runtime_control_preference(supports_quic, supports_tls))
+}
+
+fn default_runtime_control_preference(
+    supports_quic: bool,
+    supports_tls: bool,
+) -> Vec<RuntimeControlTransport> {
+    let mut preference = Vec::new();
+    if supports_quic {
+        preference.push(RuntimeControlTransport::RuntimeQuicControl);
+    }
+    if supports_tls {
+        preference.push(RuntimeControlTransport::RuntimeTlsControl);
+    }
+    preference.push(RuntimeControlTransport::RuntimeHttpRequest);
+    preference
+}
+
+fn parse_runtime_control_transport(raw: &str) -> Option<RuntimeControlTransport> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "runtime-quic-control" | "quic" | "quic-control" => {
+            Some(RuntimeControlTransport::RuntimeQuicControl)
+        }
+        "runtime-tls-control" | "tls" | "tls-control" => {
+            Some(RuntimeControlTransport::RuntimeTlsControl)
+        }
+        "runtime-http-request" | "http" | "http-request" => {
+            Some(RuntimeControlTransport::RuntimeHttpRequest)
+        }
+        _ => None,
     }
 }
 
@@ -388,7 +516,9 @@ where
                     "status": "ok",
                     "service": "beepbeep-runtime",
                     "runtime": "self-hosted",
-                    "supportsWebSocket": self.runtime_config.supports_websocket
+                    "supportsWebSocket": self.runtime_config.supports_websocket,
+                    "supportsRuntimeQuicControl": self.runtime_config.supports_runtime_quic_control,
+                    "supportsRuntimeTlsControl": self.runtime_config.supports_runtime_tls_control
                 }),
             });
         }
@@ -411,7 +541,26 @@ where
                     "supportsMediaEndToEndEncryption": self.runtime_config.supports_media_end_to_end_encryption,
                     "supportsSignalSessionIds": true,
                     "supportsTransmitIds": true,
-                    "supportsProjectionEpochs": true
+                    "supportsProjectionEpochs": true,
+                    "supportsRuntimeQuicControl": self.runtime_config.supports_runtime_quic_control,
+                    "supportsRuntimeTlsControl": self.runtime_config.supports_runtime_tls_control,
+                    "runtimeControl": {
+                        "preference": self.runtime_config.runtime_control_preference_labels(),
+                        "quic": {
+                            "supported": self.runtime_config.supports_runtime_quic_control,
+                            "endpoint": self.runtime_config.runtime_quic_control_endpoint,
+                            "alpn": String::from_utf8_lossy(runtime_quic_alpn()).to_string(),
+                            "migrationEnabled": self.runtime_config.runtime_quic_active_migration_enabled
+                        },
+                        "tls": {
+                            "supported": self.runtime_config.supports_runtime_tls_control,
+                            "endpoint": self.runtime_config.runtime_tls_control_endpoint
+                        },
+                        "http": {
+                            "supported": true,
+                            "endpoint": self.runtime_config.runtime_http_endpoint
+                        }
+                    }
                 }),
             });
         }
@@ -3732,7 +3881,18 @@ mod tests {
             supports_direct_quic_upgrade: true,
             supports_direct_quic_provisioning: true,
             supports_media_end_to_end_encryption: false,
-            apns_worker: None,
+            supports_runtime_quic_control: true,
+            runtime_quic_control_endpoint: Some("https://api.example.com:4433".to_owned()),
+            runtime_quic_active_migration_enabled: true,
+            supports_runtime_tls_control: true,
+            runtime_tls_control_endpoint: Some("api.example.com:443".to_owned()),
+            runtime_http_endpoint: Some("https://api.example.com".to_owned()),
+            runtime_control_preference: vec![
+                RuntimeControlTransport::RuntimeQuicControl,
+                RuntimeControlTransport::RuntimeTlsControl,
+                RuntimeControlTransport::RuntimeHttpRequest,
+            ],
+            ..RuntimeHttpConfig::default()
         });
 
         let response = service.handle(HttpRequest {
@@ -3751,6 +3911,58 @@ mod tests {
         assert_eq!(response.body["supportsSignalSessionIds"], true);
         assert_eq!(response.body["supportsTransmitIds"], true);
         assert_eq!(response.body["supportsProjectionEpochs"], true);
+        assert_eq!(response.body["supportsRuntimeQuicControl"], true);
+        assert_eq!(response.body["supportsRuntimeTlsControl"], true);
+        assert_eq!(
+            response.body["runtimeControl"]["preference"],
+            serde_json::json!([
+                "runtime-quic-control",
+                "runtime-tls-control",
+                "runtime-http-request"
+            ])
+        );
+        assert_eq!(
+            response.body["runtimeControl"]["quic"]["endpoint"],
+            "https://api.example.com:4433"
+        );
+        assert_eq!(
+            response.body["runtimeControl"]["quic"]["alpn"],
+            "beep-runtime-control-v1"
+        );
+        assert_eq!(
+            response.body["runtimeControl"]["quic"]["migrationEnabled"],
+            true
+        );
+        assert_eq!(
+            response.body["runtimeControl"]["tls"]["endpoint"],
+            "api.example.com:443"
+        );
+        assert_eq!(
+            response.body["runtimeControl"]["http"]["endpoint"],
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn self_hosted_config_retires_runtime_websocket_by_default() {
+        let mut service = service_with_config(RuntimeHttpConfig::default());
+
+        let response = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/config".to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body["supportsWebSocket"], false);
+        assert_eq!(response.body["supportsRuntimeQuicControl"], false);
+        assert_eq!(response.body["supportsRuntimeTlsControl"], false);
+        assert_eq!(
+            response.body["runtimeControl"]["preference"],
+            serde_json::json!(["runtime-http-request"])
+        );
+        assert_eq!(response.body["runtimeControl"]["http"]["supported"], true);
     }
 
     #[test]

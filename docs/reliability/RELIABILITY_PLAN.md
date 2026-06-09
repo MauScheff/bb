@@ -66,7 +66,7 @@ Device setup:
 - first pass: Low Power Mode off, Focus/Do Not Disturb off
 - Direct QUIC cells: both devices on same Wi-Fi unless testing cellular/NAT
 - app setup: signed in, contacts opened, `Profile -> Diagnostics` visible
-- record diagnostics fields when visible: app/build, `Local device`, `WebSocket`, `Path state`, `Relay-only override`, `Auto-upgrade`, `Media relay enabled`, `Media relay forced`, `Backend advertised`, `Effective upgrade`
+- record diagnostics fields when visible: app/build, `Local device`, runtime control state, requested media lane override, effective media lane, proven active media lane, path state, backend advertised capabilities, and effective Direct QUIC upgrade
 - unknown `Local device`: first intake by handle only; use summary device IDs for exact reads later
 
 Recommended operator report template:
@@ -92,15 +92,21 @@ T6 run:
 
 ## Transport Modes
 
-Set transport on both phones from `Profile -> Diagnostics -> Direct QUIC`.
+Set media transport from `Profile -> Diagnostics -> Media lane`. Lane forcing is local policy; the peer should adapt to the sender's authenticated epoch lane without manually matching the setting.
+
+Set backend command transport from `Profile -> Diagnostics -> Runtime control`
+only when the test cell needs it. Runtime control forcing is also local policy:
+it changes how this device sends authoritative commands, not backend truth and
+not live media. Record requested runtime-control policy, effective runtime
+control lane, fallback reason, and whether the effective lane is persistent.
 
 | Mode | Purpose | Toggles | Pass evidence |
 | --- | --- | --- | --- |
-| T1 WebSocket-only fallback relay | baseline hosted websocket relay path | relay-only on; auto-upgrade off; media relay off; force media relay off | path `Relayed`; `Effective upgrade: no`; no active Direct QUIC; foreground audio works both directions |
-| T2 Fast Relay | low-latency media relay without Direct QUIC | relay-only off; auto-upgrade off; media relay on; force media relay on; relay `relay.beepbeep.to` UDP/TCP 443 | media relay enabled/forced/configured; path `Fast Relay`; Direct QUIC inactive |
-| T3 Direct QUIC | device-to-device promotion and first-talk behavior | relay-only off; auto-upgrade on; media relay on; force media relay off; Local Network allowed | backend advertised/effective upgrade yes; production identity ready; peer device known; path `Direct` |
+| T1 Fast Relay TCP/TLS | ordered continuity when UDP/QUIC is unavailable | `force-fast-relay-tls` | requested override is local; effective lane `Fast Relay TCP`; foreground audio works both directions with bounded backlog and no stuck talking |
+| T2 Fast Relay QUIC | low-latency relay media without Direct QUIC | `force-fast-relay-quic`; relay `relay.beepbeep.to` UDP 443 | media relay configured; effective/proven lane `Fast Relay`; Direct QUIC inactive |
+| T3 Direct QUIC | device-to-device promotion and first-talk behavior | `automatic` or `force-direct-quic`; Local Network allowed | backend advertised/effective upgrade yes; production identity ready; peer device known; proven lane `Direct` while live |
 
-T2 old ports `9443`/`9444` are debug fallback only. T3 `Promoting`, `Recovering`, or `Relayed` is not a pass; use `Force probe` once only if asked. Later retry-only audio success is a T3 failure.
+T2 old ports `9443`/`9444` are debug fallback only. T3 `Promoting`, `Recovering`, or relay-only delivery is not a Direct pass; use `Force probe` once only if asked. Later retry-only audio success is a T3 failure.
 
 ### Network-Migration Hardening Cells
 

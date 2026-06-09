@@ -829,9 +829,109 @@ struct TurboBackendHTTPTransportConfig: Sendable, Equatable {
     )
 }
 
-enum TurboControlCommandTransportPolicy: String, Sendable, Equatable, Codable {
+enum TurboControlCommandTransportPolicy: String, CaseIterable, Sendable, Equatable, Codable, Identifiable {
     case automatic = "automatic"
     case httpOnly = "http-only"
+    case forceRuntimeQuic = "force-runtime-quic"
+    case forceRuntimeTls = "force-runtime-tls"
+    case forceRuntimeHttp = "force-runtime-http"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic:
+            return "Automatic"
+        case .httpOnly:
+            return "HTTP only"
+        case .forceRuntimeQuic:
+            return "Runtime QUIC"
+        case .forceRuntimeTls:
+            return "Runtime TLS"
+        case .forceRuntimeHttp:
+            return "Runtime HTTP"
+        }
+    }
+
+    var disablesWebSocketCompatibility: Bool {
+        switch self {
+        case .automatic:
+            return false
+        case .httpOnly, .forceRuntimeQuic, .forceRuntimeTls, .forceRuntimeHttp:
+            return true
+        }
+    }
+}
+
+enum TurboMediaLaneOverride: String, CaseIterable, Sendable, Equatable, Codable, Identifiable {
+    case automatic = "automatic"
+    case forceDirectQuic = "force-direct-quic"
+    case forceFastRelayQuic = "force-fast-relay-quic"
+    case forceFastRelayTls = "force-fast-relay-tls"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic:
+            return "Automatic"
+        case .forceDirectQuic:
+            return "Direct QUIC"
+        case .forceFastRelayQuic:
+            return "Fast Relay QUIC"
+        case .forceFastRelayTls:
+            return "Fast Relay TLS"
+        }
+    }
+
+    var disablesDirectQuic: Bool {
+        switch self {
+        case .automatic, .forceDirectQuic:
+            return false
+        case .forceFastRelayQuic, .forceFastRelayTls:
+            return true
+        }
+    }
+
+    var disablesMediaRelay: Bool {
+        switch self {
+        case .forceDirectQuic:
+            return true
+        case .automatic, .forceFastRelayQuic, .forceFastRelayTls:
+            return false
+        }
+    }
+
+    var forcesFastRelay: Bool {
+        switch self {
+        case .forceFastRelayQuic, .forceFastRelayTls:
+            return true
+        case .automatic, .forceDirectQuic:
+            return false
+        }
+    }
+
+    var forcedMediaRelayTransport: TurboMediaRelayTransport? {
+        switch self {
+        case .forceFastRelayQuic:
+            return .quic
+        case .forceFastRelayTls:
+            return .tcpTls
+        case .automatic, .forceDirectQuic:
+            return nil
+        }
+    }
+
+    var forcedMediaRelayMediaMode: TurboMediaRelayMediaMode? {
+        switch self {
+        case .forceFastRelayQuic:
+            return .quicDatagram
+        case .forceFastRelayTls:
+            return .tcpOrdered
+        case .automatic, .forceDirectQuic:
+            return nil
+        }
+    }
 }
 
 enum VoiceMediaCoreMode: String, Sendable, Equatable, Codable {
@@ -1299,6 +1399,151 @@ enum TurboControlCommandTransportDebugOverride {
             return .automatic
         case TurboControlCommandTransportPolicy.httpOnly.rawValue, "http", "http_only":
             return .httpOnly
+        case TurboControlCommandTransportPolicy.forceRuntimeQuic.rawValue,
+             "runtime-quic-control",
+             "runtime_quic_control",
+             "quic",
+             "quic-control":
+            return .forceRuntimeQuic
+        case TurboControlCommandTransportPolicy.forceRuntimeTls.rawValue,
+             "runtime-tls-control",
+             "runtime_tls_control",
+             "tls",
+             "tls-control":
+            return .forceRuntimeTls
+        case TurboControlCommandTransportPolicy.forceRuntimeHttp.rawValue,
+             "runtime-http-request",
+             "runtime_http_request",
+             "http-request":
+            return .forceRuntimeHttp
+        default:
+            return nil
+        }
+    }
+
+    private static func launchArgumentValue(_ launchArgument: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: launchArgument),
+              arguments.indices.contains(index + 1) else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+}
+
+enum TurboMediaLaneDebugOverride {
+    static let storageKey = "TurboDebugMediaLaneOverride"
+    static let launchArgument = "-TurboDebugMediaLaneOverride"
+    static let environmentKey = "TURBO_DEBUG_MEDIA_LANE_OVERRIDE"
+    static var allowsDebugOverridesByDefault: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+    static var allowsStoredDebugOverridesByDefault: Bool { allowsDebugOverridesByDefault }
+
+    static func mediaLaneOverride(
+        processInfo: ProcessInfo = .processInfo,
+        defaults: UserDefaults = .standard,
+        allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
+    ) -> TurboMediaLaneOverride {
+        mediaLaneOverride(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        )
+    }
+
+    static func mediaLaneOverride(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
+    ) -> TurboMediaLaneOverride {
+        guard allowStoredDebugOverride else { return .automatic }
+        if let launchValue = launchArgumentValue(launchArgument, in: arguments),
+           let parsed = parseOverride(launchValue) {
+            return parsed
+        }
+        if let environmentValue = environment[environmentKey],
+           let parsed = parseOverride(environmentValue) {
+            return parsed
+        }
+        if let storedValue = defaults.string(forKey: storageKey),
+           let parsed = parseOverride(storedValue) {
+            return parsed
+        }
+        return legacyOverride(
+            arguments: arguments,
+            environment: environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        )
+    }
+
+    static func setMediaLaneOverride(
+        _ override: TurboMediaLaneOverride,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(override.rawValue, forKey: storageKey)
+        switch override {
+        case .automatic:
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false, defaults: defaults)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false, defaults: defaults)
+            TurboMediaRelayDebugOverride.setEnabled(true, defaults: defaults)
+            TurboMediaRelayDebugOverride.setForced(false, defaults: defaults)
+        case .forceDirectQuic:
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false, defaults: defaults)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false, defaults: defaults)
+            TurboMediaRelayDebugOverride.setEnabled(false, defaults: defaults)
+            TurboMediaRelayDebugOverride.setForced(false, defaults: defaults)
+        case .forceFastRelayQuic, .forceFastRelayTls:
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false, defaults: defaults)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(true, defaults: defaults)
+            TurboMediaRelayDebugOverride.setEnabled(true, defaults: defaults)
+            TurboMediaRelayDebugOverride.setForced(true, defaults: defaults)
+        }
+    }
+
+    private static func legacyOverride(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults,
+        allowStoredDebugOverride: Bool
+    ) -> TurboMediaLaneOverride {
+        if TurboMediaRelayDebugOverride.isForced(
+            arguments: arguments,
+            environment: environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        ) {
+            return .forceFastRelayQuic
+        }
+        if TurboDirectPathDebugOverride.isRelayOnlyForced(
+            arguments: arguments,
+            environment: environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        ) {
+            return .forceFastRelayTls
+        }
+        return .automatic
+    }
+
+    private static func parseOverride(_ rawValue: String) -> TurboMediaLaneOverride? {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "automatic", "auto":
+            return .automatic
+        case "direct", "direct-quic", "force-direct", "force-direct-quic":
+            return .forceDirectQuic
+        case "fast-relay", "fast-relay-quic", "media-relay", "media-relay-quic",
+             "relay-quic", "force-fast-relay", "force-fast-relay-quic":
+            return .forceFastRelayQuic
+        case "fast-relay-tcp", "fast-relay-tls", "media-relay-tcp", "media-relay-tls",
+             "relay-tcp", "relay-tls", "force-fast-relay-tcp", "force-fast-relay-tls":
+            return .forceFastRelayTls
         default:
             return nil
         }
@@ -1519,11 +1764,26 @@ enum TurboMediaRelayDebugOverride {
         defaults: UserDefaults = .standard,
         allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
     ) -> Bool {
+        isEnabled(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        )
+    }
+
+    static func isEnabled(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
+    ) -> Bool {
         if let override = explicitBooleanValue(
             storageKey: enabledStorageKey,
             launchArgument: enabledLaunchArgument,
             environmentKey: enabledEnvironmentKey,
-            processInfo: processInfo,
+            arguments: arguments,
+            environment: environment,
             defaults: defaults,
             allowStoredDebugOverride: allowStoredDebugOverride
         ) {
@@ -1541,7 +1801,8 @@ enum TurboMediaRelayDebugOverride {
             storageKey: enabledStorageKey,
             launchArgument: enabledLaunchArgument,
             environmentKey: enabledEnvironmentKey,
-            processInfo: processInfo,
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
             defaults: defaults,
             allowStoredDebugOverride: allowStoredDebugOverride
         )
@@ -1556,11 +1817,26 @@ enum TurboMediaRelayDebugOverride {
         defaults: UserDefaults = .standard,
         allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
     ) -> Bool {
+        isForced(
+            arguments: processInfo.arguments,
+            environment: processInfo.environment,
+            defaults: defaults,
+            allowStoredDebugOverride: allowStoredDebugOverride
+        )
+    }
+
+    static func isForced(
+        arguments: [String],
+        environment: [String: String],
+        defaults: UserDefaults = .standard,
+        allowStoredDebugOverride: Bool = allowsStoredDebugOverridesByDefault
+    ) -> Bool {
         booleanValue(
             storageKey: forceStorageKey,
             launchArgument: forceLaunchArgument,
             environmentKey: forceEnvironmentKey,
-            processInfo: processInfo,
+            arguments: arguments,
+            environment: environment,
             defaults: defaults,
             allowStoredDebugOverride: allowStoredDebugOverride
         )
@@ -1633,7 +1909,8 @@ enum TurboMediaRelayDebugOverride {
         storageKey: String,
         launchArgument: String,
         environmentKey: String,
-        processInfo: ProcessInfo,
+        arguments: [String],
+        environment: [String: String],
         defaults: UserDefaults,
         allowStoredDebugOverride: Bool
     ) -> Bool {
@@ -1641,7 +1918,8 @@ enum TurboMediaRelayDebugOverride {
             storageKey: storageKey,
             launchArgument: launchArgument,
             environmentKey: environmentKey,
-            processInfo: processInfo,
+            arguments: arguments,
+            environment: environment,
             defaults: defaults,
             allowStoredDebugOverride: allowStoredDebugOverride
         ) ?? false
@@ -1651,12 +1929,12 @@ enum TurboMediaRelayDebugOverride {
         storageKey: String,
         launchArgument: String,
         environmentKey: String,
-        processInfo: ProcessInfo,
+        arguments: [String],
+        environment: [String: String],
         defaults: UserDefaults,
         allowStoredDebugOverride: Bool
     ) -> Bool? {
         guard allowStoredDebugOverride else { return nil }
-        let arguments = processInfo.arguments
         if let launchArgumentValue = launchArgumentValue(launchArgument, in: arguments),
            let parsed = parseBoolean(launchArgumentValue) {
             return parsed
@@ -1664,7 +1942,7 @@ enum TurboMediaRelayDebugOverride {
         if arguments.contains(launchArgument) {
             return true
         }
-        if let environmentValue = processInfo.environment[environmentKey],
+        if let environmentValue = environment[environmentKey],
            let parsed = parseBoolean(environmentValue) {
             return parsed
         }
@@ -2790,6 +3068,98 @@ struct TurboForgetContactResponse: Decodable {
     let otherUserId: String
 }
 
+enum TurboRuntimeControlLane: String, Codable, CaseIterable, Equatable, Sendable, Identifiable {
+    case runtimeQuicControl = "runtime-quic-control"
+    case runtimeTlsControl = "runtime-tls-control"
+    case runtimeHttpRequest = "runtime-http-request"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .runtimeQuicControl:
+            return "Runtime QUIC"
+        case .runtimeTlsControl:
+            return "Runtime TLS"
+        case .runtimeHttpRequest:
+            return "Runtime HTTP"
+        }
+    }
+}
+
+struct TurboRuntimeControlSelection: Codable, Equatable, Sendable {
+    let requestedPolicy: TurboControlCommandTransportPolicy
+    let effectiveLane: TurboRuntimeControlLane
+    let fallbackReason: String?
+
+    var usesPersistentTransport: Bool {
+        switch effectiveLane {
+        case .runtimeQuicControl, .runtimeTlsControl:
+            return true
+        case .runtimeHttpRequest:
+            return false
+        }
+    }
+}
+
+struct TurboRuntimeControlConfig: Decodable, Equatable, Sendable {
+    let preference: [TurboRuntimeControlLane]
+    let quic: TurboRuntimeQuicControlConfig?
+    let tls: TurboRuntimeTlsControlConfig?
+    let http: TurboRuntimeHttpControlConfig?
+
+    init(
+        preference: [TurboRuntimeControlLane] = [.runtimeHttpRequest],
+        quic: TurboRuntimeQuicControlConfig? = nil,
+        tls: TurboRuntimeTlsControlConfig? = nil,
+        http: TurboRuntimeHttpControlConfig? = nil
+    ) {
+        self.preference = preference
+        self.quic = quic
+        self.tls = tls
+        self.http = http
+    }
+}
+
+struct TurboRuntimeQuicControlConfig: Decodable, Equatable, Sendable {
+    let supported: Bool
+    let endpoint: String?
+    let alpn: String?
+    let migrationEnabled: Bool
+
+    init(
+        supported: Bool = false,
+        endpoint: String? = nil,
+        alpn: String? = nil,
+        migrationEnabled: Bool = false
+    ) {
+        self.supported = supported
+        self.endpoint = endpoint
+        self.alpn = alpn
+        self.migrationEnabled = migrationEnabled
+    }
+}
+
+struct TurboRuntimeTlsControlConfig: Decodable, Equatable, Sendable {
+    let supported: Bool
+    let endpoint: String?
+
+    init(supported: Bool = false, endpoint: String? = nil) {
+        self.supported = supported
+        self.endpoint = endpoint
+    }
+}
+
+struct TurboRuntimeHttpControlConfig: Decodable, Equatable, Sendable {
+    let supported: Bool
+    let endpoint: String?
+
+    init(supported: Bool = true, endpoint: String? = nil) {
+        self.supported = supported
+        self.endpoint = endpoint
+    }
+}
+
 struct TurboBackendRuntimeConfig: Decodable {
     let mode: String
     let supportsWebSocket: Bool
@@ -2800,6 +3170,9 @@ struct TurboBackendRuntimeConfig: Decodable {
     let supportsSignalSessionIds: Bool
     let supportsTransmitIds: Bool
     let supportsProjectionEpochs: Bool
+    let supportsRuntimeQuicControl: Bool
+    let supportsRuntimeTlsControl: Bool
+    let runtimeControl: TurboRuntimeControlConfig?
     let directQuicPolicy: TurboDirectQuicPolicy?
 
     init(
@@ -2812,6 +3185,9 @@ struct TurboBackendRuntimeConfig: Decodable {
         supportsSignalSessionIds: Bool = false,
         supportsTransmitIds: Bool = false,
         supportsProjectionEpochs: Bool = false,
+        supportsRuntimeQuicControl: Bool = false,
+        supportsRuntimeTlsControl: Bool = false,
+        runtimeControl: TurboRuntimeControlConfig? = nil,
         directQuicPolicy: TurboDirectQuicPolicy? = nil
     ) {
         self.mode = mode
@@ -2823,6 +3199,9 @@ struct TurboBackendRuntimeConfig: Decodable {
         self.supportsSignalSessionIds = supportsSignalSessionIds
         self.supportsTransmitIds = supportsTransmitIds
         self.supportsProjectionEpochs = supportsProjectionEpochs
+        self.supportsRuntimeQuicControl = supportsRuntimeQuicControl
+        self.supportsRuntimeTlsControl = supportsRuntimeTlsControl
+        self.runtimeControl = runtimeControl
         self.directQuicPolicy = directQuicPolicy
     }
 
@@ -2836,6 +3215,9 @@ struct TurboBackendRuntimeConfig: Decodable {
         case supportsSignalSessionIds
         case supportsTransmitIds
         case supportsProjectionEpochs
+        case supportsRuntimeQuicControl
+        case supportsRuntimeTlsControl
+        case runtimeControl
         case directQuicPolicy
     }
 
@@ -2850,7 +3232,77 @@ struct TurboBackendRuntimeConfig: Decodable {
         supportsSignalSessionIds = try container.decodeIfPresent(Bool.self, forKey: .supportsSignalSessionIds) ?? false
         supportsTransmitIds = try container.decodeIfPresent(Bool.self, forKey: .supportsTransmitIds) ?? false
         supportsProjectionEpochs = try container.decodeIfPresent(Bool.self, forKey: .supportsProjectionEpochs) ?? false
+        supportsRuntimeQuicControl = try container.decodeIfPresent(Bool.self, forKey: .supportsRuntimeQuicControl) ?? false
+        supportsRuntimeTlsControl = try container.decodeIfPresent(Bool.self, forKey: .supportsRuntimeTlsControl) ?? false
+        runtimeControl = try container.decodeIfPresent(TurboRuntimeControlConfig.self, forKey: .runtimeControl)
         directQuicPolicy = try container.decodeIfPresent(TurboDirectQuicPolicy.self, forKey: .directQuicPolicy)
+    }
+
+    func runtimeControlSelection(
+        requestedPolicy: TurboControlCommandTransportPolicy
+    ) -> TurboRuntimeControlSelection {
+        switch requestedPolicy {
+        case .automatic:
+            for lane in runtimeControl?.preference ?? [.runtimeHttpRequest] {
+                if supportsRuntimeControlLane(lane) {
+                    return TurboRuntimeControlSelection(
+                        requestedPolicy: requestedPolicy,
+                        effectiveLane: lane,
+                        fallbackReason: nil
+                    )
+                }
+            }
+            return TurboRuntimeControlSelection(
+                requestedPolicy: requestedPolicy,
+                effectiveLane: .runtimeHttpRequest,
+                fallbackReason: "runtime-control-preference-unavailable"
+            )
+        case .httpOnly, .forceRuntimeHttp:
+            return TurboRuntimeControlSelection(
+                requestedPolicy: requestedPolicy,
+                effectiveLane: .runtimeHttpRequest,
+                fallbackReason: requestedPolicy == .httpOnly ? "legacy-http-only-policy" : nil
+            )
+        case .forceRuntimeQuic:
+            guard supportsRuntimeControlLane(.runtimeQuicControl) else {
+                return TurboRuntimeControlSelection(
+                    requestedPolicy: requestedPolicy,
+                    effectiveLane: .runtimeHttpRequest,
+                    fallbackReason: "runtime-quic-unavailable"
+                )
+            }
+            return TurboRuntimeControlSelection(
+                requestedPolicy: requestedPolicy,
+                effectiveLane: .runtimeQuicControl,
+                fallbackReason: nil
+            )
+        case .forceRuntimeTls:
+            guard supportsRuntimeControlLane(.runtimeTlsControl) else {
+                return TurboRuntimeControlSelection(
+                    requestedPolicy: requestedPolicy,
+                    effectiveLane: .runtimeHttpRequest,
+                    fallbackReason: "runtime-tls-unavailable"
+                )
+            }
+            return TurboRuntimeControlSelection(
+                requestedPolicy: requestedPolicy,
+                effectiveLane: .runtimeTlsControl,
+                fallbackReason: nil
+            )
+        }
+    }
+
+    private func supportsRuntimeControlLane(_ lane: TurboRuntimeControlLane) -> Bool {
+        switch lane {
+        case .runtimeQuicControl:
+            return supportsRuntimeQuicControl
+                && runtimeControl?.quic?.supported == true
+        case .runtimeTlsControl:
+            return supportsRuntimeTlsControl
+                && runtimeControl?.tls?.supported == true
+        case .runtimeHttpRequest:
+            return runtimeControl?.http?.supported ?? true
+        }
     }
 }
 

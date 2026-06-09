@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::control_protocol::{
+    RuntimeControlProtocolError, RuntimeControlTransport, decode_runtime_control_frame,
+    runtime_control_response_frame,
+};
+
 pub const APP_COMPATIBLE_CONVERSATION_ID: &str = "__app_compatible_unbound__";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,6 +47,19 @@ pub enum WebSocketSignalingError {
     UnauthorizedEnvelope,
     #[error("websocket message was malformed: {0}")]
     MalformedMessage(String),
+}
+
+impl From<RuntimeControlProtocolError> for WebSocketSignalingError {
+    fn from(error: RuntimeControlProtocolError) -> Self {
+        match error {
+            RuntimeControlProtocolError::LiveMediaRejected => {
+                WebSocketSignalingError::MalformedMessage(
+                    "runtime control cannot carry live media".to_owned(),
+                )
+            }
+            other => WebSocketSignalingError::MalformedMessage(other.to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -348,13 +366,8 @@ impl SingleInstanceWebSocketServer {
             .binding(connection_id)
             .ok_or_else(|| WebSocketSignalingError::UnknownConnection(connection_id.to_owned()))?
             .clone();
-        let request_id = required_text(message, "requestId")?;
-        let device_id = required_text(message, "deviceId")?;
-        let command_kind = message
-            .get("commandKind")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        if device_id != binding.device_id {
+        let frame = decode_runtime_control_frame(message)?;
+        if frame.envelope.device_id != binding.device_id {
             self.authorization_facts.push(WebSocketAuthorizationFact {
                 connection_id: connection_id.to_owned(),
                 conversation_id: binding.conversation_id,
@@ -375,24 +388,25 @@ impl SingleInstanceWebSocketServer {
             decision: WebSocketAuthorizationDecision::Accepted,
             reason: "command-authorized".to_owned(),
         });
+        let mut response = runtime_control_response_frame(
+            &frame,
+            "ok",
+            command_response_body(&binding, &frame.envelope),
+            RuntimeControlTransport::WebSocketCompatibility,
+        );
+        response["type"] = Value::String(response_type.to_owned());
         Ok(WebSocketOutboundMessage {
             connection_id: connection_id.to_owned(),
-            payload: serde_json::json!({
-                "type": response_type,
-                "requestId": request_id,
-                "status": "ok",
-                "body": command_response_body(&binding, command_kind, message)
-            }),
+            payload: response,
         })
     }
 }
 
 fn command_response_body(
     binding: &WebSocketConnectionBinding,
-    command_kind: &str,
-    message: &Value,
+    envelope: &crate::control_protocol::RuntimeControlCommandEnvelope,
 ) -> Value {
-    match command_kind {
+    match envelope.command_kind.as_str() {
         "presence-foreground" | "presence-keepalive" => serde_json::json!({
             "deviceId": binding.device_id,
             "userId": binding.participant_id,
@@ -409,13 +423,13 @@ fn command_response_body(
             "status": "background"
         }),
         "join-channel" => serde_json::json!({
-            "channelId": message.get("channelId").and_then(Value::as_str).unwrap_or("conversation"),
+            "channelId": envelope.channel_id.as_deref().unwrap_or("conversation"),
             "userId": binding.participant_id,
             "deviceId": binding.device_id,
             "status": "joined"
         }),
         "leave-channel" => serde_json::json!({
-            "channelId": message.get("channelId").and_then(Value::as_str).unwrap_or("conversation"),
+            "channelId": envelope.channel_id.as_deref().unwrap_or("conversation"),
             "deviceId": binding.device_id,
             "status": "left"
         }),
@@ -666,6 +680,12 @@ mod tests {
 
         assert_eq!(outbound[0].connection_id, "conn-a");
         assert_eq!(outbound[0].payload["type"], "control-command-response");
+        assert_eq!(
+            outbound[0].payload["protocolVersion"],
+            crate::control_protocol::RUNTIME_CONTROL_PROTOCOL_VERSION
+        );
+        assert_eq!(outbound[0].payload["transport"], "websocket-compatibility");
+        assert_eq!(outbound[0].payload["persistentTransport"], false);
         assert_eq!(outbound[0].payload["requestId"], "request-1");
         assert_eq!(outbound[0].payload["status"], "ok");
     }

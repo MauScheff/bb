@@ -46,16 +46,18 @@ enum MediaTransportPathState: Equatable {
 
 Do not infer transport state from booleans. Store timestamps and typed reason fields.
 
-## UI Chip
+## Active Lane Projection
 
-Allowed labels: `Relay`, `Promoting`, `Direct`, `Recovering`.
+Visible path labels are derived from the current media epoch.
 
 Rules:
 
-- show `Direct` only after nomination succeeds and media has moved to direct path
-- while probing, show `Promoting`, not `Direct`
-- on mid-session direct drop, flip to `Recovering`, then `Relay` once relay is confirmed
-- chip describes network path only; it is not an encryption claim
+- during live transmit/receive, show the proven active lane for that epoch
+- `available` or `warming` lane facts do not change the live label
+- Direct QUIC becomes live only after current-epoch delivery proof
+- Fast Relay QUIC/TCP becomes live only after accepted receive/playback proof or sender-side ACK proof for that epoch
+- outside live media, the label may show the best ready lane
+- the label describes network path only; it is not an encryption claim
 
 ## Capability Controls
 
@@ -64,7 +66,7 @@ Backend config extends `TurboBackendRuntimeConfig`:
 ```swift
 struct TurboBackendRuntimeConfig: Decodable {
     let mode: String
-    let supportsWebSocket: Bool
+    let runtimeControl: TurboRuntimeControlConfig?
     let telemetryEnabled: Bool?
     let supportsDirectQuicUpgrade: Bool
     let directQuicPolicy: TurboDirectQuicPolicy?
@@ -73,17 +75,20 @@ struct TurboBackendRuntimeConfig: Decodable {
 
 `supportsDirectQuicUpgrade` is the backend kill switch. `directQuicPolicy` should later include `stunServers`, `turnServers`, `promotionTimeoutMs`, `retryBackoffMs`, and `idleDirectUpgradeDisabled`. Production default is `supportsDirectQuicUpgrade = false` until ready.
 
-Local override: `TurboDebugForceRelayOnly`, sourced from `UserDefaults`, launch argument/debug menu, or scenario-runtime override.
+Local override: diagnostics media lane selector, sourced from `UserDefaults`,
+launch argument/debug menu, or scenario-runtime override.
 
 Effective decision:
 
 ```swift
 effectiveDirectUpgradeEnabled =
     runtimeConfig.supportsDirectQuicUpgrade
-    && !localDebugForceRelayOnly
+    && !mediaLaneOverride.disablesDirectQuic
 ```
 
-When forced relay-only: never enter `promoting`, never emit direct-path signaling, keep chip on `Relay`, and log `transport.direct.disabled_local_override`.
+When Direct QUIC is disabled by local override: never enter `promoting`, never
+emit direct-path signaling, keep projection on the effective Fast Relay lane,
+and log `transport.direct.disabled_local_override`.
 
 ## Candidate Model
 
@@ -117,7 +122,10 @@ For v1 Direct QUIC, `transport` is always `udp`.
 
 ## Signaling
 
-Reuse backend websocket signaling. Backend authorizes/routes signals and treats payloads as opaque transport data.
+Use backend/runtime signaling for authoritative authorization and routing. The
+signal payloads are opaque to the transport. Runtime control is authoritative
+command/signaling only; live media remains Direct QUIC datagram, Fast Relay QUIC
+datagram, or Fast Relay TCP/TLS ordered fallback.
 
 | Signal | Payload |
 | --- | --- |
@@ -207,13 +215,13 @@ Live audio payloads:
 - Direct QUIC should send one Opus v2 frame per packet-media datagram and should not batch voice frames on the sender side.
 - If peer capability evidence is missing, stale, or unsupported, Direct QUIC sends legacy PCM payloads through the same media boundary.
 - Receiver-side playout uses the Direct QUIC low-latency cushion profile: 4 Opus frames initially, with bounded adaptive growth after underruns.
-- Fast Relay fallback is packet-first: QUIC control-stream join must be followed by QUIC datagram media join. If datagram join fails, audio uses explicit Fast Relay TCP/TLS (`media-relay-tcp`) or backend websocket fallback; QUIC stream audio must not masquerade as packet media.
+- Fast Relay fallback is packet-first: QUIC control-stream join must be followed by QUIC datagram media join. If datagram join fails, audio uses explicit Fast Relay TCP/TLS (`media-relay-tcp`); runtime/backend transports must not carry live media. QUIC stream audio must not masquerade as packet media.
 
 Likely factory evolution:
 
 ```swift
 func makeDefaultMediaSession(
-    supportsWebSocket: Bool,
+    mediaLaneOverride: TurboMediaLaneOverride,
     directUpgradeEnabled: Bool,
     sendAudioChunk: ...,
     reportEvent: ...

@@ -45,10 +45,10 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 | Rust runtime tests | `just rust-runtime-test` | `beepbeep-runtime` tests pass |
 | Runtime/Postgres integration | `just runtime-postgres-integration` | `/tmp/turbo-rust-runtime-integration.json` reports success |
 | Local HTTP process probe | `just self-hosted-http-probe` | `/tmp/turbo-self-hosted-http-probe.json` reports success |
-| Local websocket probe | `just self-hosted-websocket-probe` | `/tmp/turbo-self-hosted-websocket-probe.json` reports success |
+| Local realtime control probe | `just self-hosted-websocket-probe` | `/tmp/turbo-self-hosted-websocket-probe.json` reports success for the current runtime-control compatibility lane |
 | Local backend gate | `just beepbeep-backend-gate` | `/tmp/beepbeep-backend-reliability-gate.json` reports no failed step |
 | Dry-run backend gate | `just beepbeep-backend-gate-dry-run local 123 3 /tmp/beepbeep-backend-gate-dry.json` | gate orchestration is valid without running heavy steps |
-| Hosted production gate | `just beepbeep-backend-production-gate https://api.beepbeep.to` | production route, websocket, fuzz, and probe evidence pass |
+| Hosted production gate | `just beepbeep-backend-production-gate https://api.beepbeep.to` | production routes, runtime-control compatibility, fuzz, and probe evidence pass |
 | Release readiness | `just beepbeep-backend-cutover-readiness` | machine-readable readiness artifact has no blocking missing evidence |
 
 Promote production bugs downward: hosted failure -> hosted probe -> self-hosted probe/fuzz -> Rust runtime proof -> Unison kernel proof.
@@ -93,7 +93,7 @@ The active deployed target is `https://api.beepbeep.to`.
 | Relay VM deploy | `just gce-relay-deploy <gcp-project>` |
 | Hosted synthetic canary | `just postdeploy-check https://api.beepbeep.to` |
 | Hosted backend stability | `just backend-stability-probe https://api.beepbeep.to` |
-| Hosted websocket stability | `just websocket-stability-probe https://api.beepbeep.to` |
+| Hosted runtime-control compatibility stability | `just websocket-stability-probe https://api.beepbeep.to` |
 | Hosted simulator smoke | `just simulator-scenario-suite-hosted-smoke` |
 
 API VM deploys are registry-backed. The runtime image is
@@ -117,6 +117,53 @@ target `turbo-relay-1`. The relay deploy script refuses to replace an active
 `turbo-relay` systemd service unless `--replace-systemd-service` is passed.
 
 Do not use removed legacy Cloud deploy recipes as the normal release path. If old Cloud behavior must be inspected, use the archive checkout and document that the work is archival.
+
+## Runtime Control Debugging
+
+Runtime control is authoritative command traffic only. Live media must use
+Direct QUIC datagrams, Fast Relay QUIC datagrams, or Fast Relay TCP/TLS ordered
+fallback.
+
+The iOS client can send command frames over runtime QUIC or runtime TLS when
+`GET /v1/config` advertises that lane and the diagnostics/runtime-control
+policy selects it. Runtime QUIC/TLS command failure recovers through runtime
+HTTP. Runtime WebSocket command compatibility is retired by default; the
+production runtime serves it only behind
+`TURBO_RUNTIME_WEBSOCKET_COMPATIBILITY_ENABLED=true`, and forced runtime
+QUIC/TLS/HTTP policies disable it so tests exercise the runtime-control algebra
+directly.
+
+Server-side runtime TLS control is implemented as a Rustls runtime-control
+stream/listener boundary and is covered by runtime tests. Runtime TLS uses the
+same persistent control law as runtime QUIC: the first valid command frame
+binds `userId` or `userHandle` plus `deviceId`, later mismatches are rejected,
+and command-level errors do not close the stream. Enable it by setting
+`BEEP_RUNTIME_TLS_CONTROL_BIND`, `BEEP_RUNTIME_CONTROL_CERT_PEM`,
+`BEEP_RUNTIME_CONTROL_KEY_PEM`, `BEEP_RUNTIME_SUPPORTS_TLS_CONTROL=true`, and
+`BEEP_RUNTIME_TLS_CONTROL_ENDPOINT`.
+
+Server-side runtime QUIC control uses the `quiche` server config, UDP listener,
+stream adapter, and endpoint state machine: runtime-control ALPN,
+stream-oriented limits, active-migration config, command response, live-media
+rejection, first-frame identity binding, identity mismatch rejection, and state
+mutation over real in-memory `quiche` client/server connections. Enable it by
+setting `BEEP_RUNTIME_QUIC_CONTROL_BIND`, `BEEP_RUNTIME_CONTROL_CERT_PEM`,
+`BEEP_RUNTIME_CONTROL_KEY_PEM`, `BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true`, and
+`BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT`.
+
+| Policy | Launch argument / env value | Effect |
+| --- | --- | --- |
+| Automatic | `automatic` | Resolve runtime config preference to the first supported control lane. |
+| HTTP only | `http-only` | Force stateless HTTP control for compatibility and bisection. |
+| Runtime QUIC | `force-runtime-quic` or `runtime-quic-control` | Prefer runtime QUIC control; fall back to HTTP with `runtime-quic-unavailable` if not advertised. |
+| Runtime TLS | `force-runtime-tls` or `runtime-tls-control` | Prefer runtime TLS control; fall back to HTTP with `runtime-tls-unavailable` if not advertised. |
+| Runtime HTTP | `force-runtime-http` or `runtime-http-request` | Force HTTP request/response control. |
+
+Set the policy with
+`-TurboDebugControlCommandTransportPolicy <value>` or
+`TURBO_DEBUG_CONTROL_COMMAND_TRANSPORT_POLICY=<value>`. Diagnostics record
+requested policy, effective lane, persistent/non-persistent classification, and
+fallback reason.
 
 ## Client And Engine
 

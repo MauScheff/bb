@@ -12,11 +12,14 @@ import UIKit
 
 enum OutgoingAudioSendError: LocalizedError, Sendable {
     case remoteReceiverAudioNotReady
+    case noLegalLiveMediaLane
 
     var errorDescription: String? {
         switch self {
         case .remoteReceiverAudioNotReady:
             return "remote receiver audio was not ready"
+        case .noLegalLiveMediaLane:
+            return "no legal live media lane was available"
         }
     }
 }

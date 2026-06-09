@@ -1793,6 +1793,67 @@ extension PTTViewModel {
         captureDiagnosticsState("direct-quic:debug-transmit-startup-policy")
     }
 
+    func setMediaLaneOverrideForDebug(_ override: TurboMediaLaneOverride) async {
+        let previousValue = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(override)
+
+        switch override {
+        case .automatic:
+            break
+        case .forceDirectQuic:
+            mediaRuntime.replaceMediaRelayClient(with: nil)
+            mediaRuntime.updateTransportPathState(.direct)
+        case .forceFastRelayQuic:
+            mediaRuntime.updateTransportPathState(.fastRelay)
+            await cancelSelectedDirectQuicAttemptForDebug(reason: "debug-force-fast-relay-quic")
+        case .forceFastRelayTls:
+            mediaRuntime.updateTransportPathState(.fastRelayTcp)
+            await cancelSelectedDirectQuicAttemptForDebug(reason: "debug-force-fast-relay-tls")
+        }
+
+        diagnostics.record(
+            .media,
+            message: "Media lane override updated from diagnostics",
+            metadata: [
+                "selectedContact": selectedContact?.handle ?? "none",
+                "previousValue": previousValue.rawValue,
+                "newValue": override.rawValue,
+                "effectiveTransportPath": mediaRuntime.transportPathState.rawValue,
+                "configured": String(TurboMediaRelayDebugOverride.config()?.isConfigured == true),
+            ]
+        )
+
+        statusMessage = "Media lane: \(override.label)"
+        captureDiagnosticsState("media-lane:debug-override")
+    }
+
+    func setControlCommandTransportPolicyForDebug(_ policy: TurboControlCommandTransportPolicy) {
+        let previousValue = backendServices?.controlCommandTransportPolicy
+            ?? TurboControlCommandTransportDebugOverride.policy()
+            ?? .automatic
+        TurboControlCommandTransportDebugOverride.setPolicy(policy)
+        let selection = backendServices?.runtimeControlSelection
+            ?? TurboRuntimeControlSelection(
+                requestedPolicy: policy,
+                effectiveLane: .runtimeHttpRequest,
+                fallbackReason: "backend-unavailable"
+            )
+
+        diagnostics.record(
+            .backend,
+            message: "Runtime control transport policy updated from diagnostics",
+            metadata: [
+                "previousValue": previousValue.rawValue,
+                "newValue": policy.rawValue,
+                "effectiveLane": selection.effectiveLane.rawValue,
+                "fallbackReason": selection.fallbackReason ?? "none",
+                "persistent": String(selection.usesPersistentTransport),
+            ]
+        )
+        statusMessage = "Runtime control: \(policy.label)"
+        captureDiagnosticsState("runtime-control:debug-policy")
+    }
+
     func forceSelectedDirectQuicProbeForDebug() async {
         guard let selectedContact else {
             diagnostics.record(

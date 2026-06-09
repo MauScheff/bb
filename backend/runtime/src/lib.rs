@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub mod control_protocol;
+pub mod control_stream;
 pub mod fuzz;
 pub mod http;
 pub mod http_probe;
@@ -20,6 +22,8 @@ pub mod owner_record_transport;
 pub mod postgres;
 pub mod quic_protocol;
 pub mod routes;
+pub mod runtime_quic;
+pub mod runtime_tls;
 pub mod server;
 pub mod shadow;
 pub mod talk_turn_actor;

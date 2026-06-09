@@ -1143,6 +1143,226 @@ struct DiagnosticsTests {
         )
     }
 
+    @Test func controlCommandTransportDebugOverrideSupportsRuntimeControlLaneAliases() throws {
+        let suiteName = "TurboTests.control-command-transport-runtime-lanes.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        TurboControlCommandTransportDebugOverride.setPolicy(.forceRuntimeTls, defaults: defaults)
+        #expect(
+            TurboControlCommandTransportDebugOverride.policy(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            ) == .forceRuntimeTls
+        )
+        #expect(
+            TurboControlCommandTransportDebugOverride.policy(
+                arguments: [
+                    TurboControlCommandTransportDebugOverride.launchArgument,
+                    "runtime-quic-control",
+                ],
+                environment: [:],
+                defaults: defaults
+            ) == .forceRuntimeQuic
+        )
+        #expect(
+            TurboControlCommandTransportDebugOverride.policy(
+                arguments: [],
+                environment: [
+                    TurboControlCommandTransportDebugOverride.environmentKey:
+                        "runtime-http-request",
+                ],
+                defaults: defaults
+            ) == .forceRuntimeHttp
+        )
+    }
+
+    @Test func runtimeControlSelectionChoosesPreferredAvailableLaneAndFallsBackLawfully() {
+        let runtimeConfig = TurboBackendRuntimeConfig(
+            mode: "cloud",
+            supportsWebSocket: true,
+            supportsRuntimeQuicControl: true,
+            supportsRuntimeTlsControl: true,
+            runtimeControl: TurboRuntimeControlConfig(
+                preference: [.runtimeQuicControl, .runtimeTlsControl, .runtimeHttpRequest],
+                quic: TurboRuntimeQuicControlConfig(
+                    supported: true,
+                    endpoint: "api.beepbeep.to:443",
+                    alpn: "beep-runtime-control-v1",
+                    migrationEnabled: true
+                ),
+                tls: TurboRuntimeTlsControlConfig(
+                    supported: true,
+                    endpoint: "api.beepbeep.to:443"
+                ),
+                http: TurboRuntimeHttpControlConfig(supported: true, endpoint: "https://api.beepbeep.to")
+            )
+        )
+
+        let automatic = runtimeConfig.runtimeControlSelection(requestedPolicy: .automatic)
+        #expect(automatic.effectiveLane == .runtimeQuicControl)
+        #expect(automatic.fallbackReason == nil)
+        #expect(automatic.usesPersistentTransport)
+
+        let forcedTls = runtimeConfig.runtimeControlSelection(requestedPolicy: .forceRuntimeTls)
+        #expect(forcedTls.effectiveLane == .runtimeTlsControl)
+        #expect(forcedTls.fallbackReason == nil)
+        #expect(forcedTls.usesPersistentTransport)
+
+        let unavailableQuic = TurboBackendRuntimeConfig(
+            mode: "cloud",
+            supportsWebSocket: true,
+            supportsRuntimeQuicControl: false,
+            supportsRuntimeTlsControl: true,
+            runtimeControl: TurboRuntimeControlConfig(
+                preference: [.runtimeQuicControl, .runtimeTlsControl, .runtimeHttpRequest],
+                quic: TurboRuntimeQuicControlConfig(supported: false),
+                tls: TurboRuntimeTlsControlConfig(supported: true),
+                http: TurboRuntimeHttpControlConfig(supported: true)
+            )
+        )
+        let forcedQuicFallback = unavailableQuic.runtimeControlSelection(requestedPolicy: .forceRuntimeQuic)
+        #expect(forcedQuicFallback.effectiveLane == .runtimeHttpRequest)
+        #expect(forcedQuicFallback.fallbackReason == "runtime-quic-unavailable")
+        #expect(!forcedQuicFallback.usesPersistentTransport)
+    }
+
+    @Test func mediaLaneDebugOverrideSupportsStoredLaunchAndEnvironmentFlags() throws {
+        let suiteName = "TurboTests.media-lane-override.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        #expect(
+            TurboMediaLaneDebugOverride.mediaLaneOverride(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            ) == .automatic
+        )
+
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayQuic, defaults: defaults)
+        #expect(
+            TurboMediaLaneDebugOverride.mediaLaneOverride(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            ) == .forceFastRelayQuic
+        )
+        #expect(
+            TurboMediaLaneDebugOverride.mediaLaneOverride(
+                arguments: [
+                    TurboMediaLaneDebugOverride.launchArgument,
+                    "direct",
+                ],
+                environment: [:],
+                defaults: defaults
+            ) == .forceDirectQuic
+        )
+        #expect(
+            TurboMediaLaneDebugOverride.mediaLaneOverride(
+                arguments: [],
+                environment: [
+                    TurboMediaLaneDebugOverride.environmentKey: "fast-relay-tls",
+                ],
+                defaults: defaults
+            ) == .forceFastRelayTls
+        )
+    }
+
+    @Test func mediaLaneDebugOverrideIsIgnoredForProductionLikeBuilds() throws {
+        let suiteName = "TurboTests.media-lane-override-production-like.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayQuic, defaults: defaults)
+
+        #expect(
+            TurboMediaLaneDebugOverride.mediaLaneOverride(
+                arguments: [
+                    TurboMediaLaneDebugOverride.launchArgument,
+                    TurboMediaLaneOverride.forceFastRelayTls.rawValue,
+                ],
+                environment: [
+                    TurboMediaLaneDebugOverride.environmentKey: TurboMediaLaneOverride.forceDirectQuic.rawValue,
+                ],
+                defaults: defaults,
+                allowStoredDebugOverride: false
+            ) == .automatic
+        )
+    }
+
+    @Test func mediaLaneDebugOverrideWritesDerivedTransportToggles() throws {
+        let suiteName = "TurboTests.media-lane-derived-toggles.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceDirectQuic, defaults: defaults)
+        #expect(
+            !TurboDirectPathDebugOverride.isRelayOnlyForced(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            !TurboDirectPathDebugOverride.isAutoUpgradeDisabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            !TurboMediaRelayDebugOverride.isEnabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            !TurboMediaRelayDebugOverride.isForced(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayTls, defaults: defaults)
+        #expect(
+            TurboDirectPathDebugOverride.isAutoUpgradeDisabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            TurboMediaRelayDebugOverride.isEnabled(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+        #expect(
+            TurboMediaRelayDebugOverride.isForced(
+                arguments: [],
+                environment: [:],
+                defaults: defaults
+            )
+        )
+    }
+
     @Test func callScreenBackgroundAnimationFlagDefaultsOffAndSupportsOverrides() throws {
         let suiteName = "TurboTests.call-screen-background-animation-flag.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -1649,7 +1869,7 @@ struct DiagnosticsTests {
     }
 
     @MainActor
-    @Test func incomingAudioChunkDiagnosticsAreBudgeted() async throws {
+    @Test func backendWebSocketAudioChunksAreRejectedAsRuntimeLiveMedia() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -1696,22 +1916,18 @@ struct DiagnosticsTests {
 
         try await Task.sleep(nanoseconds: 100_000_000)
 
-        let detailedEntries = viewModel.diagnostics.entries.filter {
-            $0.message == "Audio chunk received"
+        let rejectedEntries = viewModel.diagnostics.entries.filter {
+            $0.message == "Rejected backend WebSocket audio chunk"
         }
-        let suppressedEntries = viewModel.diagnostics.entries.filter {
-            $0.message == "Suppressing repetitive audio chunk diagnostics"
+        let invariantViolations = viewModel.diagnostics.invariantViolations.filter {
+            $0.invariantID == "media.runtime_never_carries_live_audio"
         }
 
-        #expect(detailedEntries.count == 3)
-        #expect(suppressedEntries.count == 1)
-        #expect(
-            detailedEntries.allSatisfy {
-                $0.metadata["transportDigest"] != nil
-                    && $0.metadata["decodedChunkCount"] != nil
-            }
-        )
-        #expect(suppressedEntries.first?.metadata["detailedReportLimit"] == "3")
+        #expect(rejectedEntries.count == 5)
+        #expect(invariantViolations.count == 1)
+        #expect(invariantViolations.allSatisfy { $0.metadata["payloadClass"] == "liveMedia" })
+        #expect(invariantViolations.allSatisfy { $0.metadata["endpoint"] == "runtime" })
+        #expect(invariantViolations.allSatisfy { $0.metadata["action"] == "rejected" })
     }
 
     @MainActor

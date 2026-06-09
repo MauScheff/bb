@@ -33,6 +33,11 @@ pub struct LiveRuntimeConfig {
     pub snapshot_built_at_ms: i64,
     pub kernel_deadline: Duration,
     pub runtime_id: String,
+    pub runtime_control_cert_pem: Option<PathBuf>,
+    pub runtime_control_key_pem: Option<PathBuf>,
+    pub runtime_quic_control_bind: Option<SocketAddr>,
+    pub runtime_tls_control_bind: Option<SocketAddr>,
+    pub websocket_compatibility_enabled: bool,
     pub websocket_mode: LiveWebSocketMode,
     pub websocket_owner_ttl_ms: i64,
     pub policy: SnapshotPolicyConfig,
@@ -67,6 +72,11 @@ impl LiveRuntimeConfig {
             optional_env("TURBO_RUNTIME_SNAPSHOT_BUILT_AT_MS"),
             optional_env("TURBO_KERNEL_DEADLINE_MS"),
             optional_env("TURBO_RUNTIME_ID"),
+            optional_env("BEEP_RUNTIME_CONTROL_CERT_PEM"),
+            optional_env("BEEP_RUNTIME_CONTROL_KEY_PEM"),
+            optional_env("BEEP_RUNTIME_QUIC_CONTROL_BIND"),
+            optional_env("BEEP_RUNTIME_TLS_CONTROL_BIND"),
+            optional_env("TURBO_RUNTIME_WEBSOCKET_COMPATIBILITY_ENABLED"),
             optional_env("TURBO_RUNTIME_WEBSOCKET_MODE"),
             optional_env("TURBO_RUNTIME_WEBSOCKET_OWNER_TTL_MS"),
         )
@@ -79,6 +89,11 @@ impl LiveRuntimeConfig {
         snapshot_built_at_ms: Option<String>,
         kernel_deadline_ms: Option<String>,
         runtime_id: Option<String>,
+        runtime_control_cert_pem: Option<String>,
+        runtime_control_key_pem: Option<String>,
+        runtime_quic_control_bind: Option<String>,
+        runtime_tls_control_bind: Option<String>,
+        websocket_compatibility_enabled: Option<String>,
         websocket_mode: Option<String>,
         websocket_owner_ttl_ms: Option<String>,
     ) -> Result<Self, LiveRuntimeConfigError> {
@@ -105,6 +120,18 @@ impl LiveRuntimeConfig {
                 message: "must not be empty".to_owned(),
             });
         }
+        let runtime_control_cert_pem = runtime_control_cert_pem.map(PathBuf::from);
+        let runtime_control_key_pem = runtime_control_key_pem.map(PathBuf::from);
+        let runtime_quic_control_bind = runtime_quic_control_bind
+            .map(|value| parse_socket_addr_env("BEEP_RUNTIME_QUIC_CONTROL_BIND", &value))
+            .transpose()?;
+        let runtime_tls_control_bind = runtime_tls_control_bind
+            .map(|value| parse_socket_addr_env("BEEP_RUNTIME_TLS_CONTROL_BIND", &value))
+            .transpose()?;
+        let websocket_compatibility_enabled = websocket_compatibility_enabled
+            .map(|value| parse_bool_env("TURBO_RUNTIME_WEBSOCKET_COMPATIBILITY_ENABLED", &value))
+            .transpose()?
+            .unwrap_or(false);
         let websocket_mode = parse_websocket_mode(websocket_mode)?;
         let websocket_owner_ttl_ms = websocket_owner_ttl_ms
             .map(|value| parse_i64_env("TURBO_RUNTIME_WEBSOCKET_OWNER_TTL_MS", &value))
@@ -123,6 +150,11 @@ impl LiveRuntimeConfig {
             snapshot_built_at_ms,
             kernel_deadline: Duration::from_millis(kernel_deadline_ms),
             runtime_id,
+            runtime_control_cert_pem,
+            runtime_control_key_pem,
+            runtime_quic_control_bind,
+            runtime_tls_control_bind,
+            websocket_compatibility_enabled,
             websocket_mode,
             websocket_owner_ttl_ms,
             policy: SnapshotPolicyConfig::default(),
@@ -197,6 +229,29 @@ fn parse_u64_env(name: &'static str, value: &str) -> Result<u64, LiveRuntimeConf
         })
 }
 
+fn parse_socket_addr_env(
+    name: &'static str,
+    value: &str,
+) -> Result<SocketAddr, LiveRuntimeConfigError> {
+    value
+        .parse()
+        .map_err(|err| LiveRuntimeConfigError::InvalidEnv {
+            name,
+            message: format!("{err}"),
+        })
+}
+
+fn parse_bool_env(name: &'static str, value: &str) -> Result<bool, LiveRuntimeConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(LiveRuntimeConfigError::InvalidEnv {
+            name,
+            message: format!("unsupported boolean `{other}`"),
+        }),
+    }
+}
+
 fn parse_websocket_mode(
     value: Option<String>,
 ) -> Result<LiveWebSocketMode, LiveRuntimeConfigError> {
@@ -225,6 +280,11 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .expect("config should parse");
 
@@ -237,6 +297,11 @@ mod tests {
         assert_eq!(config.snapshot_built_at_ms, 10_000);
         assert_eq!(config.kernel_deadline, Duration::from_millis(20_000));
         assert_eq!(config.runtime_id, "runtime-single");
+        assert_eq!(config.runtime_control_cert_pem, None);
+        assert_eq!(config.runtime_control_key_pem, None);
+        assert_eq!(config.runtime_quic_control_bind, None);
+        assert_eq!(config.runtime_tls_control_bind, None);
+        assert!(!config.websocket_compatibility_enabled);
         assert_eq!(config.websocket_mode, LiveWebSocketMode::SingleInstance);
         assert_eq!(config.websocket_owner_ttl_ms, 15_000);
     }
@@ -250,6 +315,11 @@ mod tests {
             Some("12345".to_owned()),
             Some("2500".to_owned()),
             Some("runtime-a".to_owned()),
+            Some("/tmp/runtime-control.crt".to_owned()),
+            Some("/tmp/runtime-control.key".to_owned()),
+            Some("127.0.0.1:19443".to_owned()),
+            Some("127.0.0.1:19444".to_owned()),
+            Some("true".to_owned()),
             Some("clustered-single-active".to_owned()),
             Some("45000".to_owned()),
         )
@@ -265,6 +335,23 @@ mod tests {
         assert_eq!(config.kernel_deadline, Duration::from_millis(2500));
         assert_eq!(config.runtime_id, "runtime-a");
         assert_eq!(
+            config.runtime_control_cert_pem,
+            Some(PathBuf::from("/tmp/runtime-control.crt"))
+        );
+        assert_eq!(
+            config.runtime_control_key_pem,
+            Some(PathBuf::from("/tmp/runtime-control.key"))
+        );
+        assert_eq!(
+            config.runtime_quic_control_bind,
+            Some("127.0.0.1:19443".parse::<SocketAddr>().unwrap())
+        );
+        assert_eq!(
+            config.runtime_tls_control_bind,
+            Some("127.0.0.1:19444".parse::<SocketAddr>().unwrap())
+        );
+        assert!(config.websocket_compatibility_enabled);
+        assert_eq!(
             config.websocket_mode,
             LiveWebSocketMode::ClusteredSingleActive
         );
@@ -276,6 +363,11 @@ mod tests {
         let err = LiveRuntimeConfig::from_values(
             "postgres://localhost/turbo".to_owned(),
             Some("not-an-address".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -303,6 +395,11 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
             Some("active-active".to_owned()),
             None,
         )
@@ -318,6 +415,11 @@ mod tests {
 
         let bad_ttl = LiveRuntimeConfig::from_values(
             "postgres://localhost/turbo".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,

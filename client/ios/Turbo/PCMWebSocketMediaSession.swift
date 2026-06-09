@@ -151,7 +151,7 @@ actor AudioChunkSender {
         reportRecovery: (@Sendable () async -> Void)? = nil,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
         sendGenerationGate: AudioSendGenerationGate? = nil,
-        configuration: MediaTransportSenderConfiguration = .websocketContinuity,
+        configuration: MediaTransportSenderConfiguration = .orderedContinuity,
         maximumPendingPayloads: Int? = nil,
         maximumPayloadsPerMessage: Int? = nil,
         payloadBatchCollectionNanoseconds: UInt64? = nil,
@@ -1242,7 +1242,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
     init(
         sendAudioChunk: (@Sendable (String) async throws -> Void)?,
         reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
-        senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
+        senderConfiguration: MediaTransportSenderConfiguration = .orderedContinuity,
         outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .opusV2,
         outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
         voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
@@ -3271,7 +3271,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
         case .fastRelayBalanced:
             return MediaTransportPolicy.fastRelayBalanced.playbackCushion
         case .relayJitterBuffered:
-            return MediaTransportPolicy.websocketContinuity.playbackCushion
+            return MediaTransportPolicy.orderedContinuity.playbackCushion
         case .wakeBackgroundContinuity:
             return MediaTransportPolicy.wakeBackgroundContinuity.playbackCushion
         }

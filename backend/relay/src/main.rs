@@ -41,6 +41,7 @@ struct Config {
     key_pem: PathBuf,
     shared_token: String,
     session_ttl: Duration,
+    quic_active_migration_enabled: bool,
 }
 
 type RelayState = GenericRelayState<RelayStreamPeer, RelayDatagramPeer>;
@@ -168,6 +169,8 @@ impl Config {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(180);
+        let quic_active_migration_enabled =
+            parse_env_bool("TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED", true)?;
 
         Ok(Self {
             quic_addr,
@@ -176,12 +179,32 @@ impl Config {
             key_pem,
             shared_token,
             session_ttl: Duration::from_secs(session_ttl_seconds),
+            quic_active_migration_enabled,
         })
     }
 }
 
+fn parse_env_bool(name: &str, default: bool) -> Result<bool> {
+    let Some(value) = env::var(name).ok() else {
+        return Ok(default);
+    };
+    parse_bool_value(name, &value)
+}
+
+fn parse_bool_value(name: &str, value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => Err(anyhow!("{name} must be true/false, yes/no, on/off, or 1/0")),
+    }
+}
+
 async fn serve_quic(config: Config, state: RelayState) -> Result<()> {
-    let mut quic_config = transport_quic::server_config(&config.cert_pem, &config.key_pem)?;
+    let mut quic_config = transport_quic::server_config(
+        &config.cert_pem,
+        &config.key_pem,
+        config.quic_active_migration_enabled,
+    )?;
     let socket = UdpSocket::bind(config.quic_addr)
         .await
         .context("failed to bind QUIC endpoint")?;
@@ -193,7 +216,11 @@ async fn serve_quic(config: Config, state: RelayState) -> Result<()> {
     let mut recv_buf = vec![0u8; 65_535];
     let mut out_buf = vec![0u8; QUIC_OUT_BUF_LENGTH];
 
-    info!(addr = %config.quic_addr, "QUIC relay listening");
+    info!(
+        addr = %config.quic_addr,
+        active_migration_enabled = config.quic_active_migration_enabled,
+        "QUIC relay listening"
+    );
 
     loop {
         let timeout = connections
@@ -1212,8 +1239,8 @@ async fn cleanup_loop(state: RelayState) {
 mod tests {
     use super::{
         Config, RelayDatagramEndpoint, RelayFrame, RelayState, RelayTransport,
-        handle_datagram_join, handle_inbound_frame, handle_join, relay_lines_codec,
-        remove_datagram_peer, remove_peer, send_datagram_frame,
+        handle_datagram_join, handle_inbound_frame, handle_join, parse_bool_value,
+        relay_lines_codec, remove_datagram_peer, remove_peer, send_datagram_frame,
     };
     use anyhow::Result;
     use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -1238,6 +1265,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn relay_quic_active_migration_env_bool_accepts_operator_values() -> Result<()> {
+        assert!(parse_bool_value(
+            "TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED",
+            "true"
+        )?);
+        assert!(parse_bool_value(
+            "TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED",
+            "1"
+        )?);
+        assert!(!parse_bool_value(
+            "TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED",
+            "off"
+        )?);
+        assert!(
+            parse_bool_value("TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED", "maybe").is_err()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stale_peer_removal_does_not_remove_newer_connection() -> Result<()> {
         let config = Config {
@@ -1247,6 +1294,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let join_line = serde_json::to_string(&RelayFrame::Join {
@@ -1288,6 +1336,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let stream_join_line = serde_json::to_string(&RelayFrame::Join {
@@ -1369,6 +1418,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let join_a = serde_json::to_string(&RelayFrame::Join {
@@ -1420,6 +1470,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let join_a = serde_json::to_string(&RelayFrame::Join {
@@ -1471,6 +1522,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let join_line = serde_json::to_string(&RelayFrame::Join {
@@ -1522,6 +1574,7 @@ mod tests {
             key_pem: PathBuf::from("unused-key.pem"),
             shared_token: "secret".to_owned(),
             session_ttl: Duration::from_secs(60),
+            quic_active_migration_enabled: true,
         };
         let state = RelayState::new();
         let join_line = serde_json::to_string(&RelayFrame::Join {

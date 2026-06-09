@@ -843,11 +843,43 @@ extension PTTViewModel {
         fromUserID: String,
         fromDeviceID: String,
         contactID: UUID,
-        incomingAudioTransport: IncomingAudioPayloadTransport = .relayWebSocket,
+        incomingAudioTransport: IncomingAudioPayloadTransport = .mediaRelayTcp,
         transportSequenceNumber: UInt64? = nil,
         expectedReceiveEpoch: UInt64? = nil,
         ingressContext: IncomingAudioIngressContext? = nil
     ) async {
+        guard incomingAudioTransport != .relayWebSocket else {
+            diagnostics.recordInvariantViolation(
+                invariantID: "media.runtime_never_carries_live_audio",
+                scope: .local,
+                message: "Rejected runtime WebSocket audio payload at media ingress",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromUserId": fromUserID,
+                    "fromDeviceId": fromDeviceID,
+                    "toDeviceId": backendServices?.deviceID ?? backendConfig?.deviceID ?? "unknown",
+                    "payloadClass": "liveMedia",
+                    "endpoint": "runtime",
+                    "mechanism": "websocket",
+                    "transport": incomingAudioTransport.diagnosticsValue,
+                    "action": "rejected",
+                ]
+            )
+            diagnostics.record(
+                .media,
+                level: .error,
+                message: "Rejected runtime WebSocket audio payload at media ingress",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "fromDeviceId": fromDeviceID,
+                    "transport": incomingAudioTransport.diagnosticsValue,
+                    "action": "rejected-runtime-live-media",
+                ]
+            )
+            return
+        }
         let applicationState = currentApplicationState()
         guard !dropIncomingAudioAfterCancelledTransportDeliveryIfNeeded(
             channelID: channelID,
@@ -3608,23 +3640,35 @@ extension PTTViewModel {
                 await refreshChannelState(for: contactID)
             }
         case .audioChunk:
-            Task {
-                let receivedAtNanoseconds = DispatchTime.now().uptimeNanoseconds
-                await handleIncomingLiveAudioPayload(
-                    envelope.payload,
-                    channelID: envelope.channelId,
-                    fromUserID: envelope.fromUserId,
-                    fromDeviceID: envelope.fromDeviceId,
-                    contactID: contactID,
-                    incomingAudioTransport: .relayWebSocket,
-                    transportSequenceNumber: nil,
-                    expectedReceiveEpoch: nil,
-                    ingressContext: IncomingAudioIngressContext(
-                        receivedAtNanoseconds: receivedAtNanoseconds,
-                        source: "relay-websocket"
-                    )
-                )
-            }
+            diagnostics.recordInvariantViolation(
+                invariantID: "media.runtime_never_carries_live_audio",
+                scope: .local,
+                message: "Rejected backend WebSocket audio chunk because runtime control cannot carry live media",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": envelope.channelId,
+                    "fromUserId": envelope.fromUserId,
+                    "fromDeviceId": envelope.fromDeviceId,
+                    "toUserId": envelope.toUserId,
+                    "toDeviceId": envelope.toDeviceId,
+                    "payloadClass": "liveMedia",
+                    "endpoint": "runtime",
+                    "mechanism": "websocket",
+                    "signalType": envelope.type.rawValue,
+                    "action": "rejected",
+                ]
+            )
+            diagnostics.record(
+                .websocket,
+                level: .error,
+                message: "Rejected backend WebSocket audio chunk",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": envelope.channelId,
+                    "fromDeviceId": envelope.fromDeviceId,
+                    "action": "rejected-runtime-live-media",
+                ]
+            )
         case .audioPlaybackStarted:
             do {
                 let payload = try envelope.decodeAudioPlaybackStartedPayload()

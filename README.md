@@ -2,7 +2,7 @@
 
 BeepBeep is an iOS Push-to-Talk app backed by a Rust control-plane runtime and a pure Unison kernel.
 
-The app owns Apple PushToTalk, audio, local projection, and user interaction. The backend owns shared truth: identity, devices, Beeps, Conversation membership, readiness, wake targeting, websocket signaling, and Talk Turn ownership. The backend is the control plane, not the media plane.
+The app owns Apple PushToTalk, audio, local projection, and user interaction. The backend owns shared truth: identity, devices, Beeps, Conversation membership, readiness, wake targeting, signaling, and Talk Turn ownership. The backend is the authoritative control plane, never the live media plane.
 
 Canonical hosted production endpoints:
 
@@ -14,6 +14,35 @@ media relay:       relay.beepbeep.to:443
 The API VM and relay VM are separate on purpose. The API endpoint owns HTTPS
 through nginx on TCP `443`. The relay endpoint owns QUIC packet media on UDP
 `443` plus TCP/TLS fallback on TCP `443`.
+
+Transport model:
+
+| Class | Legal lanes |
+| --- | --- |
+| Live media | Direct QUIC datagrams, Fast Relay QUIC datagrams, Fast Relay TCP/TLS ordered fallback |
+| Hints | Direct QUIC control, Fast Relay QUIC control, runtime control when available |
+| Authoritative control | Rust runtime control selected as runtime QUIC, runtime TLS, or HTTP bootstrap/recovery |
+
+Runtime control is not a live media lane. Backend `audio-chunk` control signals
+are rejected as invalid live media rather than played as a hidden fallback.
+Diagnostics lane forcing is local test policy: it selects a sender lane for an
+epoch, and the peer adapts to any valid current-epoch media lane without
+changing backend truth.
+
+Runtime config (`GET /v1/config`) advertises the control-lane contract:
+`runtimeControl.preference`, `runtimeControl.quic`, `runtimeControl.tls`, and
+`runtimeControl.http`. The client resolves the requested runtime-control policy
+to an effective lane and records the fallback reason when the preferred
+persistent lane is unavailable. The QUIC control ALPN is
+`beep-runtime-control-v1`.
+Runtime QUIC/TLS command failures recover through runtime HTTP; WebSocket
+command compatibility is retired from the default runtime and is available only
+behind the explicit `TURBO_RUNTIME_WEBSOCKET_COMPATIBILITY_ENABLED=true`
+operator switch for legacy recovery.
+
+Persistent runtime control streams bind identity from the first valid command
+frame: `userId` or `userHandle` plus `deviceId`. Later frames with a different
+identity are rejected before they can mutate backend truth.
 
 ## Layout
 

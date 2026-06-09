@@ -30,7 +30,7 @@ Related operational docs:
 ## App Architecture Pattern
 
 - UI renders derived state and emits user intents.
-- UI gestures, backend updates, websocket signals, Apple/PTT callbacks, timers, lifecycle changes, and media callbacks become typed events.
+- UI gestures, backend updates, runtime-control notices, Apple/PTT callbacks, timers, lifecycle changes, and media callbacks become typed events.
 - Reducers/transition functions decide valid next state.
 - Diagnostics explain transitions, invariants, and rejected events.
 - Put Conversation, Connection, Talk Turn, PTT, media, and low-level transport rules in `Packages/TurboEngine` when they do not require iOS frameworks.
@@ -38,7 +38,7 @@ Related operational docs:
 
 ## Voice Media Codec State
 
-Current voice-media encoding is app-side. Backend media routes still carry opaque payload strings, and E2EE still wraps the full media payload string before Direct QUIC, Fast Relay, or websocket relay transport. Binary packet media and the modular playout engine are specified in [`VOICE_MEDIA_CORE.md`](/Users/mau/Development/bb/docs/client/VOICE_MEDIA_CORE.md). No Unison schema migration is required for the current Opus path.
+Current voice-media encoding is app-side. E2EE wraps the full media payload before Direct QUIC or Fast Relay transport. Runtime control routes may carry metadata and commands, but the runtime is not a live media lane. Binary packet media and the modular playout engine are specified in [`VOICE_MEDIA_CORE.md`](/Users/mau/Development/bb/docs/client/VOICE_MEDIA_CORE.md). No Unison schema migration is required for the current Opus path.
 
 Authoritative Swift seams:
 
@@ -55,7 +55,7 @@ Sender flow:
 1. Capture is converted to canonical 48 kHz mono signed 16-bit PCM.
 2. `VoiceFrameAccumulator` emits exact 20 ms frames: 960 samples, 1 channel, 1,920 bytes.
 3. `VoiceMediaNegotiator` selects `opus-v2` whenever the local build has the Opus codec. Peer capability evidence is still recorded for diagnostics, but outbound audio does not downgrade because stale readiness evidence says nothing useful about a current Turbo client.
-4. Opus sends use one `turbo-audio-frame-v2` envelope per 20 ms frame. Packet media lanes send one encoded frame per datagram and use a lane-derived `OpusVoiceEncodingPolicy`; ordered fallback lanes batch short frame bursts into one ordered transport payload so backend WebSocket/TCP fallback is not asked to carry 50 media messages per second.
+4. Opus sends use one `turbo-audio-frame-v2` envelope per 20 ms frame. Packet media lanes send one encoded frame per datagram and use a lane-derived `OpusVoiceEncodingPolicy`; ordered Fast Relay TCP/TLS fallback batches short frame bursts into one ordered transport payload so fallback is bounded and stale backlog can be dropped.
 5. Legacy PCM remains decodable for old diagnostics, replay corpora, and defensive inbound compatibility while that plumbing is unwound. Current clients should not produce outbound legacy PCM when Opus is available.
 
 Audio transport and codec matrix:
@@ -64,10 +64,9 @@ Audio transport and codec matrix:
 | --- | --- | --- | --- | --- |
 | `direct-quic` | Direct device-to-device QUIC datagram packet media | Opus v2 when local codec support exists | `directLowLatency` | Control stays on the ordered QUIC message/control path. Live audio uses datagrams. Best packet lanes use 40 kbps Opus and enable FEC only from observed loss. |
 | `media-relay-packet` | Fast Relay QUIC datagram packet media over UDP | Opus v2 when local codec support exists | `fastRelayBalanced` | Preferred relay fallback when Direct QUIC is unavailable. QUIC stream audio is not used. Best packet lanes use 40 kbps Opus and enable FEC only from observed loss. |
-| `media-relay-tcp` | Fast Relay TCP/TLS ordered stream media | Opus v2 when local codec support exists | `websocketContinuity` | Explicit degraded fallback when relay QUIC/datagrams cannot connect. Stale ordered backlog must be dropped. Reliable fallback Opus uses 32 kbps with FEC off. |
-| `relay-websocket` | Backend websocket ordered stream media | Opus v2 when local codec support exists | `websocketContinuity` | Guaranteed compatibility path; backend still sees only opaque payload strings. Reliable fallback Opus uses 32 kbps with FEC off. |
+| `media-relay-tcp` | Fast Relay TCP/TLS ordered stream media | Opus v2 when local codec support exists | `orderedContinuity` | Explicit degraded fallback when relay QUIC/datagrams cannot connect. Stale ordered backlog must be dropped. Reliable fallback Opus uses 32 kbps with FEC off. |
 
-Fast Relay QUIC is considered selected only after both the ordered QUIC control stream joins and the separate QUIC datagram media join receives a `datagram-join-ack`. If datagram join times out or fails, the app falls back to explicit Fast Relay TCP/TLS (`media-relay-tcp`) or backend websocket rather than sending hidden QUIC-stream audio.
+Fast Relay QUIC is considered selected only after both the ordered QUIC control stream joins and the separate QUIC datagram media join receives a `datagram-join-ack`. If datagram join times out or fails, the app falls back to explicit Fast Relay TCP/TLS (`media-relay-tcp`) rather than sending hidden QUIC-stream audio or runtime media.
 
 Opus v2 payload shape:
 
@@ -87,7 +86,7 @@ Receiver flow:
 - `VoiceAudioFramePayloadCodec.decodeTransportFrames` accepts both Opus v2 envelopes and legacy base64 PCM payloads.
 - Legacy PCM is resampled from the older 16 kHz shape into the current 48 kHz playback format.
 - Opus frames enter `AdaptiveVoicePlayoutBuffer`, keyed by `frameIndex`, and decode in scheduled playout order.
-- Startup cushions are lane-specific: Direct QUIC targets 4 frames, Fast Relay packet targets 5, websocket fallback targets 7, and wake/background continuity targets 8. Opus startup can begin after the lane timeout with a partial cushion so sparse or reordered live packets do not block playback indefinitely.
+- Startup cushions are lane-specific: Direct QUIC targets 4 frames, Fast Relay packet targets 5, ordered Fast Relay TCP/TLS fallback targets 7, and wake/background continuity targets 8. Opus startup can begin after the lane timeout with a partial cushion so sparse or reordered live packets do not block playback indefinitely.
 - Duplicate and late frames are dropped. Missing frames use next-packet FEC for the immediately previous frame when available, otherwise native PLC. Repeated gaps increase adaptive cushion up to 3 extra frames for the current transmit.
 - Each remote transmit prepare starts a fresh receive playout epoch. Warm receive media sessions must reset Opus frame-index state and pending playback for the new transmit so frame indexes from an earlier press cannot delay or drop the next press.
 - Opus decoded frames are packet/jitter-gated by the active playout engine. After Apple/system audio activation, AVAudio may apply a startup-only scheduler cushion before the player node starts so the first audible buffers are not starved; once the node is playing, Opus frames schedule without an extra transport cushion. Legacy PCM uses the lane-specific transport cushion.
@@ -101,7 +100,7 @@ Current codec implementation:
 - `OpusVoiceEncodingPolicy` is a pure value derived from the selected Connection lane and observed packet loss.
 - Encoder configuration is mono 48 kHz PCM, 20 ms frames, `OPUS_APPLICATION_VOIP`, complexity 10, voice signal, constrained VBR, DTX off, fullband bandwidth, 16-bit LSB depth, native PLC, and lane-specific bitrate/FEC/loss hints.
 - Direct QUIC and Fast Relay packet lanes use 40 kbps Opus, packet-loss hints from the rolling incoming sequence-gap estimate, and in-band FEC only when observed loss is at least 3%.
-- TCP/WebSocket fallback lanes use 32 kbps Opus with packet-loss hint 0 and in-band FEC off; ordered backlog policy handles stale speech instead.
+- Ordered Fast Relay TCP/TLS fallback uses 32 kbps Opus with packet-loss hint 0 and in-band FEC off; ordered backlog policy handles stale speech instead.
 - Local capabilities advertise Opus v2, PLC, and `in-band-fec`. Outbound audio uses Opus v2 whenever the local codec is available; legacy PCM remains only as an inbound/replay compatibility decoder while older diagnostics and corpora exist.
 
 ## Swift ADT Patterns
@@ -192,7 +191,7 @@ struct Payment {
 - [`Turbo/PTTSystemClient.swift`](/Users/mau/Development/bb/client/ios/Turbo/PTTSystemClient.swift)
   - real-device Apple PushToTalk client plus simulator shim
 - [`Turbo/BackendClient.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendClient.swift)
-  - backend HTTP + websocket transport
+  - backend HTTP plus runtime-control compatibility transport
 - [`Turbo/BackendSyncCoordinator.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendSyncCoordinator.swift)
   - summaries, Beeps/Beep Threads, channel refresh, and reconciliation triggers
 - [`Turbo/BackendCommandCoordinator.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendCommandCoordinator.swift)

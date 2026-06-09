@@ -1130,6 +1130,11 @@ extension PTTViewModel {
     }
 
     var transportPathBadgeState: MediaTransportPathState? {
+        if let activeMediaEpochPathState = mediaRuntime.activeMediaEpochPathState,
+           activeConversationContactID ?? mediaSessionContactID ?? selectedContactId != nil {
+            return activeMediaEpochPathState
+        }
+
         guard let contactID = activeConversationContactID ?? mediaSessionContactID else {
             return nil
         }

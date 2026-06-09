@@ -32,7 +32,7 @@ Add a checked-in scenario when the bug depends on a distributed app/backend jour
 
 - multiple actors
 - explicit action order
-- backend routes or websocket notices
+- backend routes or runtime-control notices
 - simulator PushToTalk callbacks
 - deterministic waits, delays, duplicates, drops, reordering, or forced refreshes
 - selected Conversation, contact-list, backend-readiness, or diagnostics expectations

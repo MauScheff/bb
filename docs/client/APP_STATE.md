@@ -150,7 +150,7 @@ Selected Conversation derivation uses `/readiness` directly rather than reconstr
 
 Background and lock-screen receive use a local wake-activation ADT separate from backend `audioReadiness` and `wakeReadiness`:
 
-- `signalBuffered`: websocket audio or transmit-start arrived before confirmed incoming PTT push
+- `signalBuffered`: runtime-control transmit-start or wake audio arrived before confirmed incoming PTT push
 - `awaitingSystemActivation`: incoming PTT push received; app waits for Apple PushToTalk audio-session activation
 - `fallbackDeferredUntilForeground`: wake audio exists but app is inactive/locked, so app-managed playback waits for foreground
 - `appManagedFallback`: app is active and drains buffered wake audio through app-managed playback

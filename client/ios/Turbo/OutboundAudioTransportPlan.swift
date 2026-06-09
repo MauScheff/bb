@@ -4,7 +4,6 @@ nonisolated enum OutboundAudioTransportLane: String, Equatable, Sendable {
     case directQuic = "direct-quic"
     case mediaRelayPacket = "media-relay-packet"
     case mediaRelayTcp = "media-relay-tcp"
-    case relayWebSocket = "relay-websocket"
 }
 
 nonisolated enum OutboundAudioDirectQuicRole: String, Equatable, Sendable {
@@ -14,14 +13,13 @@ nonisolated enum OutboundAudioDirectQuicRole: String, Equatable, Sendable {
 
 nonisolated enum OutboundAudioMediaRelayRole: String, Equatable, Sendable {
     case primary
-    case standbyAfterUnverifiedDirect
+    case rescueAfterPrimaryFailure
     case tcpContinuity
 }
 
 nonisolated enum OutboundAudioTransportAttempt: Equatable, Sendable {
     case directQuic(OutboundAudioDirectQuicRole)
     case mediaRelay(OutboundAudioMediaRelayRole)
-    case relayWebSocketFallback
 
     var lane: OutboundAudioTransportLane {
         switch self {
@@ -29,19 +27,25 @@ nonisolated enum OutboundAudioTransportAttempt: Equatable, Sendable {
             return .directQuic
         case .mediaRelay(let role):
             switch role {
-            case .primary, .standbyAfterUnverifiedDirect:
+            case .primary, .rescueAfterPrimaryFailure:
                 return .mediaRelayPacket
             case .tcpContinuity:
                 return .mediaRelayTcp
             }
-        case .relayWebSocketFallback:
-            return .relayWebSocket
         }
     }
 }
 
 nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
-    let attempts: [OutboundAudioTransportAttempt]
+    let primary: OutboundAudioTransportAttempt
+    let rescue: OutboundAudioTransportAttempt?
+
+    var attempts: [OutboundAudioTransportAttempt] {
+        if let rescue {
+            return [primary, rescue]
+        }
+        return [primary]
+    }
 
     var attemptsDirectQuic: Bool {
         attempts.contains {
@@ -52,12 +56,17 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
         }
     }
 
-    var attemptsStandbyRelayAfterUnverifiedDirect: Bool {
-        attempts.contains(.mediaRelay(.standbyAfterUnverifiedDirect))
+    var hasSequentialMediaRelayRescue: Bool {
+        rescue == .mediaRelay(.rescueAfterPrimaryFailure)
+    }
+
+    var usesPrimaryMediaRelay: Bool {
+        primary == .mediaRelay(.primary)
     }
 
     var usesTcpContinuityRelay: Bool {
-        attempts.contains(.mediaRelay(.tcpContinuity))
+        primary == .mediaRelay(.tcpContinuity)
+            || rescue == .mediaRelay(.tcpContinuity)
     }
 
     static func dynamic(
@@ -65,39 +74,39 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
         directVerified: Bool,
         standbyRelayAvailable: Bool,
         standbyRelayIsTCPContinuity: Bool,
-        legacyPCMRequiresWebSocketRelay: Bool
-    ) -> OutboundAudioTransportPlan {
+        legacyPCMBypassesPacketRelay: Bool
+    ) -> OutboundAudioTransportPlan? {
         if directAvailable && directVerified {
-            return OutboundAudioTransportPlan(attempts: [
-                .directQuic(.verifiedPrimary),
-            ])
-        }
-
-        if directAvailable,
-           standbyRelayAvailable,
-           !standbyRelayIsTCPContinuity,
-           !legacyPCMRequiresWebSocketRelay {
-            return OutboundAudioTransportPlan(attempts: [
-                .directQuic(.unverifiedPrimary),
-                .mediaRelay(.standbyAfterUnverifiedDirect),
-                .relayWebSocketFallback,
-            ])
-        }
-
-        var attempts: [OutboundAudioTransportAttempt] = []
-        if directAvailable {
-            attempts.append(.directQuic(.unverifiedPrimary))
-        }
-        if standbyRelayAvailable, !legacyPCMRequiresWebSocketRelay {
-            attempts.append(
-                standbyRelayIsTCPContinuity
-                ? .mediaRelay(.tcpContinuity)
-                : directAvailable
-                    ? .mediaRelay(.standbyAfterUnverifiedDirect)
-                    : .mediaRelay(.primary)
+            return OutboundAudioTransportPlan(
+                primary: .directQuic(.verifiedPrimary),
+                rescue: nil
             )
         }
-        attempts.append(.relayWebSocketFallback)
-        return OutboundAudioTransportPlan(attempts: attempts)
+
+        if directAvailable {
+            let rescue: OutboundAudioTransportAttempt?
+            if standbyRelayAvailable, !legacyPCMBypassesPacketRelay {
+                rescue = standbyRelayIsTCPContinuity
+                    ? .mediaRelay(.tcpContinuity)
+                    : .mediaRelay(.rescueAfterPrimaryFailure)
+            } else {
+                rescue = nil
+            }
+            return OutboundAudioTransportPlan(
+                primary: .directQuic(.unverifiedPrimary),
+                rescue: rescue
+            )
+        }
+
+        if standbyRelayAvailable, !legacyPCMBypassesPacketRelay {
+            return OutboundAudioTransportPlan(
+                primary: standbyRelayIsTCPContinuity
+                    ? .mediaRelay(.tcpContinuity)
+                    : .mediaRelay(.primary),
+                rescue: nil
+            )
+        }
+
+        return nil
     }
 }

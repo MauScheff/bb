@@ -3,97 +3,116 @@ import Testing
 @testable import BeepBeep
 
 struct OutboundAudioTransportPlanTests {
-    @Test func verifiedDirectQuicIsExclusivePrimaryLane() {
-        let plan = OutboundAudioTransportPlan.dynamic(
+    @Test func verifiedDirectQuicIsExclusivePrimaryLane() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: true,
             standbyRelayAvailable: true,
             standbyRelayIsTCPContinuity: false,
-            legacyPCMRequiresWebSocketRelay: false
-        )
+            legacyPCMBypassesPacketRelay: false
+        ))
 
         #expect(plan.attempts == [
             .directQuic(.verifiedPrimary),
         ])
-        #expect(!plan.attemptsStandbyRelayAfterUnverifiedDirect)
+        #expect(!plan.hasSequentialMediaRelayRescue)
     }
 
-    @Test func unverifiedDirectQuicIsPrimaryBeforeStandbyPacketRelay() {
-        let plan = OutboundAudioTransportPlan.dynamic(
+    @Test func unverifiedDirectQuicIsPrimaryBeforeSequentialPacketRelayRescue() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
             standbyRelayAvailable: true,
             standbyRelayIsTCPContinuity: false,
-            legacyPCMRequiresWebSocketRelay: false
-        )
+            legacyPCMBypassesPacketRelay: false
+        ))
 
         #expect(plan.attempts == [
             .directQuic(.unverifiedPrimary),
-            .mediaRelay(.standbyAfterUnverifiedDirect),
-            .relayWebSocketFallback,
+            .mediaRelay(.rescueAfterPrimaryFailure),
         ])
-        #expect(plan.attemptsStandbyRelayAfterUnverifiedDirect)
+        #expect(plan.hasSequentialMediaRelayRescue)
         #expect(plan.attemptsDirectQuic)
     }
 
-    @Test func unverifiedDirectQuicWithoutPacketRelayFallsBackThroughWebSocket() {
-        let plan = OutboundAudioTransportPlan.dynamic(
+    @Test func unverifiedDirectQuicWithoutPacketRelayHasNoLiveMediaRescue() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
             standbyRelayAvailable: false,
             standbyRelayIsTCPContinuity: false,
-            legacyPCMRequiresWebSocketRelay: false
-        )
+            legacyPCMBypassesPacketRelay: false
+        ))
 
         #expect(plan.attempts == [
             .directQuic(.unverifiedPrimary),
-            .relayWebSocketFallback,
         ])
     }
 
-    @Test func tcpContinuityRelayDoesNotBecomeShadowPacketRelay() {
-        let plan = OutboundAudioTransportPlan.dynamic(
+    @Test func tcpContinuityRelayIsSequentialRescueNotShadowPacketRelay() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
             standbyRelayAvailable: true,
             standbyRelayIsTCPContinuity: true,
-            legacyPCMRequiresWebSocketRelay: false
-        )
+            legacyPCMBypassesPacketRelay: false
+        ))
 
         #expect(plan.attempts == [
             .directQuic(.unverifiedPrimary),
             .mediaRelay(.tcpContinuity),
-            .relayWebSocketFallback,
         ])
         #expect(plan.usesTcpContinuityRelay)
     }
 
-    @Test func legacyPCMBypassesPacketRelayToOrderedFallback() {
-        let plan = OutboundAudioTransportPlan.dynamic(
-            directAvailable: false,
-            directVerified: false,
-            standbyRelayAvailable: true,
-            standbyRelayIsTCPContinuity: false,
-            legacyPCMRequiresWebSocketRelay: true
-        )
+    @Test func dynamicPlanNeverExceedsPrimaryPlusOneSequentialRescue() {
+        let combinations: [(Bool, Bool, Bool, Bool, Bool)] = [
+            (false, false, false, false, false),
+            (false, false, true, false, false),
+            (false, false, true, true, false),
+            (true, false, false, false, false),
+            (true, false, true, false, false),
+            (true, false, true, true, false),
+            (true, true, true, false, false),
+            (true, true, true, true, false),
+            (true, false, true, false, true),
+        ]
 
-        #expect(plan.attempts == [
-            .relayWebSocketFallback,
-        ])
+        for combination in combinations {
+            let plan = OutboundAudioTransportPlan.dynamic(
+                directAvailable: combination.0,
+                directVerified: combination.1,
+                standbyRelayAvailable: combination.2,
+                standbyRelayIsTCPContinuity: combination.3,
+                legacyPCMBypassesPacketRelay: combination.4
+            )
+            #expect((plan?.attempts.count ?? 0) <= 2)
+        }
     }
 
-    @Test func mediaRelayWithoutDirectIsPrimaryFallbackBeforeWebSocket() {
+    @Test func legacyPCMHasNoLivePacketFallback() {
         let plan = OutboundAudioTransportPlan.dynamic(
             directAvailable: false,
             directVerified: false,
             standbyRelayAvailable: true,
             standbyRelayIsTCPContinuity: false,
-            legacyPCMRequiresWebSocketRelay: false
+            legacyPCMBypassesPacketRelay: true
         )
+
+        #expect(plan == nil)
+    }
+
+    @Test func mediaRelayWithoutDirectIsPrimaryWithNoRuntimeMediaFallback() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
+            directAvailable: false,
+            directVerified: false,
+            standbyRelayAvailable: true,
+            standbyRelayIsTCPContinuity: false,
+            legacyPCMBypassesPacketRelay: false
+        ))
 
         #expect(plan.attempts == [
             .mediaRelay(.primary),
-            .relayWebSocketFallback,
         ])
     }
 }

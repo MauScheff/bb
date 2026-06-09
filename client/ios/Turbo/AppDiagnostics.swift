@@ -1175,6 +1175,11 @@ struct DirectQuicDiagnosticsSummary: Codable, Equatable {
     let relayOnlyOverride: Bool
     let autoUpgradeDisabled: Bool
     let transmitStartupPolicy: DirectQuicTransmitStartupPolicy
+    let controlCommandTransportPolicy: TurboControlCommandTransportPolicy
+    let runtimeControlEffectiveLane: TurboRuntimeControlLane
+    let runtimeControlFallbackReason: String?
+    let runtimeControlPersistent: Bool
+    let mediaLaneOverride: TurboMediaLaneOverride
     let mediaRelayEnabled: Bool
     let mediaRelayForced: Bool
     let mediaRelayConfigured: Bool

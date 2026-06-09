@@ -53,7 +53,7 @@ Classify before editing.
 
 | Owner | Scope | Fix location |
 | --- | --- | --- |
-| Backend/shared truth | identity, devices, direct Conversation records, Beeps/Beep Threads, membership, readiness, wake targeting, websocket signaling, active Talk Turn ownership | Unison/backend or shared contract |
+| Backend/shared truth | identity, devices, direct Conversation records, Beeps/Beep Threads, membership, readiness, wake targeting, runtime signaling, active Talk Turn ownership | Unison/backend or shared contract |
 | Client projection/reducer | local derivation, selected Conversation projection, UI state, coordinator transitions, app-local idempotence | Swift state machines, coordinators, typed projections |
 | Pair/convergence rule | contradictions requiring two device perspectives or device plus backend evidence | merged diagnostics detector, backend truth when backend has enough state |
 | Apple/PTT/audio adapter | PushToTalk UI, microphone permission, backgrounding, lock-screen wake, audio-session activation, real capture/playback | adapter/device boundary after shared logic is proven below it |
@@ -68,7 +68,7 @@ Every simulator, physical-device, TestFlight, production, or shake-report failur
 | --- | --- | --- |
 | Crosses engine boundary | The failure can be represented as engine intents, events, effects, clock deadlines, backend facts, media chunks, Connection changes, Talk Turn lifecycle facts, or Device/PTT facts. | Extract or construct an engine replay/scenario/fuzz case first; fix the owning reducer/adapter; promote the case to `TurboEngine` tests or fixtures when stable. |
 | App adapter/effect executor | The engine model is correct, but app-side execution of Apple PTT, AVAudio, backend client, Fast Relay, Direct QUIC, timers, or projection glue is wrong. | Add a focused Swift test around the adapter/effect executor; feed modeled facts back into the engine when possible. |
-| Distributed integration | The failure requires two app instances, real backend route semantics, websocket timing, merged diagnostics, or scenario DSL actions. | Use live-local engine proof first when route semantics are enough; otherwise use simulator scenarios or strict merged diagnostics. |
+| Distributed integration | The failure requires two app instances, real backend route semantics, runtime-control timing, merged diagnostics, or scenario DSL actions. | Use live-local engine proof first when route semantics are enough; otherwise use simulator scenarios or strict merged diagnostics. |
 | Apple/PTT/audio boundary | The remaining unknown is real PushToTalk UI, microphone permission, audio-session activation, lock-screen/background wake, hardware capture, or hardware playback. | Keep exact physical evidence; add modeled engine or Swift adapter failure coverage when possible; retest only the failed device cell after lower lanes are green. |
 
 Do not label a bug device-only merely because it was found on devices. If the event sequence crosses the engine boundary, replay or model it headlessly before changing production logic. If it is truly Apple/PTT/audio-only, document the unreplayable boundary and still prove app fail-closed behavior with the closest engine or Swift adapter model.
@@ -77,7 +77,7 @@ For current app builds, shake/manual diagnostics uploads are expected to carry `
 
 For live-audio gaps, prove the media rule before another device loop: classify the lane capability, reproduce packet loss/reorder/duplicate or ordered backlog in `TurboEngine`, add/adjust the app boundary proof that executes the same sequence/drop policy, then use physical devices only for the remaining Apple/PTT/audio/hardware boundary.
 
-Current lane classification is part of the proof. `direct-quic` and `media-relay-packet` are unordered packet media; `media-relay-tcp` and `relay-websocket` are ordered reliable fallback media. Do not treat a lane as unordered because the engine can model it; the app adapter must emit typed evidence from the actual transport boundary. If a packet lane cannot establish packet media, fail that lane and let transport selection fall back to an explicitly named degraded lane instead of sending audio over a hidden stream-media compatibility path.
+Current lane classification is part of the proof. `direct-quic` and `media-relay-packet` are unordered packet media; `media-relay-tcp` is the ordered reliable media fallback. Runtime/backend control is not a live media lane. Backend `audio-chunk` signals are a `media.runtime_never_carries_live_audio` violation and must be rejected, not played. Do not treat a lane as unordered because the engine can model it; the app adapter must emit typed evidence from the actual transport boundary. If a packet lane cannot establish packet media, fail that lane and let transport selection fall back to an explicitly named degraded Fast Relay lane instead of sending audio over a hidden stream-media compatibility path.
 
 Packet media liveness is also part of lane proof. Direct QUIC and Fast Relay QUIC datagram audio sends are best-effort and must not wait for ordered/reliable completion callbacks; control, signaling, and ordered fallback media may remain reliable/ordered. A live-audio stall with green engine replay belongs first to the app media adapter proof lane.
 
@@ -93,7 +93,7 @@ State + Event -> NewState + Commands
 - Put state-specific data inside the matching variant.
 - Encode ownership, phases, permissions, readiness, and capabilities in domain types where practical, so illegal combinations are unrepresentable.
 - Store canonical truth once and derive projections from it.
-- Normalize UI gestures, backend updates, websocket notices, timers, and Apple callbacks into typed events.
+- Normalize UI gestures, backend updates, runtime-control notices, timers, and Apple callbacks into typed events.
 - Prefer monotonic state structures for distributed facts; use explicit invalidation, tombstones, epochs, or leases when facts must move backward.
 - Keep side effects in adapters, clients, coordinators, or command runners.
 - Make retries, duplicates, reconnects, refreshes, and stale completions idempotent or convergent.

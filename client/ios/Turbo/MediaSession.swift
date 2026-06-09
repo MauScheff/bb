@@ -97,7 +97,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         stopDrainTimeoutNanoseconds: 220_000_000
     )
 
-    static let websocketContinuity = MediaTransportSenderConfiguration(
+    static let orderedContinuity = MediaTransportSenderConfiguration(
         maximumPendingPayloads: 160,
         maximumPayloadsPerMessage: 8,
         payloadBatchCollectionNanoseconds: 120_000_000,
@@ -127,7 +127,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
 nonisolated enum MediaTransportPolicy: String, Equatable {
     case directLowLatency = "direct-low-latency"
     case fastRelayBalanced = "fast-relay-balanced"
-    case websocketContinuity = "websocket-continuity"
+    case orderedContinuity = "ordered-continuity"
     case wakeBackgroundContinuity = "wake-background-continuity"
 
     var playbackProfile: MediaSessionPlaybackProfile {
@@ -136,7 +136,7 @@ nonisolated enum MediaTransportPolicy: String, Equatable {
             return .lowLatency
         case .fastRelayBalanced:
             return .fastRelayBalanced
-        case .websocketContinuity:
+        case .orderedContinuity:
             return .relayJitterBuffered
         case .wakeBackgroundContinuity:
             return .wakeBackgroundContinuity
@@ -155,7 +155,7 @@ nonisolated enum MediaTransportPolicy: String, Equatable {
                 minimumBufferCount: 5,
                 timeoutNanoseconds: 120_000_000
             )
-        case .websocketContinuity:
+        case .orderedContinuity:
             return MediaTransportPlaybackCushionConfiguration(
                 minimumBufferCount: 7,
                 timeoutNanoseconds: 200_000_000
@@ -174,8 +174,8 @@ nonisolated enum MediaTransportPolicy: String, Equatable {
             return .directLowLatency
         case .fastRelayBalanced:
             return .fastRelayBalanced
-        case .websocketContinuity:
-            return .websocketContinuity
+        case .orderedContinuity:
+            return .orderedContinuity
         case .wakeBackgroundContinuity:
             return .wakeBackgroundContinuity
         }
@@ -190,7 +190,7 @@ nonisolated enum MediaTransportPolicy: String, Equatable {
                 bitrate: 40_000,
                 observedPacketLossPercent: observedPacketLossPercent
             )
-        case .websocketContinuity, .wakeBackgroundContinuity:
+        case .orderedContinuity, .wakeBackgroundContinuity:
             return .reliableFallback
         }
     }
@@ -385,7 +385,7 @@ func makeDefaultMediaSession(
     supportsWebSocket: Bool,
     sendAudioChunk: (@Sendable (String) async throws -> Void)?,
     reportEvent: (@Sendable (String, [String: String]) async -> Void)? = nil,
-    senderConfiguration: MediaTransportSenderConfiguration = .websocketContinuity,
+    senderConfiguration: MediaTransportSenderConfiguration = .orderedContinuity,
     outboundVoiceMediaPolicy: VoiceMediaPayloadFormat = .opusV2,
     outboundOpusEncodingPolicy: OpusVoiceEncodingPolicy = .reliableFallback,
     voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()

@@ -378,8 +378,9 @@ struct ConnectionTests {
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
             contactID: contactID,
-            incomingAudioTransport: .relayWebSocket
+            incomingAudioTransport: .mediaRelayTcp
         )
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(mediaSession.receivedRemoteAudioChunks == ["pcm-audio"])
         #expect(
@@ -391,6 +392,12 @@ struct ConnectionTests {
 
     @MainActor
     @Test func incomingAudioIngressSummaryRecordsUniformTransportFacts() async throws {
+        let previousLiveAudioDiagnostics = TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled()
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(true)
+        defer {
+            TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(previousLiveAudioDiagnostics)
+        }
+
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let mediaSession = RecordingMediaSession()
@@ -442,23 +449,19 @@ struct ConnectionTests {
                 source: "media-relay"
             )
         )
-        let websocketPayload = try TurboRelayWebSocketAudioPayloadCodec.encode(
-            TurboRelayWebSocketAudioPayload(
-                payload: "websocket-pcm",
-                sequenceNumber: 13,
-                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 8
-            )
-        )
         await viewModel.handleIncomingAudioPayload(
-            websocketPayload,
+            "relay-tcp-pcm",
             channelID: "channel-1",
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
             contactID: contactID,
-            incomingAudioTransport: .relayWebSocket,
+            incomingAudioTransport: .mediaRelayTcp,
+            transportSequenceNumber: 13,
             ingressContext: IncomingAudioIngressContext(
                 receivedAtNanoseconds: receivedAt,
-                source: "relay-websocket"
+                sequenceNumber: 13,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000) - 8,
+                source: "media-relay-tcp"
             )
         )
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -469,16 +472,169 @@ struct ConnectionTests {
         #expect(Set(summaries.map { $0.metadata["transport"] ?? "" }) == [
             "direct-quic",
             "media-relay-packet",
-            "relay-websocket",
+            "media-relay-tcp",
         ])
         #expect(summaries.allSatisfy { $0.metadata["sampleCount"] == "1" })
         #expect(summaries.allSatisfy { $0.metadata["freshnessDecision"] == "accepted" })
         #expect(summaries.allSatisfy { $0.metadata["playbackDecision"] == "accepted" })
         #expect(
             summaries.contains {
-                $0.metadata["transport"] == "relay-websocket"
+                $0.metadata["transport"] == "media-relay-tcp"
                     && $0.metadata["sequenceNumber"] == "13"
                     && $0.metadata["senderClockAgeMs"] != nil
+            }
+        )
+    }
+
+    @MainActor
+    @Test func receiverAcceptsForcedRelayEpochLaneDespiteLocalDirectOverride() async {
+        let previousMediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        let previousLiveAudioDiagnostics = TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceDirectQuic)
+        TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(true)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousMediaLaneOverride)
+            TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(previousLiveAudioDiagnostics)
+        }
+
+        let cases: [(IncomingAudioPayloadTransport, String, String)] = [
+            (.mediaRelayPacket, "relay-packet-audio", "forced-peer-fast-relay-quic"),
+            (.mediaRelayTcp, "relay-tcp-audio", "forced-peer-fast-relay-tls"),
+        ]
+
+        for (transport, payload, source) in cases {
+            let viewModel = PTTViewModel()
+            let contactID = UUID()
+            let channelUUID = UUID()
+            let mediaSession = RecordingMediaSession()
+            viewModel.applicationStateOverride = .active
+            viewModel.contacts = [
+                Contact(
+                    id: contactID,
+                    name: "Blake",
+                    handle: "@blake",
+                    isOnline: true,
+                    channelId: channelUUID,
+                    backendChannelId: "channel-123",
+                    remoteUserId: "peer-user"
+                )
+            ]
+            viewModel.selectedContactId = contactID
+            viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+            viewModel.pttCoordinator.send(
+                .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+            )
+            viewModel.backendSyncCoordinator.send(
+                .channelStateUpdated(
+                    contactID: contactID,
+                    channelState: makeChannelState(status: .receiving, canTransmit: false)
+                )
+            )
+            viewModel.backendSyncCoordinator.send(
+                .channelReadinessUpdated(
+                    contactID: contactID,
+                    readiness: makeChannelReadiness(
+                        status: .peerTransmitting(activeTransmitterUserId: "peer-user")
+                    )
+                )
+            )
+            viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+            viewModel.mediaRuntime.connectionState = .connected
+            mediaSession.receivePlaybackReadinessOverride = .ready
+            viewModel.isPTTAudioSessionActive = true
+            viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+            let receiveEpoch = viewModel.mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
+            let ingressContext = IncomingAudioIngressContext(
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                sequenceNumber: 1,
+                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000),
+                source: source
+            )
+
+            if transport == .mediaRelayPacket {
+                await viewModel.handleIncomingLiveAudioPayload(
+                    payload,
+                    channelID: "channel-123",
+                    fromUserID: "peer-user",
+                    fromDeviceID: "peer-device",
+                    contactID: contactID,
+                    incomingAudioTransport: transport,
+                    transportSequenceNumber: 1,
+                    expectedReceiveEpoch: receiveEpoch,
+                    ingressContext: ingressContext
+                )
+            } else {
+                await viewModel.handleIncomingAudioPayload(
+                    payload,
+                    channelID: "channel-123",
+                    fromUserID: "peer-user",
+                    fromDeviceID: "peer-device",
+                    contactID: contactID,
+                    incomingAudioTransport: transport,
+                    transportSequenceNumber: 1,
+                    ingressContext: ingressContext
+                )
+            }
+
+            #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
+            #expect(mediaSession.receivedRemoteAudioChunks == [payload])
+            #expect(
+                !viewModel.diagnostics.invariantViolations.contains {
+                    $0.invariantID == "media.runtime_never_carries_live_audio"
+                }
+            )
+            if transport == .mediaRelayPacket {
+                #expect(
+                    viewModel.diagnostics.entries.contains {
+                        $0.message == "Incoming audio ingress summary"
+                            && $0.metadata["transport"] == transport.diagnosticsValue
+                    }
+                )
+            }
+        }
+    }
+
+    @MainActor
+    @Test func runtimeWebSocketAudioPayloadIsRejectedAtMediaIngress() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let mediaSession = RecordingMediaSession()
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: "channel-1",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+
+        await viewModel.handleIncomingAudioPayload(
+            "websocket-pcm",
+            channelID: "channel-1",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingAudioTransport: .relayWebSocket
+        )
+
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.runtime_never_carries_live_audio"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Rejected runtime WebSocket audio payload at media ingress"
+                    && $0.metadata["action"] == "rejected-runtime-live-media"
             }
         )
     }
@@ -1563,7 +1719,7 @@ struct ConnectionTests {
         viewModel.noteFirstOutboundAudioPayloadQueuedIfNeeded(
             "payload-1",
             target: target,
-            deliveredTransports: ["direct-quic", "media-relay-packet", "relay-websocket"]
+            deliveredTransports: ["direct-quic", "media-relay-packet"]
         )
         let ackPayload = TurboAudioPlaybackStartedPayload(
             ackId: "ack-1",
@@ -1691,6 +1847,29 @@ struct ConnectionTests {
           "supportsSignalSessionIds": true,
           "supportsTransmitIds": true,
           "supportsProjectionEpochs": true,
+          "supportsRuntimeQuicControl": true,
+          "supportsRuntimeTlsControl": true,
+          "runtimeControl": {
+            "preference": [
+              "runtime-quic-control",
+              "runtime-tls-control",
+              "runtime-http-request"
+            ],
+            "quic": {
+              "supported": true,
+              "endpoint": "api.beepbeep.to:4433",
+              "alpn": "beep-runtime-control-v1",
+              "migrationEnabled": true
+            },
+            "tls": {
+              "supported": true,
+              "endpoint": "api.beepbeep.to:443"
+            },
+            "http": {
+              "supported": true,
+              "endpoint": "https://api.beepbeep.to"
+            }
+          },
           "directQuicPolicy": {
             "stunProviders": [
               {
@@ -1737,6 +1916,36 @@ struct ConnectionTests {
         #expect(config.supportsSignalSessionIds == true)
         #expect(config.supportsTransmitIds == true)
         #expect(config.supportsProjectionEpochs == true)
+        #expect(config.supportsRuntimeQuicControl == true)
+        #expect(config.supportsRuntimeTlsControl == true)
+        #expect(config.runtimeControl?.preference == [
+            .runtimeQuicControl,
+            .runtimeTlsControl,
+            .runtimeHttpRequest,
+        ])
+        #expect(
+            config.runtimeControl?.quic
+                == TurboRuntimeQuicControlConfig(
+                    supported: true,
+                    endpoint: "api.beepbeep.to:4433",
+                    alpn: "beep-runtime-control-v1",
+                    migrationEnabled: true
+                )
+        )
+        #expect(
+            config.runtimeControl?.tls
+                == TurboRuntimeTlsControlConfig(
+                    supported: true,
+                    endpoint: "api.beepbeep.to:443"
+                )
+        )
+        #expect(
+            config.runtimeControl?.http
+                == TurboRuntimeHttpControlConfig(
+                    supported: true,
+                    endpoint: "https://api.beepbeep.to"
+                )
+        )
         #expect(
             config.directQuicPolicy
                 == TurboDirectQuicPolicy(
@@ -6424,7 +6633,7 @@ struct ConnectionTests {
 
         #expect(viewModel.mediaRuntime.mediaRelayClient === client)
         #expect(viewModel.mediaTransportPathState == .fastRelay)
-        #expect(!viewModel.diagnosticsTranscript.contains("Media relay disconnected; returning to WebSocket relay"))
+        #expect(!viewModel.diagnosticsTranscript.contains("Media relay disconnected; live media lane unavailable until relay reconnects"))
     }
 
     @MainActor
@@ -14597,14 +14806,14 @@ struct ConnectionTests {
         #expect(client == nil)
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Holding WebSocket relay for active transmit after media relay peer unavailable"
+                "Holding live audio send until a fresh media relay peer is available"
             )
         )
         #expect(!viewModel.diagnosticsTranscript.contains("Connecting media relay"))
     }
 
     @MainActor
-    @Test func unverifiedDirectQuicFirstAudioUsesDirectPrimaryWhenStandbyRelayExists() async throws {
+    @Test func unverifiedDirectQuicFirstAudioUsesDirectWithoutStandbyFanout() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -14832,7 +15041,7 @@ struct ConnectionTests {
 
         for _ in 0..<20 {
             if viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["media-relay-packet", "relay-websocket"] {
+                == ["media-relay-packet"] {
                 break
             }
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -14841,14 +15050,11 @@ struct ConnectionTests {
         #expect(sentMediaRelayPayloads == ["payload-1"])
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["media-relay-packet", "relay-websocket"]
+                == ["media-relay-packet"]
         )
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(viewModel.diagnosticsTranscript.contains("Direct QUIC audio send failed during multipath fanout"))
+        #expect(sent.isEmpty)
+        #expect(viewModel.diagnosticsTranscript.contains("Direct QUIC audio send failed; trying sequential rescue"))
     }
 
     @MainActor
@@ -14978,12 +15184,13 @@ struct ConnectionTests {
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
                 == ["direct-quic"]
         )
+        #expect(sentMediaRelayPayloads.isEmpty)
         #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
-        #expect(!viewModel.diagnosticsTranscript.contains("Expanded first audio playback ACK transports"))
+        #expect(!viewModel.diagnosticsTranscript.contains("Delivered outbound audio over multipath transports"))
     }
 
     @MainActor
-    @Test func productionMediaRelayPacketStandbyShadowsWebSocketContinuity() async throws {
+    @Test func productionMediaRelayPacketStandbyUsesPacketWithoutRuntimeMediaFallback() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -15064,18 +15271,15 @@ struct ConnectionTests {
 
         #expect(sentMediaRelayPayloads == ["payload-1"])
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
+        #expect(sent.isEmpty)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["media-relay-packet", "relay-websocket"]
+                == ["media-relay-packet"]
         )
     }
 
     @MainActor
-    @Test func productionMediaRelayPacketStandbyUsesWebSocketUntilReceiverPrewarmAck() async throws {
+    @Test func productionMediaRelayPacketStandbyUsesPacketBeforeReceiverPrewarmAck() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -15149,20 +15353,17 @@ struct ConnectionTests {
 
         try await sendAudioChunk("payload-1")
 
-        #expect(sentMediaRelayPayloads.isEmpty)
+        #expect(sentMediaRelayPayloads == ["payload-1"])
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
+        #expect(sent.isEmpty)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["relay-websocket"]
+                == ["media-relay-packet"]
         )
     }
 
     @MainActor
-    @Test func forcedMediaRelayFirstAudioUsesWebSocketContinuityUntilCurrentPrewarmAck() async throws {
+    @Test func forcedMediaRelayFirstAudioUsesPacketBeforeCurrentPrewarmAck() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -15279,31 +15480,20 @@ struct ConnectionTests {
 
         try await sendAudioChunk("payload-1")
 
-        #expect(sentMediaRelayPayloads.isEmpty)
+        #expect(sentMediaRelayPayloads == ["payload-1"])
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) == nil)
+        #expect(sent.isEmpty)
+        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) === relayClient)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["relay-websocket"]
+                == ["media-relay-packet"]
         )
-        #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "Sent outbound audio over WebSocket continuity while forced media relay prewarm is unacknowledged"
-            )
-        )
-        #expect(
-            viewModel.diagnosticsTranscript.contains(
-                "Cleared media relay client after receiver prewarm ACK did not arrive"
-            )
-        )
+        #expect(viewModel.mediaRuntime.activeMediaEpochPathState == .fastRelay)
+        #expect(viewModel.transportPathBadgeState == .fastRelay)
     }
 
     @MainActor
-    @Test func forcedMediaRelayPacketShadowsWebSocketContinuityAfterPrewarmAck() async throws {
+    @Test func forcedMediaRelayPacketUsesPacketAfterPrewarmAck() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -15384,18 +15574,309 @@ struct ConnectionTests {
 
         #expect(sentMediaRelayPayloads == ["payload-1"])
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
+        #expect(sent.isEmpty)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["media-relay-packet", "relay-websocket"]
+                == ["media-relay-packet"]
         )
     }
 
     @MainActor
-    @Test func forcedMediaRelayPacketUsesWebSocketWakeContinuityWhenReceiverNotReady() async throws {
+    @Test func forcedFastRelayQuicOverrideSuppressesDirectAndUsesPacketLane() async throws {
+        let previousMediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayQuic)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousMediaLaneOverride)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let relayAttempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(relayAttempt, client: relayClient))
+
+        viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
+        viewModel.mediaRuntime.updateTransportPathState(.direct)
+        var directSendAttempts = 0
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.directQuicAudioSendOverride = { _, _ in
+            directSendAttempts += 1
+        }
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .quicDatagram
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+
+        #expect(directSendAttempts == 0)
+        #expect(sentMediaRelayPayloads == ["payload-1"])
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["media-relay-packet"]
+        )
+    }
+
+    @MainActor
+    @Test func forcedFastRelayTlsOverrideReplacesPacketClientAndUsesTcpLane() async throws {
+        let previousMediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayTls)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousMediaLaneOverride)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let packetRelayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let relayAttempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(relayAttempt, client: packetRelayClient))
+
+        var connectPreferredTransports: [TurboMediaRelayTransport] = []
+        viewModel.mediaRelayConnectOverride = { _, _, _, _, _, _ in
+            connectPreferredTransports.append(.tcpTls)
+            return .tcpTls
+        }
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .tcpOrdered
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+
+        #expect(connectPreferredTransports.contains(.tcpTls))
+        #expect(sentMediaRelayPayloads == ["payload-1"])
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["media-relay-tcp"]
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Discarded media relay client with mismatched forced lane"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func forcedMediaRelayPacketKeepsRuntimeMediaFallbackOffAfterPlaybackAck() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(true)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let attempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: relayClient))
+        let requestID = viewModel.mediaRuntime.receiverPrewarmRequestID(for: target.contactID)
+        viewModel.mediaRuntime.markReceiverPrewarmAckReceived(
+            contactID: target.contactID,
+            requestID: requestID
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        var sentMediaRelayPayloads: [String] = []
+        viewModel.mediaRelayAudioSendOverride = { _, payload in
+            sentMediaRelayPayloads.append(payload)
+            return .quicDatagram
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+        #expect(sentMediaRelayPayloads == ["payload-1"])
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+
+        let ackPayload = TurboAudioPlaybackStartedPayload(
+            ackId: "ack-1",
+            channelId: target.channelID,
+            senderDeviceId: client.deviceID,
+            receiverDeviceId: target.deviceID,
+            transport: "media-relay-packet",
+            transportDigest: AudioChunkPayloadCodec.transportDigest("payload-1"),
+            encryptedSequenceNumber: nil
+        )
+        viewModel.handleAudioPlaybackStartedAck(
+            ackPayload,
+            contactID: target.contactID,
+            source: .mediaRelay
+        )
+
+        try await sendAudioChunk("payload-2")
+
+        #expect(sentMediaRelayPayloads == ["payload-1", "payload-2"])
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID] == nil)
+        #expect(viewModel.diagnosticsTranscript.contains("First audio playback ACK received"))
+    }
+
+    @MainActor
+    @Test func forcedMediaRelayPacketDoesNotUseRuntimeAudioWhenReceiverNotReady() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -15506,26 +15987,13 @@ struct ConnectionTests {
         viewModel.configureOutgoingAudioRoute(target: target)
         let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
 
-        try await sendAudioChunk("payload-1")
-        try await waitForScenario(
-            "wake-capable media relay packet websocket shadow",
-            participants: [viewModel],
-            timeoutNanoseconds: 1_000_000_000,
-            pollNanoseconds: 10_000_000
-        ) {
-            client.sentSignalsForTesting().filter { $0.type == .audioChunk }.count == 1
+        await #expect(throws: (any Error).self) {
+            try await sendAudioChunk("payload-1")
         }
 
         #expect(sentMediaRelayPayloads.isEmpty)
-        let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(
-            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["relay-websocket"]
-        )
-        #expect(viewModel.diagnosticsTranscript.contains("Sent outbound audio over WebSocket wake-continuity path"))
+        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.isEmpty)
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID] == nil)
     }
 
     @MainActor
@@ -15649,7 +16117,7 @@ struct ConnectionTests {
                 == ["direct-quic"]
         )
         #expect(viewModel.diagnosticsTranscript.contains("Delivered outbound audio over Direct QUIC packet transport"))
-        #expect(!viewModel.diagnosticsTranscript.contains("Sent outbound audio over WebSocket wake-continuity path"))
+        #expect(!viewModel.diagnosticsTranscript.contains("Sent outbound audio over ordered wake-continuity path"))
         #expect(!viewModel.diagnosticsTranscript.contains("Direct QUIC audio send failed"))
     }
 
@@ -15967,7 +16435,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func productionMediaRelayTcpStandbyShadowsWebSocketContinuity() async throws {
+    @Test func productionMediaRelayTcpContinuitySendsOnlyTlsStream() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -16049,19 +16517,15 @@ struct ConnectionTests {
 
         #expect(sentMediaRelayPayloads == ["payload-1"])
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(relayPayload.sequenceNumber == 1)
+        #expect(sent.isEmpty)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["relay-websocket", "media-relay-tcp"]
+                == ["media-relay-tcp"]
         )
     }
 
     @MainActor
-    @Test func productionMediaRelayTcpContinuityDoesNotWaitForSlowRelaySend() async throws {
+    @Test func productionMediaRelayTcpContinuityWaitsForBoundedPrimarySend() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -16143,25 +16607,19 @@ struct ConnectionTests {
 
         try await sendAudioChunk("payload-1")
 
-        #expect(!mediaRelaySendCompleted)
+        #expect(mediaRelaySendCompleted)
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(relayPayload.sequenceNumber == 1)
+        #expect(sent.isEmpty)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["relay-websocket", "media-relay-tcp"]
+                == ["media-relay-tcp"]
         )
 
-        try await Task.sleep(nanoseconds: 320_000_000)
-        #expect(mediaRelaySendCompleted)
         #expect(sentMediaRelayPayloads == ["payload-1"])
     }
 
     @MainActor
-    @Test func productionMediaRelayStandbyStillSendsWebSocketWhenRelaySendFails() async throws {
+    @Test func productionMediaRelayWithoutCurrentLaneDoesNotFallbackToRuntimeWebSocket() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -16228,18 +16686,19 @@ struct ConnectionTests {
         viewModel.configureOutgoingAudioRoute(target: target)
         let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
 
-        try await sendAudioChunk("payload-1")
+        do {
+            try await sendAudioChunk("payload-1")
+            Issue.record("expected missing live media lane failure")
+        } catch OutgoingAudioSendError.noLegalLiveMediaLane {
+        } catch {
+            Issue.record("expected noLegalLiveMediaLane, got \(error)")
+        }
 
         let sent = client.sentSignalsForTesting()
-        #expect(sent.count == 1)
-        let envelope = try #require(sent.first)
-        #expect(envelope.type == .audioChunk)
-        let relayPayload = try #require(TurboRelayWebSocketAudioPayloadCodec.decodeIfPresent(envelope.payload))
-        #expect(relayPayload.payload == "payload-1")
-        #expect(relayPayload.sequenceNumber == 1)
+        #expect(sent.isEmpty)
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Media relay audio send failed during multipath fanout"
+                "No legal live media lane available for outbound audio"
             )
         )
         #expect(
@@ -16329,14 +16788,14 @@ struct ConnectionTests {
         #expect(client.sentSignalsForTesting().isEmpty)
         #expect(
             !viewModel.diagnosticsTranscript.contains(
-                "Media relay audio send failed during multipath fanout"
+                "Media relay audio rescue send failed"
             )
         )
         #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID] == nil)
     }
 
     @MainActor
-    @Test func mediaRelayStandbyReceiverStillAcceptsWebSocketAudioChunk() async {
+    @Test func mediaRelayStandbyReceiverRejectsRuntimeWebSocketAudioChunk() async {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboMediaRelayDebugOverride.setEnabled(true)
@@ -16364,9 +16823,18 @@ struct ConnectionTests {
             incomingAudioTransport: .relayWebSocket
         )
 
-        let receivedChunk = await mediaSession.waitForReceivedChunkCount(1)
-        #expect(receivedChunk)
-        #expect(mediaSession.receivedRemoteAudioChunks == ["payload-1"])
+        #expect(!mediaSession.receivedRemoteAudioChunks.contains("payload-1"))
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.runtime_never_carries_live_audio"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Rejected runtime WebSocket audio payload at media ingress"
+                    && $0.metadata["action"] == "rejected-runtime-live-media"
+            }
+        )
     }
 
     @Test func mediaRelayConnectionFinishDoesNotClearAudioSendSuppression() {
@@ -18565,7 +19033,7 @@ struct ConnectionTests {
     @Test func transportPoliciesSelectDistinctPlaybackAndSenderProfiles() {
         #expect(MediaTransportPolicy.directLowLatency.playbackProfile == .lowLatency)
         #expect(MediaTransportPolicy.fastRelayBalanced.playbackProfile == .fastRelayBalanced)
-        #expect(MediaTransportPolicy.websocketContinuity.playbackProfile == .relayJitterBuffered)
+        #expect(MediaTransportPolicy.orderedContinuity.playbackProfile == .relayJitterBuffered)
         #expect(MediaTransportPolicy.wakeBackgroundContinuity.playbackProfile == .wakeBackgroundContinuity)
 
         #expect(
@@ -18574,19 +19042,19 @@ struct ConnectionTests {
         )
         #expect(
             MediaTransportPolicy.fastRelayBalanced.playbackCushion.timeoutNanoseconds
-                < MediaTransportPolicy.websocketContinuity.playbackCushion.timeoutNanoseconds
+                < MediaTransportPolicy.orderedContinuity.playbackCushion.timeoutNanoseconds
         )
         #expect(
-            MediaTransportPolicy.websocketContinuity.playbackCushion.timeoutNanoseconds
+            MediaTransportPolicy.orderedContinuity.playbackCushion.timeoutNanoseconds
                 < MediaTransportPolicy.wakeBackgroundContinuity.playbackCushion.timeoutNanoseconds
         )
         #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.maximumPayloadsPerMessage == 1)
         #expect(MediaTransportPolicy.fastRelayBalanced.senderConfiguration.maximumPayloadsPerMessage == 1)
-        #expect(MediaTransportPolicy.websocketContinuity.senderConfiguration.maximumPayloadsPerMessage == 8)
+        #expect(MediaTransportPolicy.orderedContinuity.senderConfiguration.maximumPayloadsPerMessage == 8)
         #expect(MediaTransportPolicy.wakeBackgroundContinuity.senderConfiguration.maximumPayloadsPerMessage == 5)
         #expect(MediaTransportPolicy.directLowLatency.playbackCushion.minimumBufferCount == 4)
         #expect(MediaTransportPolicy.fastRelayBalanced.playbackCushion.minimumBufferCount > MediaTransportPolicy.directLowLatency.playbackCushion.minimumBufferCount)
-        #expect(MediaTransportPolicy.websocketContinuity.playbackCushion.minimumBufferCount > MediaTransportPolicy.fastRelayBalanced.playbackCushion.minimumBufferCount)
+        #expect(MediaTransportPolicy.orderedContinuity.playbackCushion.minimumBufferCount > MediaTransportPolicy.fastRelayBalanced.playbackCushion.minimumBufferCount)
         #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.maximumPendingPayloads >= 32)
         #expect(MediaTransportPolicy.directLowLatency.senderConfiguration.maximumInFlightSends == 1)
         #expect(
@@ -18613,15 +19081,15 @@ struct ConnectionTests {
         )
         #expect(MediaTransportPolicy.fastRelayBalanced.senderConfiguration.dropsPendingPayloadsAfterSlowSend)
         #expect(MediaTransportPolicy.fastRelayBalanced.senderConfiguration.stopDrainTimeoutNanoseconds == 220_000_000)
-        #expect(MediaTransportPolicy.websocketContinuity.senderConfiguration.maximumInFlightSends == 1)
+        #expect(MediaTransportPolicy.orderedContinuity.senderConfiguration.maximumInFlightSends == 1)
         #expect(
-            MediaTransportPolicy.websocketContinuity.senderConfiguration.minimumPayloadDispatchSpacingNanoseconds
+            MediaTransportPolicy.orderedContinuity.senderConfiguration.minimumPayloadDispatchSpacingNanoseconds
                 == 0
         )
-        #expect(MediaTransportPolicy.websocketContinuity.senderConfiguration.sendTimeoutNanoseconds == nil)
-        #expect(MediaTransportPolicy.websocketContinuity.senderConfiguration.slowSendDropThresholdNanoseconds == nil)
-        #expect(!MediaTransportPolicy.websocketContinuity.senderConfiguration.dropsPendingPayloadsAfterSlowSend)
-        #expect(MediaTransportPolicy.websocketContinuity.senderConfiguration.stopDrainTimeoutNanoseconds == 2_000_000_000)
+        #expect(MediaTransportPolicy.orderedContinuity.senderConfiguration.sendTimeoutNanoseconds == nil)
+        #expect(MediaTransportPolicy.orderedContinuity.senderConfiguration.slowSendDropThresholdNanoseconds == nil)
+        #expect(!MediaTransportPolicy.orderedContinuity.senderConfiguration.dropsPendingPayloadsAfterSlowSend)
+        #expect(MediaTransportPolicy.orderedContinuity.senderConfiguration.stopDrainTimeoutNanoseconds == 2_000_000_000)
         #expect(MediaTransportPolicy.wakeBackgroundContinuity.senderConfiguration.maximumInFlightSends == 1)
         #expect(
             MediaTransportPolicy.wakeBackgroundContinuity.senderConfiguration.minimumPayloadDispatchSpacingNanoseconds
@@ -18669,7 +19137,7 @@ struct ConnectionTests {
             ]
         )
 
-        let reliableFallback = MediaTransportPolicy.websocketContinuity.opusEncodingPolicy(
+        let reliableFallback = MediaTransportPolicy.orderedContinuity.opusEncodingPolicy(
             observedPacketLossPercent: 12
         )
         #expect(reliableFallback.bitrate == 32_000)
@@ -18688,8 +19156,8 @@ struct ConnectionTests {
         let viewModel = PTTViewModel()
         #expect(viewModel.mediaTransportPolicy(for: .directQuic) == .directLowLatency)
         #expect(viewModel.mediaTransportPolicy(for: .mediaRelayPacket) == .fastRelayBalanced)
-        #expect(viewModel.mediaTransportPolicy(for: .mediaRelayTcp) == .websocketContinuity)
-        #expect(viewModel.mediaTransportPolicy(for: .relayWebSocket) == .websocketContinuity)
+        #expect(viewModel.mediaTransportPolicy(for: .mediaRelayTcp) == .orderedContinuity)
+        #expect(viewModel.mediaTransportPolicy(for: .relayWebSocket) == .orderedContinuity)
 
         viewModel.applicationStateOverride = .background
         #expect(viewModel.mediaTransportPolicy(for: .relayWebSocket) == .wakeBackgroundContinuity)
@@ -18822,7 +19290,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func missingFastRelayFirstPlaybackAckDemotesActiveSenderToWebSocketContinuity() async {
+    @Test func missingFastRelayFirstPlaybackAckDemotesActiveSenderToOrderedContinuity() async {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboMediaRelayDebugOverride.setEnabled(false)
@@ -18921,9 +19389,9 @@ struct ConnectionTests {
 
         #expect(viewModel.mediaRuntime.isMediaRelayAudioSendSuppressed(for: key))
         #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) == nil)
-        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .websocketContinuity)
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .orderedContinuity)
         #expect(mediaSession.resetOutgoingAudioTransportReasons == ["missing-first-playback-ack"])
-        #expect(mediaSession.senderConfigurationUpdates.last == .websocketContinuity)
+        #expect(mediaSession.senderConfigurationUpdates.last == .orderedContinuity)
         #expect(mediaSession.outboundOpusEncodingPolicyUpdates.last == .reliableFallback)
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
@@ -18932,13 +19400,13 @@ struct ConnectionTests {
         )
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Demoted media relay audio to WebSocket continuity after missing first playback ACK"
+                "Demoted media relay audio to ordered continuity after missing first playback ACK"
             )
         )
     }
 
     @MainActor
-    @Test func mediaRelayPeerUnavailableSuppressionDemotesActiveSenderToWebSocketContinuity() async {
+    @Test func mediaRelayPeerUnavailableSuppressionDemotesActiveSenderToOrderedContinuity() async {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboMediaRelayDebugOverride.setEnabled(false)
@@ -19012,9 +19480,9 @@ struct ConnectionTests {
             peerDeviceID: peerDeviceID
         )
         #expect(viewModel.mediaRuntime.isMediaRelayAudioSendSuppressed(for: key))
-        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .websocketContinuity)
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .orderedContinuity)
         #expect(mediaSession.resetOutgoingAudioTransportReasons == ["media-relay-peer-unavailable"])
-        #expect(mediaSession.senderConfigurationUpdates.last == .websocketContinuity)
+        #expect(mediaSession.senderConfigurationUpdates.last == .orderedContinuity)
         #expect(mediaSession.outboundOpusEncodingPolicyUpdates.last == .reliableFallback)
     }
 
@@ -19432,7 +19900,7 @@ struct ConnectionTests {
         #expect(dropMetadata == nil)
     }
 
-    @Test func websocketContinuityAudioSenderBatchesCaptureBurstIntoOrderedTransportPayload() async {
+    @Test func orderedContinuityAudioSenderBatchesCaptureBurstIntoOrderedTransportPayload() async {
         actor Recorder {
             var payloads: [String] = []
 
@@ -19447,7 +19915,7 @@ struct ConnectionTests {
                 await recorder.append(payload)
             },
             reportFailure: { _ in },
-            configuration: .websocketContinuity
+            configuration: .orderedContinuity
         )
 
         await sender.enqueue((0..<5).map { "frame-\($0)" })
@@ -19506,7 +19974,7 @@ struct ConnectionTests {
                 await recorder.append(payload)
             },
             reportFailure: { _ in },
-            configuration: .websocketContinuity
+            configuration: .orderedContinuity
         )
 
         await sender.updateConfiguration(.fastRelayBalanced)
@@ -20043,7 +20511,7 @@ struct ConnectionTests {
             reportEvent: { message, metadata in
                 await recorder.appendEvent(message, metadata: metadata)
             },
-            configuration: .websocketContinuity,
+            configuration: .orderedContinuity,
             maximumPendingPayloads: 8,
             maximumPayloadsPerMessage: 1,
             maximumInFlightSends: 1
@@ -20079,7 +20547,7 @@ struct ConnectionTests {
         #expect(dropMetadata == nil)
     }
 
-    @Test func websocketContinuityAudioSenderWaitsForStalledOrderedSend() async {
+    @Test func orderedContinuityAudioSenderWaitsForStalledOrderedSend() async {
         actor Gate {
             var isOpen = false
             var continuations: [CheckedContinuation<Void, Never>] = []
@@ -20130,7 +20598,7 @@ struct ConnectionTests {
             reportEvent: { message, metadata in
                 await recorder.appendEvent(message, metadata: metadata)
             },
-            configuration: .websocketContinuity,
+            configuration: .orderedContinuity,
             maximumPayloadsPerMessage: 1
         )
 
@@ -30318,9 +30786,11 @@ struct ConnectionTests {
 
         #expect(response.status == "http")
         #expect(webSocketEnvelope?.commandKind == "join-channel")
+        #expect(webSocketEnvelope?.userHandle == "@self")
         #expect(webSocketEnvelope?.operationId == "join-op-1")
         #expect(httpPath == "/v1/channels/channel-1/join")
         #expect(httpEnvelope?.commandKind == "join-channel")
+        #expect(httpEnvelope?.userHandle == "@self")
         #expect(httpEnvelope?.operationId == "join-op-1")
         #expect(notices.contains("WebSocket join-channel slow; hedging over HTTP"))
     }
@@ -30337,6 +30807,7 @@ struct ConnectionTests {
         var httpStarted = false
         client.controlCommandWebSocketResponseForTesting = { envelope in
             #expect(envelope.commandKind == "join-channel")
+            #expect(envelope.userHandle == "@self")
             #expect(envelope.operationId == "join-op-2")
             return makeJoinResponseData(status: "websocket")
         }
@@ -30382,9 +30853,11 @@ struct ConnectionTests {
 
         #expect(response.status == "http")
         #expect(webSocketEnvelope?.commandKind == "leave-channel")
+        #expect(webSocketEnvelope?.userHandle == "@self")
         #expect(webSocketEnvelope?.operationId == "leave-op-1")
         #expect(httpPath == "/v1/channels/channel-1/leave")
         #expect(httpEnvelope?.commandKind == "leave-channel")
+        #expect(httpEnvelope?.userHandle == "@self")
         #expect(httpEnvelope?.operationId == "leave-op-1")
         #expect(notices.contains("WebSocket leave-channel slow; hedging over HTTP"))
     }
@@ -30401,6 +30874,7 @@ struct ConnectionTests {
         var httpStarted = false
         client.controlCommandWebSocketResponseForTesting = { envelope in
             #expect(envelope.commandKind == "leave-channel")
+            #expect(envelope.userHandle == "@self")
             #expect(envelope.operationId == "leave-op-2")
             return makeLeaveResponseData(status: "websocket")
         }
@@ -30446,8 +30920,10 @@ struct ConnectionTests {
 
         #expect(response.status == "http")
         #expect(webSocketEnvelope?.commandKind == "presence-keepalive")
+        #expect(webSocketEnvelope?.userHandle == "@self")
         #expect(httpPath == "/v1/presence/keepalive")
         #expect(httpEnvelope?.commandKind == "presence-keepalive")
+        #expect(httpEnvelope?.userHandle == "@self")
         #expect(notices.contains("WebSocket presence-keepalive slow; hedging over HTTP"))
     }
 
@@ -30463,6 +30939,7 @@ struct ConnectionTests {
         var httpStarted = false
         client.controlCommandWebSocketResponseForTesting = { envelope in
             #expect(envelope.commandKind == "presence-keepalive")
+            #expect(envelope.userHandle == "@self")
             return makePresenceHeartbeatResponseData(status: "websocket")
         }
         client.controlCommandHTTPResponseForTesting = { _, _ in
@@ -30625,6 +31102,11 @@ struct ConnectionTests {
 
     @MainActor
     @Test func httpOnlyControlCommandPolicySkipsWebSocketAndUsesHTTP() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(nil)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
         let client = TurboBackendClient(
             config: TurboBackendConfig(
                 baseURL: URL(string: "http://127.0.0.1:9")!,
@@ -30654,6 +31136,257 @@ struct ConnectionTests {
         #expect(response.status == "http")
         #expect(!webSocketAttempted)
         #expect(httpPath == "/v1/channels/channel-http-only/join")
+    }
+
+    @MainActor
+    @Test func runtimeQuicControlCommandUsesPersistentLaneWhenAdvertised() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(nil)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
+
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: true,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(
+                        supported: true,
+                        endpoint: "api.beepbeep.to:443",
+                        alpn: "beep-runtime-control-v1",
+                        migrationEnabled: true
+                    ),
+                    tls: TurboRuntimeTlsControlConfig(supported: true, endpoint: "api.beepbeep.to:443"),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+        client.setWebSocketConnectedForControlCommandTesting()
+
+        var runtimeLane: TurboRuntimeControlLane?
+        var runtimeEnvelope: TurboControlCommandEnvelope?
+        var webSocketAttempted = false
+        var httpAttempted = false
+        var traces: [TurboBackendClient.ControlCommandTraceEvent] = []
+        client.onControlCommandTrace = { event in
+            traces.append(event)
+        }
+        client.controlCommandRuntimePersistentResponseForTesting = { lane, envelope in
+            runtimeLane = lane
+            runtimeEnvelope = envelope
+            return makeRuntimeControlFrameResponseData(
+                transport: "runtime-quic-control",
+                body: makeJoinResponseData(status: "runtime-quic")
+            )
+        }
+        client.controlCommandWebSocketResponseForTesting = { _ in
+            webSocketAttempted = true
+            return makeJoinResponseData(status: "websocket")
+        }
+        client.controlCommandHTTPResponseForTesting = { _, _ in
+            httpAttempted = true
+            return makeJoinResponseData(status: "http")
+        }
+
+        let response = try await client.joinChannel(channelId: "channel-runtime-quic", operationId: "join-runtime-quic")
+
+        #expect(response.status == "runtime-quic")
+        #expect(runtimeLane == .runtimeQuicControl)
+        #expect(runtimeEnvelope?.commandKind == "join-channel")
+        #expect(runtimeEnvelope?.userHandle == "@self")
+        #expect(runtimeEnvelope?.operationId == "join-runtime-quic")
+        #expect(!webSocketAttempted)
+        #expect(!httpAttempted)
+        #expect(
+            traces.contains {
+                $0.commandKind == "join-channel"
+                    && $0.transport == .runtimeQuic
+                    && $0.phase == .responseReceived
+            }
+        )
+    }
+
+    @MainActor
+    @Test func runtimePersistentControlFailureFallsBackToHTTPWithoutWebSocket() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(nil)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
+
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(supported: true, endpoint: "api.beepbeep.to:443"),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+        client.setWebSocketConnectedForControlCommandTesting()
+
+        var webSocketAttempted = false
+        var httpPath: String?
+        var notices: [String] = []
+        var traces: [TurboBackendClient.ControlCommandTraceEvent] = []
+        client.onServerNotice = { notice in
+            notices.append(notice)
+        }
+        client.onControlCommandTrace = { event in
+            traces.append(event)
+        }
+        client.controlCommandRuntimePersistentResponseForTesting = { _, _ in
+            throw TurboBackendError.server("runtime unavailable")
+        }
+        client.controlCommandWebSocketResponseForTesting = { _ in
+            webSocketAttempted = true
+            return makeJoinResponseData(status: "websocket")
+        }
+        client.controlCommandHTTPResponseForTesting = { path, envelope in
+            httpPath = path
+            #expect(envelope.commandKind == "join-channel")
+            return makeJoinResponseData(status: "http")
+        }
+
+        let response = try await client.joinChannel(channelId: "channel-runtime-fallback", operationId: "join-runtime-fallback")
+
+        #expect(response.status == "http")
+        #expect(!webSocketAttempted)
+        #expect(httpPath == "/v1/channels/channel-runtime-fallback/join")
+        #expect(
+            notices.contains {
+                $0.contains("Runtime QUIC join-channel failed; using HTTP fallback")
+            }
+        )
+        #expect(
+            traces.contains {
+                $0.commandKind == "join-channel"
+                    && $0.transport == .http
+                    && $0.phase == .hedgeStarted
+                    && $0.detail == "runtime-quic-control-failed"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func runtimeTlsPresenceCommandUsesPersistentLaneWhenForced() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(.forceRuntimeTls)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
+
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: true,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeTlsControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(supported: false),
+                    tls: TurboRuntimeTlsControlConfig(supported: true, endpoint: "api.beepbeep.to:443"),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+        client.setWebSocketConnectedForControlCommandTesting()
+
+        var runtimeLane: TurboRuntimeControlLane?
+        var runtimeEnvelope: TurboControlCommandEnvelope?
+        var webSocketAttempted = false
+        var httpAttempted = false
+        client.controlCommandRuntimePersistentResponseForTesting = { lane, envelope in
+            runtimeLane = lane
+            runtimeEnvelope = envelope
+            return makeRuntimeControlFrameResponseData(
+                type: "presence-command-response",
+                transport: "runtime-tls-control",
+                body: makePresenceHeartbeatResponseData(status: "runtime-tls")
+            )
+        }
+        client.controlCommandWebSocketResponseForTesting = { _ in
+            webSocketAttempted = true
+            return makePresenceHeartbeatResponseData(status: "websocket")
+        }
+        client.controlCommandHTTPResponseForTesting = { _, _ in
+            httpAttempted = true
+            return makePresenceHeartbeatResponseData(status: "http")
+        }
+
+        let response = try await client.heartbeatPresence()
+
+        #expect(response.status == "runtime-tls")
+        #expect(runtimeLane == .runtimeTlsControl)
+        #expect(runtimeEnvelope?.commandKind == "presence-keepalive")
+        #expect(runtimeEnvelope?.userHandle == "@self")
+        #expect(!webSocketAttempted)
+        #expect(!httpAttempted)
+    }
+
+    @MainActor
+    @Test func forcedUnavailableRuntimeControlPolicySkipsWebSocketCompatibilityAndUsesHTTP() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(.forceRuntimeQuic)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
+
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "test-device",
+                controlCommandTransportPolicy: .automatic
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(supported: false),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+        client.setWebSocketConnectedForControlCommandTesting()
+
+        var webSocketAttempted = false
+        var httpPath: String?
+        client.controlCommandWebSocketResponseForTesting = { _ in
+            webSocketAttempted = true
+            return makeJoinResponseData(status: "websocket")
+        }
+        client.controlCommandHTTPResponseForTesting = { path, _ in
+            httpPath = path
+            return makeJoinResponseData(status: "http")
+        }
+
+        let response = try await client.joinChannel(channelId: "channel-runtime-quic", operationId: "join-runtime-quic")
+
+        #expect(response.status == "http")
+        #expect(!webSocketAttempted)
+        #expect(httpPath == "/v1/channels/channel-runtime-quic/join")
+        #expect(client.controlCommandTransportPolicy == .forceRuntimeQuic)
+        #expect(client.runtimeControlSelection.effectiveLane == .runtimeHttpRequest)
+        #expect(client.runtimeControlSelection.fallbackReason == "runtime-quic-unavailable")
     }
 
     @MainActor

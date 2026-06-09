@@ -369,7 +369,7 @@ Product term: not user-facing.
 
 Code term: `ConversationParticipantTelemetry`, `ConversationNetworkInterface`, `SignalKind.ConversationParticipantTelemetry`, `conversation-participant-telemetry`.
 
-Owner: Swift app adapter emits and consumes the payload; backend websocket signaling routes the opaque signal.
+Owner: Swift app adapter emits and consumes the payload; backend runtime signaling routes the opaque signal.
 
 Rules:
 

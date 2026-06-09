@@ -1,8 +1,13 @@
 # Tooling Guide
 
+Archived reference. This file describes the old `/Users/mau/Development/Turbo`
+tooling surface and staging-era URLs. Active BeepBeep commands live in
+[`/Users/mau/Development/bb/TOOLING.md`](/Users/mau/Development/bb/TOOLING.md)
+and target `https://api.beepbeep.to`.
+
 Operational command reference. Use `WORKFLOW.md` for proof strategy and this file for exact tools.
 
-Active backend tooling is BeepBeep-first: Rust runtime and infrastructure live under [`beepbeep/backend`](/Users/mau/Development/Turbo/beepbeep/backend), active Unison kernel definitions live under `beepbeep.*`, and the canonical deployed base URL is `https://staging.beepbeep.to`.
+Active backend tooling is BeepBeep-first: Rust runtime and infrastructure live under [`/Users/mau/Development/bb/backend`](/Users/mau/Development/bb/backend), active Unison kernel definitions live under `beepbeep.*`, and the canonical deployed base URL is `https://api.beepbeep.to`.
 
 ## Selection Rules
 
@@ -23,7 +28,7 @@ Use [`WORKFLOW.md`](/Users/mau/Development/Turbo/WORKFLOW.md) for the higher-lev
 | Engine core | `just engine-test`, `just engine-scenario`, `just engine-scenario-local`, `just engine-fuzz-local` | `Packages/TurboEngine`, `/tmp/turbo-engine-fuzz/` |
 | Swift app | `just swift-test-target`, `just swift-test-suite`, Xcode wrappers | `Turbo/`, `TurboTests/`, `.xcresult` |
 | Physical device app loop | `just device-list`, `just device-run`, `just device-test`, `just device-ui-test` | connected iOS devices, `/tmp/turbo-device-app/`, `/tmp/turbo-device-derived-data/` |
-| BeepBeep backend | `just beepbeep-backend-gate`, `just beepbeep-backend-staging-gate`, `just beepbeep-backend-cutover-readiness` | `beepbeep/backend`, Unison namespace `beepbeep.*`, `/tmp/beepbeep-backend-reliability-gate.json` |
+| BeepBeep backend | `just beepbeep-backend-gate`, `just beepbeep-backend-production-gate`, `just beepbeep-backend-cutover-readiness` | `/Users/mau/Development/bb/backend`, Unison namespace `beepbeep.*`, `/tmp/beepbeep-backend-reliability-gate.json` |
 | Legacy Cloud backend | Unison MCP/UCM, `turbo.serveLocal`, `turbo.deploy` | Unison codebase `turbo/main`; reference/maintenance only |
 | Simulator scenarios/fuzz | `just simulator-scenario*`, `just simulator-fuzz-local*`, `just reliability-fuzz-local-overnight` | `scenarios/`, `/tmp/turbo-scenario-fuzz/`, merged diagnostics and engine trace artifacts |
 | Diagnostics | `just reliability-intake*`, `scripts/merged_diagnostics.py` | `/tmp/turbo-reliability-intake/`, `/tmp/turbo-debug/` |
@@ -34,12 +39,10 @@ Use [`WORKFLOW.md`](/Users/mau/Development/Turbo/WORKFLOW.md) for the higher-lev
 
 For deploys, the distinction is:
 
-- for the active BeepBeep backend reliability loop, use `just beepbeep-backend-gate`; it composes kernel fuzzing, corpus export, Rust runtime fuzzing/integration, HTTP/websocket probes, shadow comparison, and local production-scenario fuzzing
-- for deployed staging verification of the active backend, use `just beepbeep-backend-staging-gate`; it targets `https://staging.beepbeep.to`
+- for the active BeepBeep backend reliability loop, use `just beepbeep-backend-gate`; it composes kernel fuzzing, corpus export, Rust runtime fuzzing/integration, HTTP/runtime-control probes, shadow comparison, and local production-scenario fuzzing
+- for deployed production verification of the active backend, use `just beepbeep-backend-production-gate`; it targets `https://api.beepbeep.to`
 - for a machine-readable release decision, use `just beepbeep-backend-cutover-readiness`
-- for the normal day-to-day verified deploy path, use
-  `just deploy-staging-verified`
-- for the strict production release path, use `just deploy-production`; it runs
+- for the production release path, use `just deploy-production`; it runs
   `just production-preflight`, then deploys, then runs the hosted synthetic
   conversation canary and SLO dashboard
 - if a deploy already happened and you only need live verification, use
@@ -52,9 +55,7 @@ For deploys, the distinction is:
 
 If hosted simulator scenarios start timing out after a deploy, do not assume schema drift immediately. First confirm the raw hosted surface with `just route-probe` or `just backend-stability-probe`. A passing raw hosted probe plus flaky simulator-hosted scenarios usually points to transport/test-lane instability, not a reason to rotate the environment. Environment rotation stays a manual operator recovery for disposable environments, not an automatic production step.
 
-In either case, if you changed backend behavior in the local Unison codebase, that change is not live on `https://staging.beepbeep.to` until `turbo.deploy` has actually run.
-
-`just deploy-staging-verified` runs `just swift-test-suite`, deploys, then runs hosted verification.
+In either case, if you changed backend behavior in the local Unison codebase, that change is not live on `https://api.beepbeep.to` until the production deploy has actually run.
 
 `just production-preflight` is the expensive local proof gate before production:
 
@@ -63,9 +64,6 @@ In either case, if you changed backend behavior in the local Unison codebase, th
 - `just reliability-gate-full`
 
 `just deploy-production` runs preflight, deploys, then verifies hosted SLOs. If verification fails after deploy, inspect the printed `postdeploy-check.json`, `synthetic-conversation-probe.json`, and `slo-dashboard.json` artifacts before deciding to roll forward, roll back, or convert the failure into a regression.
-
-`just deploy-verified` remains as a compatibility alias for
-`just deploy-staging-verified`.
 
 For APNs credentials, keep the `.p8` file outside the repo and expose either `TURBO_APNS_PRIVATE_KEY_PATH` or `TURBO_APNS_PRIVATE_KEY` in the local deploy environment. `turbo.deploy` resolves the path locally when present and stores the PEM text in cloud config as `TURBO_APNS_PRIVATE_KEY`, so deployed backend code should never depend on filesystem access.
 
@@ -122,7 +120,7 @@ For distributed app/backend flows that do not require a physical device, prefer 
 
 `just simulator-scenario-suite` is the canonical full run. It executes the dedicated simulator scenario suite with no runtime filter, which means every checked-in `scenarios/*.json` file is exercised automatically.
 
-`just simulator-scenario-suite-hosted-smoke` is the deployed-surface subset. Use it when you want a fast hosted confidence pass without running the entire scenario catalog against `https://staging.beepbeep.to`. It intentionally excludes transport-fault recovery scenarios whose websocket/device-connectivity invariants are only modeled deterministically in the local websocket lane.
+`just simulator-scenario-suite-hosted-smoke` is the deployed-surface subset. Use it when you want a fast hosted confidence pass without running the entire scenario catalog against `https://api.beepbeep.to`. It intentionally excludes transport-fault recovery scenarios whose device-connectivity invariants are only modeled deterministically in local scenario lanes.
 
 `just simulator-scenario-suite-local` is the deterministic local websocket-backed catalog run. It assumes `just serve-local` is already running on `http://localhost:8090/s/turbo`.
 
@@ -185,7 +183,6 @@ Use [`fuzz.md`](/Users/mau/Development/Turbo/fuzz.md) for the operator loop and 
 | Local regression gate | `just reliability-gate-regressions` | Primary | Proving focused code changes before deploy or before deeper scenario work. |
 | Local overnight fuzz | `just reliability-fuzz-local-overnight <seed> <count>` | Primary | Broad local reliability sweep: headless engine fuzz first, then simulator fuzz with strict diagnostics and engine trace replay. |
 | Hosted smoke gate | `just reliability-gate-smoke` | Primary | Proving simulator-backed hosted control-plane behavior before a risky release. |
-| Staging-grade verified deploy | `just deploy-staging-verified` | Primary | Day-to-day verified deploy path. Today it still targets the hosted production base URL. |
 | Production preflight | `just production-preflight` | Primary | Run the expensive local proof gate before a production deploy. |
 | Production deploy | `just deploy-production` | Primary | Run the strict preflight, deploy, then prove the live hosted canary and SLOs. |
 | Postdeploy verification | `just postdeploy-check` | Primary | A deploy already happened, or production feels flaky and needs a fresh canary. |
@@ -399,13 +396,13 @@ If a backend diagnostics route is slow or unhealthy, `merged_diagnostics.py` bou
 If diagnostics uploads appear to be stressing hosted Unison storage, clear the authenticated user's latest diagnostics anchor after deploying the current backend:
 
 ```bash
-curl -X POST -H 'x-turbo-user-handle: @mau' -H 'Authorization: Bearer @mau' https://staging.beepbeep.to/v1/dev/diagnostics/clear
+curl -X POST -H 'x-turbo-user-handle: @mau' -H 'Authorization: Bearer @mau' https://api.beepbeep.to/v1/dev/diagnostics/clear
 ```
 
 If a known exact-device diagnostics row needs to be removed, clear it by key without materializing the stored payload:
 
 ```bash
-curl -X POST -H 'x-turbo-user-handle: @mau' -H 'Authorization: Bearer @mau' https://staging.beepbeep.to/v1/dev/diagnostics/clear/<device-id>
+curl -X POST -H 'x-turbo-user-handle: @mau' -H 'Authorization: Bearer @mau' https://api.beepbeep.to/v1/dev/diagnostics/clear/<device-id>
 ```
 
 Do not use `reset-all` just to clear diagnostics; it also clears product/session state.
@@ -414,7 +411,7 @@ Use the backend stability probe when production bootstrap routes appear intermit
 
 ```bash
 python3 scripts/backend_stability_probe.py --iterations 30 --timeout 8 --handle @mau
-just backend-stability-probe https://staging.beepbeep.to @mau 30 8
+just backend-stability-probe https://api.beepbeep.to @mau 30 8
 ```
 
 The probe repeatedly checks `/v1/health`, `/v1/config`, `/v1/auth/session`, `/v1/devices/register`, `/v1/beeps/incoming`, `/v1/beeps/outgoing`, `/v1/presence/heartbeat`, and `/v1/telemetry/events`, reports per-request latency/timeouts, and exits non-zero if any request fails. Use it when simulator-hosted scenarios are timing out on Beep refreshes, not just bootstrap or write paths. This is the preferred artifact for Unison Cloud escalation because it separates route availability from app/device behavior while still exercising the lightweight authenticated reads/writes that simulator-hosted runs depend on.
@@ -422,7 +419,7 @@ The probe repeatedly checks `/v1/health`, `/v1/config`, `/v1/auth/session`, `/v1
 When the suspected problem is websocket continuity rather than plain route availability, use:
 
 ```bash
-just websocket-stability-probe https://staging.beepbeep.to @quinn @sasha 90 20 0
+just websocket-stability-probe https://api.beepbeep.to @quinn @sasha 90 20 0
 ```
 
 That probe opens two authenticated websocket sessions with unique simulator-style device IDs, holds them open for the requested duration, uses the same 20s websocket ping cadence as the app by default, and optionally layers periodic `presence/heartbeat` and `telemetry/events` writes. It should be the first lower-level proof when the app reports websocket `idle` / reconnect churn but `route-probe` and `backend-stability-probe` are green.
@@ -430,7 +427,7 @@ That probe opens two authenticated websocket sessions with unique simulator-styl
 When the lower-level Python websocket probe is green but the app still looks suspicious, use the client-native probe:
 
 ```bash
-just hosted-backend-client-probe https://staging.beepbeep.to 60 20 20
+just hosted-backend-client-probe https://api.beepbeep.to 60 20 20
 ```
 
 That runs a single opt-in Swift `@Test` through the actual `TurboBackendClient` / `URLSessionWebSocketTask` path, bootstraps auth + device registration + initial presence heartbeat, keeps the socket open for the requested duration, layers periodic `presence/heartbeat` and `telemetry/events` writes, and writes a JSON artifact to `/tmp/turbo-debug/hosted_backend_client_probe_latest.json` by default. The wrapper uses a dedicated `iPhone 17 Pro` simulator and removes its temporary runtime-control file on exit so other automated tests do not inherit the probe-only backend-bootstrap suppression. Use it when you need to distinguish Python-lower-level websocket stability from app-client websocket stability.

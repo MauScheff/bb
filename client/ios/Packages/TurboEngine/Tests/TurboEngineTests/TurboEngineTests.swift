@@ -97,8 +97,8 @@ struct TurboEngineCoreTests {
         #expect(trace.steps.first?.source == "fixture-join")
 
         let report = EngineTraceReplayer.replay(trace)
-        #expect(report.passed)
-        #expect(report.mismatches.isEmpty)
+        #expect(report.stepCount == trace.steps.count)
+        #expect(report.invariantIDs.isEmpty)
     }
 
     @Test func enginePreconditionInvariantsHaveFocusedProofs() {
@@ -595,45 +595,6 @@ struct TurboEngineCoreTests {
         #expect(transition.effects.contains(.media(.dropChunk(late, .orderedBacklog))))
     }
 
-    @Test func relayWebSocketFallbackKeepsSlowSequentialOrderedFrames() {
-        var engine = TurboEngine(localDeviceID: "receiver-device")
-        _ = engine.receive(.backend(.joined(joinedForReceiver(transport: .relayWebSocket))))
-        _ = engine.receive(.backend(.remoteTransmitStarted(remotePrepare(transmitID: "tx-websocket-slow"))))
-        let capability = EngineMediaTransportCapability.orderedReliableMedia(
-            OrderedReliableMediaEvidence(path: .relayWebSocket, reason: .webSocketFallback)
-        )
-        let first = EngineAudioChunk(
-            id: "chunk-0",
-            transmitID: "tx-websocket-slow",
-            sequence: EngineAudioSequence(0),
-            fromDeviceID: "sender-device",
-            toDeviceID: "receiver-device",
-            transport: .relayWebSocket,
-            payloadDigest: "digest-0",
-            mediaCapability: capability,
-            receivedAtTick: 0,
-            durationTicks: 20
-        )
-        let delayedSecond = EngineAudioChunk(
-            id: "chunk-1",
-            transmitID: "tx-websocket-slow",
-            sequence: EngineAudioSequence(1),
-            fromDeviceID: "sender-device",
-            toDeviceID: "receiver-device",
-            transport: .relayWebSocket,
-            payloadDigest: "digest-1",
-            mediaCapability: capability,
-            receivedAtTick: 1_000,
-            durationTicks: 20
-        )
-
-        _ = engine.receive(.media(.remoteAudioReceived(first)))
-        let transition = engine.receive(.media(.remoteAudioReceived(delayedSecond)))
-
-        #expect(transition.state.scheduledPlayback == [first, delayedSecond])
-        #expect(!transition.effects.contains(.media(.dropChunk(delayedSecond, .orderedBacklog))))
-    }
-
     @Test func directActiveNetworkMigrationPreservesDirectAndPrewarmsFastRelay() {
         var engine = activeEngine(transmitID: "tx-migrate", transport: .directQuic)
         _ = engine.receive(
@@ -680,7 +641,7 @@ struct TurboEngineCoreTests {
         #expect(!transition.effects.contains(.transport(.fallBack(to: .relayWebSocket, reason: .networkChanged(.cellular)))))
     }
 
-    @Test func fastRelayQuicFailureDowngradesToTcpThenWebSocket() {
+    @Test func fastRelayQuicFailureDowngradesToTcpThenNoMediaRoute() {
         var engine = TurboEngine(localDeviceID: "sender-device")
         _ = engine.receive(.backend(.joined(joinedEvidence(transport: .fastRelay))))
         _ = engine.receive(
@@ -716,8 +677,12 @@ struct TurboEngineCoreTests {
 
         #expect(quicFailed.state.transportSelection.currentLane == .fastRelayTcp)
         #expect(quicFailed.state.transport.currentPath == .fastRelay)
-        #expect(tcpFailed.state.transportSelection.currentLane == .webSocketTcp)
-        #expect(tcpFailed.state.transport.currentPath == .relayWebSocket)
+        #expect(tcpFailed.state.transportSelection.currentLane == nil)
+        if case .unavailable(let reason) = tcpFailed.state.transport {
+            #expect(reason == .noRoute)
+        } else {
+            Issue.record("expected transport to have no route after all live media lanes failed")
+        }
     }
 
     @Test func idleNetworkMigrationStartsTransmitOnBestViableLane() {
@@ -792,6 +757,152 @@ struct TurboEngineCoreTests {
         #expect(stale.state.transportSelection.currentLane == .fastRelayQuic)
         #expect(stale.diagnostics.contains { $0.message == "Ignored stale transport lane availability" })
         #expect(fresh.state.transportSelection.currentLane == .directQuic)
+    }
+
+    @Test func activeMediaLaneAvailabilityDoesNotPromoteWithoutEpochProof() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .fastRelay))))
+        _ = engine.receive(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(lane: .fastRelayTcp, networkPathGeneration: 0)
+                )
+            )
+        )
+        _ = engine.receive(
+            .transport(
+                .laneFailed(
+                    TransportLaneFailure(
+                        lane: .fastRelayQuic,
+                        reason: .quicBlocked,
+                        networkPathGeneration: 0
+                    )
+                )
+            )
+        )
+        _ = engine.send(.beginTalk)
+        _ = engine.receive(.backend(.beginTransmitAccepted("tx-epoch")))
+        _ = engine.receive(.ptt(.systemTransmitBegan("system-channel-a-b")))
+        let captured = EngineAudioChunk(
+            id: "local-1",
+            transmitID: "tx-epoch",
+            sequence: EngineAudioSequence(0),
+            fromDeviceID: "sender-device",
+            toDeviceID: "receiver-device",
+            transport: .fastRelay,
+            payloadDigest: "digest-local",
+            mediaCapability: .orderedReliableMedia(
+                OrderedReliableMediaEvidence(path: .fastRelay, reason: .fastRelayTcpFallback)
+            )
+        )
+        _ = engine.receive(.media(.localAudioCaptured(captured)))
+        let activeLaneBeforeAvailability = engine.snapshot.mediaEpochDelivery?.activeLane?.lane
+
+        let transition = engine.receive(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(lane: .fastRelayQuic, networkPathGeneration: 0)
+                )
+            )
+        )
+
+        #expect(transition.state.transportSelection.currentLane == .fastRelayTcp)
+        #expect(transition.state.transportSelection.bestViableLane == .fastRelayQuic)
+        #expect(transition.state.transportSelection.upgradeTarget == .fastRelayQuic)
+        #expect(transition.state.mediaEpochDelivery?.activeLane?.lane == activeLaneBeforeAvailability)
+        #expect(transition.state.mediaEpochDelivery?.availableLanes.state(for: .fastRelayQuic)?.isMediaViable == true)
+    }
+
+    @Test func mediaEpochActiveLaneChangesOnlyAfterCurrentAudioProof() {
+        var engine = activeEngine(transmitID: "tx-proof", transport: .relayWebSocket)
+        let first = EngineAudioChunk(
+            id: "local-1",
+            transmitID: "tx-proof",
+            sequence: EngineAudioSequence(0),
+            fromDeviceID: "sender-device",
+            toDeviceID: "receiver-device",
+            transport: .relayWebSocket,
+            payloadDigest: "digest-local-1"
+        )
+        let promoted = EngineAudioChunk(
+            id: "local-2",
+            transmitID: "tx-proof",
+            sequence: EngineAudioSequence(1),
+            fromDeviceID: "sender-device",
+            toDeviceID: "receiver-device",
+            transport: .fastRelay,
+            payloadDigest: "digest-local-2"
+        )
+
+        _ = engine.receive(.media(.localAudioCaptured(first)))
+        _ = engine.receive(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(lane: .fastRelayQuic, networkPathGeneration: 0)
+                )
+            )
+        )
+        let transition = engine.receive(.media(.localAudioCaptured(promoted)))
+
+        #expect(transition.state.mediaEpochDelivery?.activeLane?.lane == .fastRelayQuic)
+    }
+
+    @Test func mediaEpochRescuePlanIsBoundedToOneSequentialRescue() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .directQuic))))
+        _ = engine.receive(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(lane: .fastRelayQuic, networkPathGeneration: 0)
+                )
+            )
+        )
+        _ = engine.send(.beginTalk)
+        _ = engine.receive(.backend(.beginTransmitAccepted("tx-rescue")))
+        let transition = engine.receive(.ptt(.systemTransmitBegan("system-channel-a-b")))
+
+        #expect((transition.state.mediaEpochDelivery?.rescueState.plannedLanes.count ?? 0) <= 2)
+    }
+
+    @Test func mediaEpochReceiveWindowDeduplicatesDuplicateFrames() {
+        var engine = TurboEngine(localDeviceID: "receiver-device")
+        _ = engine.receive(.backend(.joined(joinedForReceiver(transport: .fastRelay))))
+        _ = engine.receive(.backend(.remoteTransmitStarted(remotePrepare(transmitID: "tx-dedupe"))))
+        let first = EngineAudioChunk(
+            id: "chunk-fast",
+            transmitID: "tx-dedupe",
+            sequence: EngineAudioSequence(0),
+            fromDeviceID: "sender-device",
+            toDeviceID: "receiver-device",
+            transport: .fastRelay,
+            payloadDigest: "digest-same",
+            mediaCapability: .unorderedPacketMedia(
+                UnorderedPacketMediaEvidence(path: .fastRelay, reason: .fastRelayPacketRelay)
+            ),
+            receivedAtTick: 1_000,
+            durationTicks: 20
+        )
+        let duplicate = EngineAudioChunk(
+            id: "chunk-duplicate",
+            transmitID: "tx-dedupe",
+            sequence: EngineAudioSequence(0),
+            fromDeviceID: "sender-device",
+            toDeviceID: "receiver-device",
+            transport: .fastRelay,
+            payloadDigest: "digest-same-shadow",
+            mediaCapability: .orderedReliableMedia(
+                OrderedReliableMediaEvidence(path: .fastRelay, reason: .fastRelayTcpFallback)
+            ),
+            receivedAtTick: 1_001,
+            durationTicks: 20
+        )
+
+        _ = engine.receive(.media(.remoteAudioReceived(first)))
+        let transition = engine.receive(.media(.remoteAudioReceived(duplicate)))
+
+        #expect(transition.state.scheduledPlayback.count == 1)
+        #expect(transition.effects.contains(.media(.dropChunk(duplicate, .duplicate))))
+        #expect(transition.diagnostics.contains { $0.message == "Deduplicated media epoch frame before playback" })
     }
 
     @Test func audioAfterRemoteStopIsRejected() {
@@ -909,18 +1020,16 @@ struct TurboEngineScenarioTests {
             "active_transmit_network_migration",
             "direct_active_network_migration_fast_relay_reprobe",
             "fast_relay_quic_network_migration_preserves",
-            "fast_relay_quic_failure_tcp_then_websocket",
+            "fast_relay_quic_failure_tcp_then_no_media_route",
             "wake_token_revocation_clears_active_transmit",
             "active_transmit_membership_loss_clears_transmit",
             "idle_network_migration_then_transmit",
             "stale_direct_generation_ignored",
             "quic_unavailable_fast_relay_fallback",
-            "fast_relay_unavailable_websocket_fallback",
             "direct_quic_send_failure_relay_fallback",
             "duplicate_reordered_chunks",
             "direct_datagram_loss_reorder_duplicate",
             "fast_relay_packet_loss_reorder_duplicate",
-            "websocket_ordered_burst_drop",
             "fast_relay_tcp_ordered_burst_drop",
             "stale_stop_behind_newer_start",
             "incoming_audio_buffers_then_drains",
@@ -948,18 +1057,16 @@ struct TurboEngineScenarioTests {
         #expect(replay == reports[0])
     }
 
-    @Test func foregroundScenarioExecutesBackendEffectsThroughInMemoryPort() async throws {
+    @Test func foregroundScenarioRoutesAudioThroughMediaEffectsNotBackendPort() async throws {
         let backend = InMemoryEngineBackendPort()
 
         let report = try await EngineScenarioRunner().run(
             name: "foreground_transmit_receive",
             backend: backend
         )
-        let signals = await backend.sentSignals()
 
         #expect(report.passed)
-        #expect(signals.count == 10)
-        #expect(signals.allSatisfy { $0.type == .audioChunk })
+        #expect(report.notes.contains("syntheticChunks=10"))
     }
 }
 

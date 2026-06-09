@@ -346,6 +346,8 @@ struct ContentView: View {
                 onSetRelayOnlyForced: setDirectPathRelayOnlyForced,
                 onSetDirectQuicAutoUpgradeDisabled: setDirectQuicAutoUpgradeDisabled,
                 onSetDirectQuicTransmitStartupPolicy: setDirectQuicTransmitStartupPolicy,
+                onSetControlCommandTransportPolicy: setControlCommandTransportPolicy,
+                onSetMediaLaneOverride: setMediaLaneOverride,
                 onSetMediaRelayEnabled: setMediaRelayEnabled,
                 onSetMediaRelayForced: setMediaRelayForced,
                 onSetMediaRelayConfig: setMediaRelayConfig,
@@ -1571,6 +1573,20 @@ struct ContentView: View {
 
     private func setDirectQuicTransmitStartupPolicy(_ policy: DirectQuicTransmitStartupPolicy) {
         viewModel.setDirectQuicTransmitStartupPolicyForDebug(policy)
+    }
+
+    private func setControlCommandTransportPolicy(_ policy: TurboControlCommandTransportPolicy) {
+        viewModel.setControlCommandTransportPolicyForDebug(policy)
+    }
+
+    private func setMediaLaneOverride(_ override: TurboMediaLaneOverride) {
+        isRunningDirectQuicDebugAction = true
+        Task {
+            await viewModel.setMediaLaneOverrideForDebug(override)
+            await MainActor.run {
+                isRunningDirectQuicDebugAction = false
+            }
+        }
     }
 
     private func setMediaRelayEnabled(_ isEnabled: Bool) {

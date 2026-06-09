@@ -961,12 +961,14 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     func resetTransmitRuntimeOnly() {
         transmitTaskCoordinator.send(.reset)
         transmitRuntime.reset()
+        mediaRuntime.clearActiveMediaEpochPathState()
         pendingSystemTransmitRetryAfterRejoinByContactID.removeAll()
     }
 
     func tearDownTransmitRuntime(resetCoordinator: Bool) {
         transmitTaskCoordinator.send(.reset)
         transmitRuntime.reset()
+        mediaRuntime.clearActiveMediaEpochPathState()
         pendingSystemTransmitRetryAfterRejoinByContactID.removeAll()
         localTransmitStopProjectionGraceStartedAtNanosecondsByContactID.removeAll()
         localTransmitStopProjectionGraceStartedAtMillisecondsByContactID.removeAll()
@@ -1048,6 +1050,17 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         let peerDeviceID = attempt?.peerDeviceID ?? contactID.flatMap { directQuicPeerDeviceID(for: $0) }
         let identityStatus = DirectQuicIdentityConfiguration.status()
         let installedIdentityCount = DirectQuicIdentityConfiguration.installedIdentityCount()
+        let controlCommandTransportPolicy =
+            backendServices?.controlCommandTransportPolicy
+                ?? TurboControlCommandTransportDebugOverride.policy()
+                ?? .automatic
+        let runtimeControlSelection =
+            backendServices?.runtimeControlSelection
+                ?? TurboRuntimeControlSelection(
+                    requestedPolicy: controlCommandTransportPolicy,
+                    effectiveLane: .runtimeHttpRequest,
+                    fallbackReason: "backend-unavailable"
+                )
         let directQuicRole = localDeviceID.flatMap { localDeviceID in
             peerDeviceID.map { peerDeviceID in
                 directQuicAttemptRole(
@@ -1076,6 +1089,11 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             relayOnlyOverride: isDirectPathRelayOnlyForced,
             autoUpgradeDisabled: isDirectQuicAutoUpgradeDisabledForDebug,
             transmitStartupPolicy: directQuicTransmitStartupPolicy,
+            controlCommandTransportPolicy: controlCommandTransportPolicy,
+            runtimeControlEffectiveLane: runtimeControlSelection.effectiveLane,
+            runtimeControlFallbackReason: runtimeControlSelection.fallbackReason,
+            runtimeControlPersistent: runtimeControlSelection.usesPersistentTransport,
+            mediaLaneOverride: TurboMediaLaneDebugOverride.mediaLaneOverride(),
             mediaRelayEnabled: TurboMediaRelayDebugOverride.isEnabled(),
             mediaRelayForced: TurboMediaRelayDebugOverride.isForced(),
             mediaRelayConfigured: mediaRelayConfig?.isConfigured == true,
@@ -1666,6 +1684,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             "incomingWakeBufferedChunkCount": selectedConversation.incomingWakeBufferedChunkCount.map(String.init(describing:)) ?? "0",
             "localJoinFailure": pttCoordinator.state.lastJoinFailure.map(String.init(describing:)) ?? "none",
             "websocket": backendRuntime.isWebSocketConnected ? "connected" : "disconnected",
+            "runtimeControlPolicy": directQuic.controlCommandTransportPolicy.rawValue,
+            "runtimeControlEffectiveLane": directQuic.runtimeControlEffectiveLane.rawValue,
+            "runtimeControlFallbackReason": directQuic.runtimeControlFallbackReason ?? "none",
+            "runtimeControlPersistent": String(directQuic.runtimeControlPersistent),
             "mediaState": String(describing: mediaRuntime.connectionState),
             "backendChannelStatus": selectedConversation.backendChannelStatus ?? "none",
             "backendReadiness": selectedConversation.backendReadiness ?? "none",
@@ -1688,6 +1710,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             "directQuicTransmitStartupPolicy": directQuic.transmitStartupPolicy.rawValue,
             "directQuicBackendAdvertised": String(directQuic.backendAdvertisesUpgrade),
             "directQuicEnabled": String(directQuic.effectiveUpgradeEnabled),
+            "mediaLaneOverride": directQuic.mediaLaneOverride.rawValue,
+            "mediaLaneEffective": directQuic.transportPathState.rawValue,
+            "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.rawValue ?? "none",
             "mediaRelayEnabled": String(directQuic.mediaRelayEnabled),
             "mediaRelayForced": String(directQuic.mediaRelayForced),
             "mediaRelayConfigured": String(directQuic.mediaRelayConfigured),
@@ -2365,9 +2390,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         case .mediaRelayPacket:
             return .fastRelayBalanced
         case .mediaRelayTcp:
-            return .websocketContinuity
+            return .orderedContinuity
         case .relayWebSocket:
-            return .websocketContinuity
+            return .orderedContinuity
         }
     }
 
@@ -2385,12 +2410,12 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             return .directLowLatency
         }
         if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
-            return .websocketContinuity
+            return .orderedContinuity
         }
         if mediaTransportPathState == .fastRelay {
             return .fastRelayBalanced
         }
-        return .websocketContinuity
+        return .orderedContinuity
     }
 
     func hasConfiguredOutgoingAudioContinuityFallback() -> Bool {

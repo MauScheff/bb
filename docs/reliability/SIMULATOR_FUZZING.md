@@ -4,9 +4,9 @@ Related docs: [`ENGINE.md`](/Users/mau/Development/bb/ENGINE.md) owns headless e
 
 Simulator fuzzing generates deterministic, model-based scenario JSON from integer seeds, runs it through `SimulatorScenarioTests`, and writes replayable artifacts under `/tmp`.
 
-Use it for distributed control-plane/state-machine bugs involving app intents, backend refreshes, websocket faults, HTTP delays, restart/reconnect, and simulator PushToTalk shim behavior. It does not prove real Apple PushToTalk UI, microphone permission, lock-screen wake, or actual device audio.
+Use it for distributed control-plane/state-machine bugs involving app intents, backend refreshes, runtime-control faults, HTTP delays, restart/reconnect, and simulator PushToTalk shim behavior. It does not prove real Apple PushToTalk UI, microphone permission, lock-screen wake, or actual device audio.
 
-Prefer headless engine fuzzing for engine-local session/transmit/receive/media ordering/transport/lifecycle/deadline behavior. Use simulator fuzz only when the interleaving must exercise the app target, backend scenario DSL, websocket fault injection, merged diagnostics, or simulator PushToTalk shim.
+Prefer headless engine fuzzing for engine-local session/transmit/receive/media ordering/transport/lifecycle/deadline behavior. Use simulator fuzz only when the interleaving must exercise the app target, backend scenario DSL, runtime-control fault injection, merged diagnostics, or simulator PushToTalk shim.
 
 Headless engine entrypoints:
 
@@ -68,7 +68,7 @@ The generator is model-based, not random tapping. Default journey:
 2. sender sends a Beep
 3. recipient accepts and joins
 4. sender completes the join
-5. optional websocket reconnect or app restart perturbation
+5. optional runtime-control reconnect or app restart perturbation
 6. one Friend transmits
 7. that Friend ends transmit
 8. optional background / foreground perturbation
@@ -79,10 +79,10 @@ Controlled noise:
 - refreshes for contact summaries, Beeps, and channel state
 - delayed and repeated action delivery
 - HTTP delays on typed routes
-- websocket signal delay, drop, duplicate, and reorder faults
+- runtime-control signal delay, drop, duplicate, and reorder faults
 - redundant commands and stale refreshes
 - asynchronous channel refreshes that can complete after transmit-stop or disconnect, exercising stale backend snapshot handling
-- app restart, websocket reconnect, background, and foreground events where the
+- app restart, runtime-control reconnect, background, and foreground events where the
   simulator scenario DSL supports them
 
 Generated scenarios use the same JSON DSL as checked-in scenarios and run through `scenarioFile`.
@@ -174,7 +174,7 @@ Shrink passes are deliberately conservative:
 - remove whole steps only when the step has no `expectEventually` assertion and
   contains no core journey action
 - remove individual actions only when they are not core journey actions
-- simplify fault parameters: action delays `0`, repeat counts `1`, repeat intervals `0`, HTTP/websocket delays `0`, fault counts `1`; reorder faults keep `count = 2`
+- simplify fault parameters: action delays `0`, repeat counts `1`, repeat intervals `0`, HTTP/runtime-control delays `0`, fault counts `1`; reorder faults keep `count = 2`
 
 Core journey actions are preserved during removal:
 
@@ -262,7 +262,7 @@ local media readiness, and Direct QUIC path evidence before simulator fuzz.
 - repeated actions produce the expected scheduled count
 - scheduled actions are monotonic by delivery time
 - HTTP delay faults are consumed exactly `count` times
-- websocket drop faults are consumed exactly `count` times
+- runtime-control drop faults are consumed exactly `count` times
 
 Backend/domain invariants belong in Unison pure tests when truth belongs to backend ADTs or app/backend contracts. Avoid effectful store fuzzing here unless needed; local simulator fuzz already exercises route/store behavior through the real local service.
 

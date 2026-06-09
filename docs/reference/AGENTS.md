@@ -1,5 +1,10 @@
 # Purpose
 
+Archived reference. This file is kept to interpret the old
+`/Users/mau/Development/Turbo` checkout. Active agent routing is
+[`/Users/mau/Development/bb/AGENTS.md`](/Users/mau/Development/bb/AGENTS.md)
+with production API base URL `https://api.beepbeep.to`.
+
 This is the agent entrypoint for Turbo. Read this first, then load only the files needed for the task.
 
 Humans mostly use [`README.md`](/Users/mau/Development/Turbo/README.md). All other checked-in `.md` files are agent-facing operational docs unless they explicitly say otherwise.
@@ -12,7 +17,7 @@ Humans mostly use [`README.md`](/Users/mau/Development/Turbo/README.md). All oth
 - Canonical product/domain terminology lives in [`GLOSSARY.md`](/Users/mau/Development/Turbo/GLOSSARY.md); use it before introducing or renaming domain concepts.
 - Latest product, brand, and marketing thesis lives in [`Beep-Beep-Product-Thesis.md`](/Users/mau/Development/Turbo/Beep-Beep-Product-Thesis.md).
 - Backend source of truth is [`beepbeep/backend`](/Users/mau/Development/Turbo/beepbeep/backend): Rust runtime/effects plus Unison kernel definitions under `beepbeep.*` in the local `turbo/main` Unison codebase.
-- The canonical hosted backend base URL is `https://staging.beepbeep.to`.
+- The canonical hosted backend base URL is `https://api.beepbeep.to`.
 - The previous Unison Cloud backend and repo-root `.u` scratch files are archived under [`archive/unison-cloud`](/Users/mau/Development/Turbo/archive/unison-cloud) for reference only.
 - Repeated operational flows should go through [`justfile`](/Users/mau/Development/Turbo/justfile) recipes when available.
 - The invariant registry is [`invariants/registry.json`](/Users/mau/Development/Turbo/invariants/registry.json); app hot-path runtime contract annotations are catalogued in [`contracts/app_contract_manifest.json`](/Users/mau/Development/Turbo/contracts/app_contract_manifest.json) and emitted through [`Turbo/DiagnosticsContracts.swift`](/Users/mau/Development/Turbo/Turbo/DiagnosticsContracts.swift).

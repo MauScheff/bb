@@ -194,7 +194,7 @@ Prefer contracts at these boundaries:
 Escalate only when the lower lane cannot represent the failure:
 
 - Engine fuzz to Swift test when the app adapter or effect executor matters.
-- Swift test to simulator scenario when two app instances, backend routes, websocket timing, or merged diagnostics matter.
+- Swift test to simulator scenario when two app instances, backend routes, runtime-control timing, or merged diagnostics matter.
 - Simulator scenario to physical devices only for Apple PushToTalk UI, microphone permission, background/lock-screen wake, audio-session activation, real capture, or real playback.
 
 Do not classify a fuzz-found or device-found failure as Apple/PTT/audio-only until engine replay/modeling and Swift adapter proof are inapplicable or already green.

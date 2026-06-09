@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use relay_protocol::{
     protocol::{MAX_RELAY_LINE_LENGTH, RelayFrame, RelayTransport},
-    transport_quic::{QUIC_ALPN, QUIC_MAX_UDP_PAYLOAD_SIZE},
+    transport_quic::QUIC_MAX_UDP_PAYLOAD_SIZE,
     transport_tcp::TCP_TLS_TRANSPORT_NAME,
 };
+
+pub const RUNTIME_CONTROL_QUIC_ALPN: &[u8] = b"beep-runtime-control-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaFrameRoute {
@@ -74,7 +76,7 @@ pub enum QuicProtocolError {
 }
 
 pub fn runtime_quic_alpn() -> &'static [u8] {
-    QUIC_ALPN
+    RUNTIME_CONTROL_QUIC_ALPN
 }
 
 pub fn runtime_tcp_fallback_name() -> &'static str {
@@ -244,6 +246,15 @@ mod tests {
         assert_eq!(route.transport, RelayTransport::TcpTls);
         assert!(route.ordered);
         assert_eq!(runtime_tcp_fallback_name(), "tcp-tls");
+    }
+
+    #[test]
+    fn runtime_quic_control_alpn_is_distinct_from_fast_relay_alpn() {
+        assert_eq!(runtime_quic_alpn(), b"beep-runtime-control-v1");
+        assert_ne!(
+            runtime_quic_alpn(),
+            relay_protocol::transport_quic::QUIC_ALPN
+        );
     }
 
     #[test]
@@ -452,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn quic_protocol_uses_stable_relay_alpn() {
-        assert_eq!(runtime_quic_alpn(), b"turbo-relay-v2");
+    fn quic_protocol_uses_stable_runtime_control_alpn() {
+        assert_eq!(runtime_quic_alpn(), b"beep-runtime-control-v1");
     }
 }

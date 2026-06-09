@@ -103,7 +103,7 @@ Default app contract categories:
 - Epoch preconditions before callbacks and async continuations mutate state.
 - Ownership preconditions before media, PTT, backend, or relay side effects leave the app.
 - Projection postconditions after backend/app state is merged for selected UI and readiness.
-- Transport preconditions before accepting Direct QUIC, media relay, websocket ACK, or audio frames.
+- Transport preconditions before accepting Direct QUIC, Fast Relay QUIC/TCP, runtime-control ACK, or audio frames.
 
 `DiagnosticsStore.requireContract(...)` records a `DiagnosticsInvariantViolation` and an error diagnostic with `contractName`, `contractKind`, `invariantID`, and `scope` metadata, then returns `false` so callers can fail closed:
 

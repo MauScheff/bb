@@ -26,7 +26,13 @@ Optional:
 export TURBO_RELAY_QUIC_ADDR=0.0.0.0:443
 export TURBO_RELAY_TCP_ADDR=0.0.0.0:443
 export TURBO_RELAY_SESSION_TTL_SECONDS=180
+export TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED=true
 ```
+
+`TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED` controls whether the quiche
+server allows active connection migration. Keep it enabled for production-like
+network-change testing; set it to `false` as a rollback switch if migration
+causes relay instability.
 
 ## Build
 
@@ -135,13 +141,14 @@ TURBO_MEDIA_RELAY_HOST=relay.beepbeep.to
 TURBO_MEDIA_RELAY_QUIC_PORT=443
 TURBO_MEDIA_RELAY_TCP_PORT=443
 TURBO_MEDIA_RELAY_TOKEN=''
+TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED=true
 ```
 
 The diagnostics pane also exposes:
 
-- `Enable media relay`
-- `Force media relay`
+- media lane override: `automatic`, `force-direct-quic`, `force-fast-relay-quic`, `force-fast-relay-tls`
 - relay configured/active state
 - relay host and ports
+- effective relay QUIC active-migration setting
 
-For the first canary, the relay token is intentionally empty so physical-device testing only needs diagnostics toggles. Use `Force media relay` only when explicitly testing the packet relay path. Normal canary mode leaves Direct QUIC P2P first and uses Fast Relay as fallback.
+For the first canary, the relay token is intentionally empty so physical-device testing only needs diagnostics overrides. Use `force-fast-relay-quic` only when explicitly testing the packet relay path, and `force-fast-relay-tls` only when testing ordered fallback. Normal canary mode leaves Direct QUIC P2P first and uses Fast Relay as sequential rescue/fallback.

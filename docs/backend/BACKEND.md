@@ -14,12 +14,12 @@ The old Unison Cloud backend remains available only through the archive checkout
 
 | Surface | Owner | Path |
 | --- | --- | --- |
-| HTTP/WebSocket process, Postgres, Redis, deploy packaging, runtime effects | Rust runtime | [`backend/runtime`](/Users/mau/Development/bb/backend/runtime) |
+| Runtime QUIC/TLS/HTTP control process, Postgres, Redis, deploy packaging, runtime effects | Rust runtime | [`backend/runtime`](/Users/mau/Development/bb/backend/runtime) |
 | Control-plane meaning, command decisions, effect plans, fixtures, semantic tests | Unison kernel | `bb/main:.beepbeep` |
 | Relay/media integration | Backend-owned Rust relay module | [`backend/relay`](/Users/mau/Development/bb/backend/relay) |
 | App-visible backend contract | backend plus iOS client boundary | [`client/ios/Turbo/BackendClient.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendClient.swift) |
 
-Backend scope remains control-plane-first unless explicitly changed: auth/dev identity, device registration, Conversation membership, readiness, wake target selection, Talk Turn authority, websocket signaling, and runtime diagnostics.
+Backend scope remains control-plane-first unless explicitly changed: auth/dev identity, device registration, Conversation membership, readiness, wake target selection, Talk Turn authority, runtime QUIC/TLS/HTTP control, and runtime diagnostics.
 
 ## Required Docs
 
@@ -38,9 +38,9 @@ Use legacy backend docs only when reading old Cloud behavior or recovering old a
 | Claim | First proof lane | Escalate when |
 | --- | --- | --- |
 | Kernel decision semantics | `just kernel-fuzz` | Rust runtime effect execution matters |
-| Kernel/Rust contract | `just kernel-corpus-json`, then runtime tests | Postgres, Redis, or websocket behavior matters |
+| Kernel/Rust contract | `just kernel-corpus-json`, then runtime tests | Postgres, Redis, or runtime transport behavior matters |
 | Runtime behavior | `just rust-runtime-test`, `just runtime-postgres-integration` | deployed production behavior matters |
-| App-compatible HTTP/WebSocket surface | `just self-hosted-http-probe`, `just self-hosted-websocket-probe` | simulator app integration matters |
+| App-compatible runtime-control surface | `just self-hosted-http-probe`, `just self-hosted-websocket-probe` | simulator app integration matters |
 | Broad backend confidence | `just beepbeep-backend-gate` | hosted production must be proven |
 | Hosted production confidence | `just beepbeep-backend-production-gate` | Apple/PTT/audio hardware remains the only unknown |
 

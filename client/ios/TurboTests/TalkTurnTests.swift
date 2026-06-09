@@ -1083,7 +1083,7 @@ struct TalkTurnTests {
     }
 
     @MainActor
-    @Test func stopTransmitDrainsCaptureTailBeforeClearingAudioTransport() async throws {
+    @Test func stopTransmitInvalidatesAudioTransportBeforeCleanup() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let mediaSession = RecordingMediaSession()
@@ -1102,13 +1102,13 @@ struct TalkTurnTests {
         await viewModel.performStopTransmit(target)
 
         #expect(mediaSession.stopSendingAudioCallCount == 1)
-        #expect(mediaSession.sendAudioChunkConfiguredWhenStopSendingAudio == true)
-        #expect(mediaSession.sendAudioChunkWasClearedAfterStopSendingAudio)
+        #expect(mediaSession.sendAudioChunkConfiguredWhenStopSendingAudio == false)
+        #expect(!mediaSession.sendAudioChunkWasClearedAfterStopSendingAudio)
         #expect(viewModel.mediaServices.sendAudioChunk() == nil)
     }
 
     @MainActor
-    @Test func stopTransmitAbortsPacketLaneTailBeforeClearingAudioTransport() async throws {
+    @Test func stopTransmitInvalidatesPacketLaneAudioTransportBeforeAbortCleanup() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let mediaSession = RecordingMediaSession()
@@ -1130,8 +1130,8 @@ struct TalkTurnTests {
 
         #expect(mediaSession.abortSendingAudioCallCount == 1)
         #expect(mediaSession.stopSendingAudioCallCount == 0)
-        #expect(mediaSession.sendAudioChunkConfiguredWhenAbortSendingAudio == true)
-        #expect(mediaSession.sendAudioChunkWasClearedAfterAbortSendingAudio)
+        #expect(mediaSession.sendAudioChunkConfiguredWhenAbortSendingAudio == false)
+        #expect(!mediaSession.sendAudioChunkWasClearedAfterAbortSendingAudio)
         #expect(viewModel.mediaServices.sendAudioChunk() == nil)
     }
 
@@ -1215,7 +1215,7 @@ struct TalkTurnTests {
     }
 
     @MainActor
-    @Test func abortTransmitDrainsCaptureTailBeforeClearingAudioTransport() async throws {
+    @Test func abortTransmitInvalidatesAudioTransportBeforeCleanup() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let mediaSession = RecordingMediaSession()
@@ -1234,8 +1234,8 @@ struct TalkTurnTests {
         await viewModel.performAbortTransmit(target)
 
         #expect(mediaSession.stopSendingAudioCallCount == 1)
-        #expect(mediaSession.sendAudioChunkConfiguredWhenStopSendingAudio == true)
-        #expect(mediaSession.sendAudioChunkWasClearedAfterStopSendingAudio)
+        #expect(mediaSession.sendAudioChunkConfiguredWhenStopSendingAudio == false)
+        #expect(!mediaSession.sendAudioChunkWasClearedAfterStopSendingAudio)
         #expect(viewModel.mediaServices.sendAudioChunk() == nil)
     }
 
