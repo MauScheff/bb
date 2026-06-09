@@ -92,7 +92,7 @@ impl RuntimeHttpConfig {
             supports_direct_quic_provisioning: env_flag_default_true(
                 "BEEP_RUNTIME_SUPPORTS_DIRECT_QUIC_PROVISIONING",
             ),
-            supports_media_end_to_end_encryption: env_flag_default_false(
+            supports_media_end_to_end_encryption: env_flag_default_true(
                 "BEEP_RUNTIME_SUPPORTS_MEDIA_E2EE",
             ),
             apns_worker: RuntimeApnsWorkerConfig::from_env(),
@@ -107,16 +107,6 @@ fn env_flag_default_true(name: &str) -> bool {
             "0" | "false" | "no" | "off"
         ),
         Err(_) => true,
-    }
-}
-
-fn env_flag_default_false(name: &str) -> bool {
-    match env::var(name) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
     }
 }
 
@@ -153,6 +143,7 @@ struct RuntimeHttpState {
     channels: BTreeMap<String, RuntimeChannel>,
     alert_push_tokens_by_handle: BTreeMap<String, RuntimeAlertPushToken>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
+    media_encryption_identities_by_device: BTreeMap<String, Value>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
     diagnostics_by_user_device: BTreeMap<String, Value>,
@@ -639,6 +630,11 @@ where
                     .direct_quic_identities_by_device
                     .insert(device_id.clone(), identity);
             }
+            if let Some(identity) = sanitized_media_encryption_identity(&body) {
+                self.state
+                    .media_encryption_identities_by_device
+                    .insert(device_id.clone(), identity);
+            }
             if let Some(alert_push_token) = path_value(&body, &["alertPushToken"])
                 .and_then(Value::as_str)
                 .filter(|token| !token.is_empty())
@@ -659,6 +655,12 @@ where
                 .get(&device_id)
                 .cloned()
                 .unwrap_or(Value::Null);
+            let media_encryption_identity = self
+                .state
+                .media_encryption_identities_by_device
+                .get(&device_id)
+                .cloned()
+                .unwrap_or(Value::Null);
             self.record_presence(handle, "online", Some(device_id.clone()));
             return Ok(HttpResponse {
                 status: 200,
@@ -668,7 +670,8 @@ where
                     "platform": "ios",
                     "deviceLabel": device_label,
                     "lastSeenAt": "1970-01-01T00:00:00Z",
-                    "directQuicIdentity": direct_quic_identity
+                    "directQuicIdentity": direct_quic_identity,
+                    "mediaEncryptionIdentity": media_encryption_identity
                 }),
             });
         }
@@ -775,10 +778,13 @@ where
                 .committer_mut()
                 .clear_alert_push_tokens()?;
             let cleared_direct_quic_identities = self.state.direct_quic_identities_by_device.len();
+            let cleared_media_encryption_identities =
+                self.state.media_encryption_identities_by_device.len();
             let cleared_presence_entries = self.state.presence_by_handle.len();
             self.state.channels.clear();
             self.state.alert_push_tokens_by_handle.clear();
             self.state.direct_quic_identities_by_device.clear();
+            self.state.media_encryption_identities_by_device.clear();
             self.state.presence_by_handle.clear();
             self.state.diagnostics_by_device.clear();
             self.state.wake_events.clear();
@@ -795,7 +801,8 @@ where
                     "clearedChannels": cleared_channels,
                     "clearedRememberedContacts": cleared_remembered_contacts,
                     "clearedProfiles": cleared_profiles,
-                    "clearedDirectQuicIdentities": cleared_direct_quic_identities
+                    "clearedDirectQuicIdentities": cleared_direct_quic_identities,
+                    "clearedMediaEncryptionIdentities": cleared_media_encryption_identities
                 }),
             });
         }
@@ -2039,6 +2046,16 @@ where
             .and_then(|device_id| self.state.direct_quic_identities_by_device.get(device_id))
             .cloned()
             .unwrap_or(Value::Null);
+        let peer_media_encryption_identity = projected_membership
+            .peer_device_id
+            .as_ref()
+            .and_then(|device_id| {
+                self.state
+                    .media_encryption_identities_by_device
+                    .get(device_id)
+            })
+            .cloned()
+            .unwrap_or(Value::Null);
         Ok(serde_json::json!({
             "channelId": channel_id,
             "peerUserId": peer_user_id,
@@ -2065,7 +2082,8 @@ where
                     "targetDeviceId": peer_wake_target_device_id
                 }
             },
-            "peerDirectQuicIdentity": peer_direct_quic_identity
+            "peerDirectQuicIdentity": peer_direct_quic_identity,
+            "peerMediaEncryptionIdentity": peer_media_encryption_identity
         }))
     }
 
@@ -2881,6 +2899,22 @@ fn sanitized_direct_quic_identity(body: &Value) -> Option<Value> {
     let identity = body.get("directQuicIdentity")?.as_object()?;
     let fingerprint = identity.get("fingerprint")?.as_str()?;
     Some(serde_json::json!({
+        "fingerprint": fingerprint,
+        "status": identity
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("active")
+    }))
+}
+
+fn sanitized_media_encryption_identity(body: &Value) -> Option<Value> {
+    let identity = body.get("mediaEncryptionIdentity")?.as_object()?;
+    let scheme = identity.get("scheme")?.as_str()?;
+    let public_key_base64 = identity.get("publicKeyBase64")?.as_str()?;
+    let fingerprint = identity.get("fingerprint")?.as_str()?;
+    Some(serde_json::json!({
+        "scheme": scheme,
+        "publicKeyBase64": public_key_base64,
         "fingerprint": fingerprint,
         "status": identity
             .get("status")
@@ -4369,6 +4403,58 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_http_route_probe_preserves_media_encryption_identity_on_device_register() {
+        let mut service = service();
+        let first = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/devices/register".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-a",
+                "deviceLabel": "Avery Phone",
+                "mediaEncryptionIdentity": {
+                    "scheme": "x25519-v1",
+                    "publicKeyBase64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "fingerprint": "sha256:media-test",
+                    "privateKeyBase64": "must-not-leak"
+                }
+            }))
+            .expect("body should encode"),
+        });
+
+        assert_eq!(first.status, 200);
+        assert_eq!(first.body["mediaEncryptionIdentity"]["scheme"], "x25519-v1");
+        assert_eq!(
+            first.body["mediaEncryptionIdentity"]["publicKeyBase64"],
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        );
+        assert_eq!(
+            first.body["mediaEncryptionIdentity"]["fingerprint"],
+            "sha256:media-test"
+        );
+        assert_eq!(first.body["mediaEncryptionIdentity"]["status"], "active");
+        assert!(first.body["mediaEncryptionIdentity"]["privateKeyBase64"].is_null());
+
+        let second = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/devices/register".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-a",
+                "deviceLabel": "Avery Phone"
+            }))
+            .expect("body should encode"),
+        });
+
+        assert_eq!(second.status, 200);
+        assert_eq!(
+            second.body["mediaEncryptionIdentity"]["fingerprint"],
+            "sha256:media-test"
+        );
+        assert!(second.body["mediaEncryptionIdentity"]["privateKeyBase64"].is_null());
+    }
+
+    #[test]
     fn self_hosted_http_route_probe_marks_diagnostics_upload_as_uploaded() {
         let mut service = service();
         let upload = service.handle(HttpRequest {
@@ -5248,9 +5334,27 @@ mod tests {
     #[test]
     fn self_hosted_http_route_probe_projects_join_membership_by_perspective() {
         let mut service = service();
-        for (handle, device_id, fingerprint) in [
-            ("@avery", "device-a", "sha256:avery-direct-quic"),
-            ("@blake", "device-b", "sha256:blake-direct-quic"),
+        for (
+            handle,
+            device_id,
+            direct_quic_fingerprint,
+            media_encryption_fingerprint,
+            media_encryption_public_key,
+        ) in [
+            (
+                "@avery",
+                "device-a",
+                "sha256:avery-direct-quic",
+                "sha256:avery-media-e2ee",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            (
+                "@blake",
+                "device-b",
+                "sha256:blake-direct-quic",
+                "sha256:blake-media-e2ee",
+                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+            ),
         ] {
             let register = service.handle(HttpRequest {
                 method: "POST".to_owned(),
@@ -5260,8 +5364,14 @@ mod tests {
                     "deviceId": device_id,
                     "deviceLabel": device_id,
                     "directQuicIdentity": {
-                        "fingerprint": fingerprint,
+                        "fingerprint": direct_quic_fingerprint,
                         "certificateDerBase64": "must-not-leak"
+                    },
+                    "mediaEncryptionIdentity": {
+                        "scheme": "x25519-v1",
+                        "publicKeyBase64": media_encryption_public_key,
+                        "fingerprint": media_encryption_fingerprint,
+                        "privateKeyBase64": "must-not-leak"
                     }
                 }))
                 .expect("body should encode"),
@@ -5389,6 +5499,26 @@ mod tests {
         );
         assert!(
             a_readiness_after_both_join.body["peerDirectQuicIdentity"]["certificateDerBase64"]
+                .is_null()
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerMediaEncryptionIdentity"]["scheme"],
+            "x25519-v1"
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerMediaEncryptionIdentity"]["fingerprint"],
+            "sha256:blake-media-e2ee"
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerMediaEncryptionIdentity"]["publicKeyBase64"],
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+        );
+        assert_eq!(
+            a_readiness_after_both_join.body["peerMediaEncryptionIdentity"]["status"],
+            "active"
+        );
+        assert!(
+            a_readiness_after_both_join.body["peerMediaEncryptionIdentity"]["privateKeyBase64"]
                 .is_null()
         );
 
