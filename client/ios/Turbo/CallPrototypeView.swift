@@ -448,8 +448,10 @@ struct TurboCallPrototypeView: View {
     private enum AudioBlockerPresentation: Equatable {
         case localVolumeOff(contactName: String)
         case localVolumeVeryLow(contactName: String)
+        case localVolumeLow(contactName: String)
         case remoteVolumeOff(contactName: String)
         case remoteVolumeVeryLow(contactName: String)
+        case remoteVolumeLow(contactName: String)
 
         var title: String {
             switch self {
@@ -457,10 +459,14 @@ struct TurboCallPrototypeView: View {
                 return "Your volume is off"
             case .localVolumeVeryLow:
                 return "Your volume is very low"
+            case .localVolumeLow:
+                return "Your volume is low"
             case .remoteVolumeOff(let contactName):
                 return "\(contactName)’s volume is off"
             case .remoteVolumeVeryLow(let contactName):
                 return "\(contactName)’s volume is very low"
+            case .remoteVolumeLow(let contactName):
+                return "\(contactName)’s volume is low"
             }
         }
 
@@ -470,10 +476,23 @@ struct TurboCallPrototypeView: View {
                 return "Turn it up to hear \(contactName)."
             case .localVolumeVeryLow(let contactName):
                 return "Turn it up so you don’t miss \(contactName)."
+            case .localVolumeLow(let contactName):
+                return "Turn it up if \(contactName) sounds quiet."
             case .remoteVolumeOff:
                 return "They need to turn it up before they can hear you."
             case .remoteVolumeVeryLow:
-                return "They may not hear you clearly yet."
+                return "They may miss what you say."
+            case .remoteVolumeLow:
+                return "They may not hear you clearly."
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .localVolumeOff, .remoteVolumeOff:
+                return "speaker.slash.fill"
+            case .localVolumeVeryLow, .localVolumeLow, .remoteVolumeVeryLow, .remoteVolumeLow:
+                return "speaker.wave.1.fill"
             }
         }
 
@@ -925,7 +944,7 @@ struct TurboCallPrototypeView: View {
 
     private var remoteParticipantVolumeWarningAudio: ConversationParticipantTelemetry.Audio? {
         guard let audio = remoteParticipantTelemetry?.audio,
-              isVolumeVeryLow(audio.volumePercent) else {
+              isVolumeLow(audio.volumePercent) else {
             return nil
         }
         return audio
@@ -977,6 +996,9 @@ struct TurboCallPrototypeView: View {
             if localAudio.isVolumeVeryLow {
                 return .localVolumeVeryLow(contactName: contactShortName)
             }
+            if localAudio.isVolumeLow {
+                return .localVolumeLow(contactName: contactShortName)
+            }
         }
         if let remoteAudio = remoteParticipantTelemetry?.audio {
             if remoteAudio.isVolumeOff {
@@ -985,13 +1007,16 @@ struct TurboCallPrototypeView: View {
             if remoteAudio.isVolumeVeryLow {
                 return .remoteVolumeVeryLow(contactName: contactShortName)
             }
+            if remoteAudio.isVolumeLow {
+                return .remoteVolumeLow(contactName: contactShortName)
+            }
         }
         return nil
     }
 
     private func audioBlockerOverlay(_ presentation: AudioBlockerPresentation) -> some View {
         VStack(spacing: 12) {
-            Image(systemName: "speaker.slash.fill")
+            Image(systemName: presentation.symbolName)
                 .font(.system(size: 31, weight: .semibold, design: .default))
                 .foregroundStyle(Color(red: 0.10, green: 0.12, blue: 0.14))
                 .frame(width: 48, height: 48)
@@ -1149,6 +1174,9 @@ struct TurboCallPrototypeView: View {
         if isVolumeVeryLow(percent) {
             return "Volume is very low"
         }
+        if isVolumeLow(percent) {
+            return "Volume is low"
+        }
         return nil
     }
 
@@ -1159,7 +1187,10 @@ struct TurboCallPrototypeView: View {
         if isVolumeOff(percent) {
             return "Your volume is off. Turn up volume to hear \(contact.name)."
         }
-        return "Your volume is very low. You may not hear \(contact.name)."
+        if isVolumeVeryLow(percent) {
+            return "Your volume is very low. You may not hear \(contact.name)."
+        }
+        return "Your volume is low. \(contact.name) may sound quiet."
     }
 
     private func remoteParticipantAudioStatusText(for audio: ConversationParticipantTelemetry.Audio) -> String {
@@ -1169,11 +1200,14 @@ struct TurboCallPrototypeView: View {
         if isVolumeVeryLow(audio.volumePercent) {
             return "\(contactShortName)’s volume is very low"
         }
+        if isVolumeLow(audio.volumePercent) {
+            return "\(contactShortName)’s volume is low"
+        }
         return "\(contactShortName)’s audio · \(audio.routeName) · \(audio.volumePercent)%"
     }
 
     private func remoteParticipantAudioStatusColor(for audio: ConversationParticipantTelemetry.Audio) -> Color {
-        isVolumeVeryLow(audio.volumePercent) ? lowVolumeAttentionColor.opacity(0.9) : conversationParticipantTelemetryColor
+        isVolumeLow(audio.volumePercent) ? lowVolumeAttentionColor.opacity(0.9) : conversationParticipantTelemetryColor
     }
 
     private func remoteParticipantAudioStatusAccessibilityLabel(for audio: ConversationParticipantTelemetry.Audio) -> String {
@@ -1182,6 +1216,9 @@ struct TurboCallPrototypeView: View {
         }
         if isVolumeVeryLow(audio.volumePercent) {
             return "\(contact.name)'s volume is very low. They may not hear you."
+        }
+        if isVolumeLow(audio.volumePercent) {
+            return "\(contact.name)'s volume is low. They may not hear you clearly."
         }
         return "\(contactShortName)’s audio, \(audio.routeName), volume \(audio.volumePercent) percent"
     }
@@ -1192,6 +1229,10 @@ struct TurboCallPrototypeView: View {
 
     private func isVolumeVeryLow(_ percent: Int) -> Bool {
         percent <= ConversationParticipantTelemetry.Audio.veryLowVolumeMaximumPercent
+    }
+
+    private func isVolumeLow(_ percent: Int) -> Bool {
+        percent <= ConversationParticipantTelemetry.Audio.lowVolumeMaximumPercent
     }
 
     private var contactShortName: String {

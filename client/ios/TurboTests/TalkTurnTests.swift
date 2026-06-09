@@ -19486,17 +19486,24 @@ struct TalkTurnTests {
         #expect(action.style == .active)
     }
 
-    @Test func conversationParticipantTelemetryAudioClassifiesOffAndVeryLowVolume() {
+    @Test func conversationParticipantTelemetryAudioClassifiesVolumeWarningRanges() {
         let offAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 1)
-        let veryLowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 5)
-        let audibleAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 6)
+        let veryLowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 15)
+        let lowAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 30)
+        let audibleAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 31)
 
         #expect(offAudio.isVolumeOff)
         #expect(offAudio.isVolumeVeryLow)
+        #expect(offAudio.isVolumeLow)
         #expect(veryLowAudio.isVolumeOff == false)
         #expect(veryLowAudio.isVolumeVeryLow)
+        #expect(veryLowAudio.isVolumeLow)
+        #expect(lowAudio.isVolumeOff == false)
+        #expect(lowAudio.isVolumeVeryLow == false)
+        #expect(lowAudio.isVolumeLow)
         #expect(audibleAudio.isVolumeOff == false)
         #expect(audibleAudio.isVolumeVeryLow == false)
+        #expect(audibleAudio.isVolumeLow == false)
     }
 
     @MainActor
@@ -19565,6 +19572,35 @@ struct TalkTurnTests {
         #expect(viewModel.transmitRuntime.isPressingTalk == false)
         #expect(viewModel.diagnosticsTranscript.contains("Ignored begin transmit request"))
         #expect(viewModel.diagnosticsTranscript.contains("receiver-volume-off"))
+    }
+
+    @Test func receiverLowVolumeDoesNotDisableReadyHoldToTalkPrimaryAction() {
+        let state = SelectedConversationState(
+            contactName: "Blake",
+            relationship: .none,
+            detail: .ready,
+            statusMessage: "Connected",
+            canTransmitNow: true
+        )
+        let receiverAudio = ConversationParticipantTelemetry.Audio(routeName: "Speaker", volumePercent: 30)
+        let blocker: ConversationHoldToTalkBlocker? = receiverAudio.isVolumeOff
+            ? .receiverVolumeOff(contactName: "Blake")
+            : nil
+
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: state,
+            isSelectedChannelJoined: true,
+            isTransmitting: false,
+            beepCooldownRemaining: nil,
+            holdToTalkBlocker: blocker
+        )
+
+        #expect(receiverAudio.isVolumeLow)
+        #expect(blocker == nil)
+        #expect(action.kind == .holdToTalk)
+        #expect(action.label == "Hold To Talk")
+        #expect(action.isEnabled)
+        #expect(action.style == .accent)
     }
 
     @Test func holdToTalkButtonPolicyKeepsActivePresentationWhileGestureIsHeld() {
