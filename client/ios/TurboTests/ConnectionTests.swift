@@ -19818,6 +19818,57 @@ struct ConnectionTests {
         #expect(dropMetadata?["scope"] == "local")
     }
 
+    @Test func packetAudioSenderRejectsGenerationlessPayloadsWhenGenerationGateIsInstalled() async {
+        actor Recorder {
+            var payloads: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func appendPayload(_ payload: String) {
+                payloads.append(payload)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let generationGate = AudioSendGenerationGate()
+        generationGate.begin(1)
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                await recorder.appendPayload(payload)
+            },
+            reportFailure: { _ in },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            sendGenerationGate: generationGate,
+            configuration: .directLowLatency,
+            maximumPendingPayloads: 32,
+            maximumPayloadsPerMessage: 1
+        )
+
+        await sender.enqueue(["legacy-0", "legacy-1"])
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        #expect(await recorder.payloads.isEmpty)
+        #expect(
+            await recorder.firstMetadata(
+                for: "Outbound audio transport send was slow"
+            ) == nil
+        )
+        #expect(
+            await recorder.firstMetadata(
+                for: "Dropped stale outbound audio transport payload"
+            ) == nil
+        )
+    }
+
     @Test func packetAudioSenderCancelsAbortedGenerationWithoutSlowSendContract() async {
         actor Recorder {
             var startedPayloads: [String] = []

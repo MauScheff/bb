@@ -618,7 +618,9 @@ actor AudioChunkSender {
     }
 
     private func allowsSendGeneration(_ generation: UInt64?) -> Bool {
-        sendGenerationGate?.allows(generation) ?? true
+        guard let sendGenerationGate else { return true }
+        guard let generation else { return false }
+        return sendGenerationGate.allows(generation)
     }
 
     private func dropPendingPayloadsForCancelledGenerationIfNeeded() {
