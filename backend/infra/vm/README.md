@@ -121,7 +121,7 @@ Runtime QUIC/TLS control is enabled from the private remote `.env`:
 BEEP_RUNTIME_CONTROL_CERT_PEM=/etc/letsencrypt/live/api.beepbeep.to/fullchain.pem
 BEEP_RUNTIME_CONTROL_KEY_PEM=/etc/letsencrypt/live/api.beepbeep.to/privkey.pem
 BEEP_RUNTIME_QUIC_CONTROL_BIND=0.0.0.0:8443
-BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT=api.beepbeep.to:8443
+BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT=api.beepbeep.to:443
 BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true
 BEEP_RUNTIME_TLS_CONTROL_BIND=0.0.0.0:8443
 BEEP_RUNTIME_TLS_CONTROL_ENDPOINT=api.beepbeep.to:8443
@@ -129,8 +129,10 @@ BEEP_RUNTIME_SUPPORTS_TLS_CONTROL=true
 BEEP_RUNTIME_CONTROL_PREFERENCE=runtime-quic,runtime-tls,runtime-http
 ```
 
-Compose maps runtime control on `8443/udp` and `8443/tcp`. HTTP remains behind
-nginx on `443/tcp`; runtime control must not carry live media.
+Compose maps runtime QUIC control from public `443/udp` to container
+`8443/udp`, matching the firewall-friendly QUIC shape. Runtime TLS control
+uses `8443/tcp` because nginx owns public `443/tcp` for HTTPS. HTTP remains
+behind nginx on `443/tcp`; runtime control must not carry live media.
 
 The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials. The VM service account needs Artifact Registry read access for the selected repository.
 
