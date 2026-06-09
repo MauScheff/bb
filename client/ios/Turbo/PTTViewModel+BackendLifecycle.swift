@@ -856,6 +856,7 @@ extension PTTViewModel {
             lastBackendBootstrapFailureMessage = nil
             syncPTTServiceStatus(reason: "backend-connected")
             captureDiagnosticsState("backend-config:connected")
+            publishPendingPreviousRunTerminationReportIfNeeded(reason: "backend-connected")
         } catch {
             let failureMessage = backendBootstrapFailureMessage(
                 step: bootstrapStep,

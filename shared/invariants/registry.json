@@ -16,6 +16,20 @@
       "status": "active"
     },
     {
+      "id": "app.previous_run_unexpected_termination",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/AppDiagnostics.swift -> Turbo/PTTViewModel.swift",
+      "predicate": "The previous app process must not disappear while foreground-active, lifecycle-transitioning, or holding live PTT/media/control-plane state without leaving a clean termination marker.",
+      "evidenceFields": ["previousRunId", "previousRunLifecycleState", "previousRunTerminationKind", "selectedContact", "selectedConversationPhase", "systemSession", "directQuicTransportPath", "previousRunRecentEvents"],
+      "detectors": ["Turbo/AppDiagnostics.swift", "Turbo/PTTViewModel.swift"],
+      "regressions": ["TurboTests/DiagnosticsTests.swift"],
+      "repairPolicy": "diagnostics",
+      "repairAction": "Persist a compact app-run ledger across launches, report suspicious previous-run termination as an invariant, and upload compact diagnostics after the next backend bootstrap.",
+      "alertPolicy": "telemetry",
+      "status": "active"
+    },
+    {
       "id": "backend.ptt_push_target_missing_token",
       "scope": "backend",
       "owner": "backend",

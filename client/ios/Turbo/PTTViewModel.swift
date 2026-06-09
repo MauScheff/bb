@@ -196,6 +196,14 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     let pttSystemClient: any PTTSystemClientProtocol
     @ObservationIgnored
     private let pttSystemPolicyDefaults: UserDefaults?
+    @ObservationIgnored
+    private let appRunLedger: AppRunLedger?
+    @ObservationIgnored
+    private var appRunLedgerStarted = false
+    @ObservationIgnored
+    private var pendingPreviousRunTerminationObservation: AppRunLedgerPreviousRunObservation?
+    @ObservationIgnored
+    private var previousRunTerminationReportTask: Task<Void, Never>?
     let channelName: String = "BeepBeep Prototype"
     var conversationActionCoordinator = ConversationActionCoordinatorState()
     let backendSyncCoordinator = BackendSyncCoordinator()
@@ -468,13 +476,15 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     init(
         pttSystemClient: (any PTTSystemClientProtocol)? = nil,
-        pttSystemPolicyDefaults: UserDefaults? = nil
+        pttSystemPolicyDefaults: UserDefaults? = nil,
+        appRunLedger: AppRunLedger? = nil
     ) {
         let initialEngineLocalDeviceID = Self.initialEngineLocalDeviceID()
         self.engine = TurboEngine(localDeviceID: initialEngineLocalDeviceID)
         self.engineTraceRecorder = TurboEngineTraceRecorder(localDeviceID: initialEngineLocalDeviceID)
         self.pttSystemClient = pttSystemClient ?? makeDefaultPTTSystemClient()
         self.pttSystemPolicyDefaults = pttSystemPolicyDefaults
+        self.appRunLedger = appRunLedger ?? (Self.isRunningAutomatedTests ? nil : AppRunLedger())
         audioOutputPreference = .speaker
         UserDefaults.standard.set(AudioOutputPreference.speaker.rawValue, forKey: AudioOutputPreference.storageKey)
 #if DEBUG
@@ -491,6 +501,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         diagnostics.onHighSignalEvent = { [weak self] event in
             self?.handleHighSignalDiagnosticsEvent(event)
         }
+        startAppRunLedgerIfNeeded(reason: "view-model-init")
 #if DEBUG
         if Self.reducerTransitionDiagnosticsEnabled {
             let recordReducerTransition: @MainActor (ReducerTransitionReport) -> Void = { [weak self] report in
@@ -600,6 +611,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
         lease.identifier = beginBackgroundActivity(name) { [weak self] in
             Task { @MainActor [weak self, endLease, name] in
+                self?.recordAppRunLedgerEvent(
+                    kind: "background-activity-expired",
+                    reason: name
+                )
                 self?.diagnostics.record(
                     .app,
                     level: .error,
@@ -1902,8 +1917,142 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             devicePTTProjection: stateMachineProjection.devicePTT,
             uiProjection: uiProjectionDiagnostics
         )
+        appRunLedger?.recordStateCapture(reason: reason, fields: diagnosticsStateFields)
         publishDiagnosticsStateTelemetry(reason: reason)
         scheduleAutomaticDiagnosticsPublish(trigger: reason)
+    }
+
+    private func startAppRunLedgerIfNeeded(reason: String) {
+        guard let appRunLedger, !appRunLedgerStarted else { return }
+        appRunLedgerStarted = true
+        let observation = appRunLedger.startNewRun(
+            appVersion: appVersionDescription,
+            handle: currentDevUserHandle,
+            deviceID: backendServices?.deviceID ?? backendConfig?.deviceID ?? "unconfigured"
+        )
+        if let observation {
+            pendingPreviousRunTerminationObservation = observation
+            diagnostics.recordInvariantViolation(
+                invariantID: observation.invariantID,
+                scope: .local,
+                message: observation.message,
+                metadata: observation.metadata.merging(
+                    ["detectedAt": reason],
+                    uniquingKeysWith: { current, _ in current }
+                )
+            )
+        }
+        appRunLedger.recordStateCapture(reason: reason, fields: diagnosticsStateFields)
+    }
+
+    private func recordAppRunLedgerLifecycle(_ lifecycleState: String, reason: String) {
+        appRunLedger?.recordLifecycleEvent(
+            lifecycleState: lifecycleState,
+            reason: reason,
+            fields: diagnosticsStateFields
+        )
+    }
+
+    private func recordAppRunLedgerEvent(
+        kind: String,
+        reason: String,
+        metadata: [String: String] = [:]
+    ) {
+        appRunLedger?.recordEvent(
+            kind: kind,
+            reason: reason,
+            fields: diagnosticsStateFields,
+            metadata: metadata
+        )
+    }
+
+    private func markAppRunLedgerCleanTermination(reason: String) {
+        appRunLedger?.markCleanTermination(
+            reason: reason,
+            fields: diagnosticsStateFields
+        )
+    }
+
+    func publishPendingPreviousRunTerminationReportIfNeeded(reason: String) {
+        guard let observation = pendingPreviousRunTerminationObservation else { return }
+        guard backendServices != nil else { return }
+        guard previousRunTerminationReportTask == nil else { return }
+
+        if let deferralReason = automaticDiagnosticsPublishDeferralReason {
+            diagnostics.record(
+                .app,
+                level: .notice,
+                message: "Deferred previous run termination diagnostics during live media",
+                metadata: [
+                    "reason": reason,
+                    "deferralReason": deferralReason.rawValue,
+                ]
+            )
+            previousRunTerminationReportTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                } catch {
+                    self?.previousRunTerminationReportTask = nil
+                    return
+                }
+                self?.previousRunTerminationReportTask = nil
+                self?.publishPendingPreviousRunTerminationReportIfNeeded(
+                    reason: "retry-after-\(deferralReason.rawValue)"
+                )
+            }
+            return
+        }
+
+        previousRunTerminationReportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.previousRunTerminationReportTask = nil }
+            do {
+                let result = try await self.publishDiagnosticsIfPossible(
+                    trigger: "previous-run-unexpected-termination:\(reason)",
+                    recordSuccess: true,
+                    preferredUploadMode: .compact
+                )
+                var metadata = observation.metadata
+                metadata["diagnosticsDeviceId"] = result.response.report.deviceId
+                metadata["diagnosticsUploadedAt"] = result.response.report.uploadedAt
+                metadata["diagnosticsUploadMode"] = result.uploadMode.rawValue
+                metadata["diagnosticsRequestBodySizeBytes"] = String(result.requestBodySizeBytes)
+                if let fallbackError = result.fallbackFromFullError {
+                    metadata["diagnosticsFallbackFromFullError"] = fallbackError
+                }
+                self.sendTelemetryEvent(
+                    eventName: "ios.app.previous_run_unexpected_termination",
+                    severity: .error,
+                    reason: reason,
+                    message: observation.message,
+                    invariantID: observation.invariantID,
+                    metadata: metadata,
+                    alert: true
+                )
+                self.pendingPreviousRunTerminationObservation = nil
+                self.diagnostics.record(
+                    .app,
+                    level: .notice,
+                    message: "Published previous run termination diagnostics",
+                    metadata: [
+                        "reason": reason,
+                        "deviceId": result.response.report.deviceId,
+                        "uploadedAt": result.response.report.uploadedAt,
+                        "uploadMode": result.uploadMode.rawValue,
+                    ]
+                )
+            } catch {
+                self.diagnostics.record(
+                    .app,
+                    level: .notice,
+                    message: "Previous run termination diagnostics publish failed",
+                    metadata: [
+                        "reason": reason,
+                        "error": error.localizedDescription,
+                    ]
+                )
+            }
+        }
     }
 
     func updateUIProjectionDiagnostics(_ projection: UIProjectionDiagnostics, reason: String) {
@@ -2354,6 +2503,12 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleApplicationWillTerminateNotification(_:)),
+            name: UIApplication.willTerminateNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleProtectedDataWillBecomeUnavailableNotification(_:)),
             name: UIApplication.protectedDataWillBecomeUnavailableNotification,
             object: nil
@@ -2415,6 +2570,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     @objc private func handleApplicationDidBecomeActiveNotification(_ notification: Notification) {
         let _ = notification
+        recordAppRunLedgerLifecycle(
+            "active",
+            reason: "application-did-become-active-notification"
+        )
         diagnostics.record(
             .app,
             message: "Application became active",
@@ -2775,10 +2934,14 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     @objc private func handleApplicationWillResignActiveNotification(_ notification: Notification) {
         let _ = notification
+        recordAppRunLedgerLifecycle(
+            "inactive",
+            reason: "application-will-resign-active"
+        )
         diagnostics.record(
             .app,
             message: "Application will resign active",
-                metadata: [:]
+            metadata: [:]
         )
         cancelActiveTransmitForLifecycleInterruption(reason: "application-will-resign-active")
         if shouldPreserveLiveCallForProximityInactiveTransition(applicationState: .inactive) {
@@ -2803,10 +2966,14 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     @objc private func handleApplicationDidEnterBackgroundNotification(_ notification: Notification) {
         let _ = notification
+        recordAppRunLedgerLifecycle(
+            "background",
+            reason: "application-did-enter-background"
+        )
         diagnostics.record(
             .app,
             message: "Application entered background",
-                metadata: [:]
+            metadata: [:]
         )
         cancelActiveTransmitForLifecycleInterruption(reason: "application-did-enter-background")
         stopAutomaticAudioRouteMonitoring(reason: "application-did-enter-background")
@@ -2817,9 +2984,23 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         scheduleApplicationDidEnterBackgroundHandling()
     }
 
+    @objc private func handleApplicationWillTerminateNotification(_ notification: Notification) {
+        let _ = notification
+        markAppRunLedgerCleanTermination(reason: "application-will-terminate")
+        diagnostics.record(
+            .app,
+            message: "Application will terminate",
+            metadata: [:]
+        )
+    }
+
     @objc private func handleProtectedDataWillBecomeUnavailableNotification(_ notification: Notification) {
         let _ = notification
         syncEngineLifecycle(.locked, reason: "protected-data-will-become-unavailable")
+        recordAppRunLedgerLifecycle(
+            "locked",
+            reason: "protected-data-will-become-unavailable"
+        )
         diagnostics.record(
             .app,
             message: "Protected data will become unavailable",

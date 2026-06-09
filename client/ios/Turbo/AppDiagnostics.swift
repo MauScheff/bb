@@ -1487,6 +1487,410 @@ struct DiagnosticsStateCapture: Codable, Identifiable, Equatable {
     }
 }
 
+nonisolated struct AppRunLedgerEvent: Codable, Equatable {
+    let timestamp: Date
+    let kind: String
+    let reason: String
+    let metadata: [String: String]
+}
+
+nonisolated struct AppRunLedgerRecord: Codable, Equatable {
+    let schemaVersion: Int
+    var runID: String
+    var appVersion: String
+    var handle: String
+    var deviceID: String
+    var startedAt: Date
+    var updatedAt: Date
+    var lifecycleState: String
+    var terminationExpected: Bool
+    var terminationExpectationReason: String
+    var latestStateFields: [String: String]
+    var recentEvents: [AppRunLedgerEvent]
+}
+
+nonisolated struct AppRunLedgerPreviousRunObservation: Equatable {
+    let invariantID: String
+    let message: String
+    let metadata: [String: String]
+}
+
+nonisolated final class AppRunLedger {
+    private static let schemaVersion = 1
+    private static let recentEventLimit = 32
+    private static let invariantID = "app.previous_run_unexpected_termination"
+    private static let retainedStateFieldKeys = [
+        "identity",
+        "selectedContact",
+        "selectedConversationPhase",
+        "selectedConversationPhaseDetail",
+        "selectedConversationStatus",
+        "pendingAction",
+        "activeChannelId",
+        "isJoined",
+        "isTransmitting",
+        "transmitPhase",
+        "transmitPressActive",
+        "transmitSystemTransmitting",
+        "systemSession",
+        "pendingIncomingPush",
+        "pendingIncomingPushActivated",
+        "incomingWakeActivationState",
+        "mediaState",
+        "backendChannelStatus",
+        "backendReadiness",
+        "backendSelfJoined",
+        "backendPeerJoined",
+        "backendPeerDeviceConnected",
+        "backendActiveTransmitterUserId",
+        "backendActiveTransmitId",
+        "remoteAudioReadiness",
+        "remoteWakeCapabilityKind",
+        "directQuicLocalDeviceId",
+        "directQuicTransportPath",
+        "directQuicIsActive",
+        "directQuicAttemptId",
+        "directQuicChannelId",
+        "directQuicProbeControllerReady",
+        "uiRoute",
+        "uiCallScreenVisible",
+        "uiCallScreenContact",
+        "status",
+        "backendStatus",
+    ]
+    private static let booleanCriticalStateKeys = [
+        "isJoined",
+        "isTransmitting",
+        "transmitPressActive",
+        "transmitSystemTransmitting",
+        "pendingIncomingPushActivated",
+        "directQuicIsActive",
+        "directQuicProbeControllerReady",
+        "uiCallScreenVisible",
+    ]
+
+    private let fileURL: URL
+    private let now: () -> Date
+    private var currentRecord: AppRunLedgerRecord?
+
+    init?(fileURL: URL? = AppRunLedger.defaultFileURL(), now: @escaping () -> Date = Date.init) {
+        guard let fileURL else { return nil }
+        self.fileURL = fileURL
+        self.now = now
+    }
+
+    static func defaultFileURL() -> URL? {
+        let baseDirectory =
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        return baseDirectory?
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+            .appendingPathComponent("app-run-ledger.json")
+    }
+
+    var recordForTesting: AppRunLedgerRecord? {
+        currentRecord
+    }
+
+    func startNewRun(
+        appVersion: String,
+        handle: String,
+        deviceID: String
+    ) -> AppRunLedgerPreviousRunObservation? {
+        let previousRecord = loadRecord()
+        let observation = previousRecord.flatMap(Self.previousRunObservation)
+        let timestamp = now()
+        var record = AppRunLedgerRecord(
+            schemaVersion: Self.schemaVersion,
+            runID: UUID().uuidString,
+            appVersion: appVersion,
+            handle: handle,
+            deviceID: deviceID,
+            startedAt: timestamp,
+            updatedAt: timestamp,
+            lifecycleState: "launching",
+            terminationExpected: false,
+            terminationExpectationReason: "new-run",
+            latestStateFields: [:],
+            recentEvents: []
+        )
+        appendEvent(
+            kind: "run-start",
+            reason: "launch",
+            fields: [:],
+            extraMetadata: [
+                "appVersion": appVersion,
+                "deviceId": deviceID,
+                "handle": handle,
+                "previousRunId": previousRecord?.runID ?? "none",
+            ],
+            to: &record
+        )
+        currentRecord = record
+        persist(record)
+        return observation
+    }
+
+    func recordStateCapture(reason: String, fields: [String: String]) {
+        mutateRecord { record in
+            Self.refreshIdentity(fields: fields, record: &record)
+            record.latestStateFields = Self.compactFields(fields)
+            let expectation = Self.terminationExpectation(
+                lifecycleState: record.lifecycleState,
+                fields: record.latestStateFields
+            )
+            record.terminationExpected = expectation.expected
+            record.terminationExpectationReason = expectation.reason
+            appendEvent(kind: "state-capture", reason: reason, fields: fields, to: &record)
+        }
+    }
+
+    func recordLifecycleEvent(
+        lifecycleState: String,
+        reason: String,
+        fields: [String: String]
+    ) {
+        mutateRecord { record in
+            Self.refreshIdentity(fields: fields, record: &record)
+            record.lifecycleState = lifecycleState
+            record.latestStateFields = Self.compactFields(fields)
+            let expectation = Self.terminationExpectation(
+                lifecycleState: lifecycleState,
+                fields: record.latestStateFields
+            )
+            record.terminationExpected = expectation.expected
+            record.terminationExpectationReason = expectation.reason
+            appendEvent(kind: "lifecycle", reason: reason, fields: fields, to: &record)
+        }
+    }
+
+    func recordEvent(
+        kind: String,
+        reason: String,
+        fields: [String: String],
+        metadata: [String: String] = [:]
+    ) {
+        mutateRecord { record in
+            Self.refreshIdentity(fields: fields, record: &record)
+            record.latestStateFields = Self.compactFields(fields)
+            appendEvent(
+                kind: kind,
+                reason: reason,
+                fields: fields,
+                extraMetadata: metadata,
+                to: &record
+            )
+        }
+    }
+
+    func markCleanTermination(reason: String, fields: [String: String]) {
+        mutateRecord { record in
+            Self.refreshIdentity(fields: fields, record: &record)
+            record.lifecycleState = "terminated"
+            record.latestStateFields = Self.compactFields(fields)
+            record.terminationExpected = true
+            record.terminationExpectationReason = reason
+            appendEvent(kind: "clean-termination", reason: reason, fields: fields, to: &record)
+        }
+    }
+
+    private func mutateRecord(_ mutate: (inout AppRunLedgerRecord) -> Void) {
+        guard var record = currentRecord else { return }
+        mutate(&record)
+        record.updatedAt = now()
+        if record.recentEvents.count > Self.recentEventLimit {
+            record.recentEvents.removeFirst(record.recentEvents.count - Self.recentEventLimit)
+        }
+        currentRecord = record
+        persist(record)
+    }
+
+    private func appendEvent(
+        kind: String,
+        reason: String,
+        fields: [String: String],
+        extraMetadata: [String: String] = [:],
+        to record: inout AppRunLedgerRecord
+    ) {
+        let metadata = Self.compactFields(fields)
+            .merging(extraMetadata, uniquingKeysWith: { _, new in new })
+        record.recentEvents.append(
+            AppRunLedgerEvent(
+                timestamp: now(),
+                kind: kind,
+                reason: reason,
+                metadata: metadata
+            )
+        )
+    }
+
+    private func loadRecord() -> AppRunLedgerRecord? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(AppRunLedgerRecord.self, from: data)
+    }
+
+    private func persist(_ record: AppRunLedgerRecord) {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(record)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            return
+        }
+    }
+
+    private static func previousRunObservation(
+        for record: AppRunLedgerRecord
+    ) -> AppRunLedgerPreviousRunObservation? {
+        guard !record.terminationExpected else { return nil }
+        let lifecycleState = record.lifecycleState
+        let reliabilityCritical = hasReliabilityCriticalState(record.latestStateFields)
+        guard lifecycleState == "active"
+                || lifecycleState == "inactive"
+                || lifecycleState == "launching"
+                || reliabilityCritical else {
+            return nil
+        }
+
+        var metadata = record.latestStateFields
+        metadata["previousRunId"] = record.runID
+        metadata["previousRunAppVersion"] = record.appVersion
+        metadata["previousRunHandle"] = record.handle
+        metadata["previousRunDeviceId"] = record.deviceID
+        metadata["previousRunStartedAt"] = iso8601String(record.startedAt)
+        metadata["previousRunUpdatedAt"] = iso8601String(record.updatedAt)
+        metadata["previousRunLifecycleState"] = lifecycleState
+        metadata["previousRunTerminationExpected"] = String(record.terminationExpected)
+        metadata["previousRunTerminationExpectationReason"] = record.terminationExpectationReason
+        metadata["previousRunReliabilityCritical"] = String(reliabilityCritical)
+        metadata["previousRunRecentEvents"] = recentEventsSummary(record.recentEvents)
+
+        let kind: String
+        if lifecycleState == "background" {
+            kind = "live-background"
+        } else if lifecycleState == "inactive" {
+            kind = "foreground-transition"
+        } else {
+            kind = "foreground"
+        }
+        metadata["previousRunTerminationKind"] = kind
+
+        return AppRunLedgerPreviousRunObservation(
+            invariantID: invariantID,
+            message: "Previous app run ended without a clean termination marker",
+            metadata: metadata
+        )
+    }
+
+    private static func terminationExpectation(
+        lifecycleState: String,
+        fields: [String: String]
+    ) -> (expected: Bool, reason: String) {
+        if lifecycleState == "terminated" {
+            return (true, "application-will-terminate")
+        }
+        if lifecycleState == "background", !hasReliabilityCriticalState(fields) {
+            return (true, "idle-background")
+        }
+        if hasReliabilityCriticalState(fields) {
+            return (false, "reliability-critical-state")
+        }
+        return (false, "foreground-or-lifecycle-transition")
+    }
+
+    private static func hasReliabilityCriticalState(_ fields: [String: String]) -> Bool {
+        for key in booleanCriticalStateKeys where fields[key] == "true" {
+            return true
+        }
+        for key in [
+            "activeChannelId",
+            "backendActiveTransmitId",
+            "directQuicAttemptId",
+            "directQuicChannelId",
+            "pendingIncomingPush",
+        ] {
+            if let value = fields[key], !isNoneLike(value) {
+                return true
+            }
+        }
+        if let systemSession = fields["systemSession"], !isNoneLike(systemSession) {
+            return true
+        }
+        if let mediaState = fields["mediaState"],
+           !isNoneLike(mediaState),
+           !mediaState.localizedCaseInsensitiveContains("idle"),
+           !mediaState.localizedCaseInsensitiveContains("disconnected") {
+            return true
+        }
+        if let phase = fields["selectedConversationPhase"] {
+            switch phase {
+            case "ready", "receiving", "talking", "outgoingBeep", "incomingBeep", "connecting":
+                return true
+            default:
+                break
+            }
+        }
+        if let backendChannelStatus = fields["backendChannelStatus"],
+           backendChannelStatus == "peer-transmitting" || backendChannelStatus == "transmitting" {
+            return true
+        }
+        return false
+    }
+
+    private static func compactFields(_ fields: [String: String]) -> [String: String] {
+        var compact: [String: String] = [:]
+        for key in retainedStateFieldKeys {
+            guard let value = fields[key] else { continue }
+            compact[key] = bounded(value)
+        }
+        return compact
+    }
+
+    private static func refreshIdentity(fields: [String: String], record: inout AppRunLedgerRecord) {
+        if let handle = fields["identity"], !isNoneLike(handle) {
+            record.handle = bounded(handle, limit: 80)
+        }
+        if let deviceID = fields["directQuicLocalDeviceId"], !isNoneLike(deviceID) {
+            record.deviceID = bounded(deviceID, limit: 120)
+        }
+    }
+
+    private static func bounded(_ value: String, limit: Int = 240) -> String {
+        guard value.count > limit else { return value }
+        return String(value.prefix(limit)) + "..."
+    }
+
+    private static func isNoneLike(_ value: String) -> Bool {
+        value == "none"
+            || value == "nil"
+            || value == "false"
+            || value == "unknown"
+            || value.isEmpty
+    }
+
+    private static func recentEventsSummary(_ events: [AppRunLedgerEvent]) -> String {
+        events.suffix(12).map { event in
+            let selected = event.metadata["selectedContact"] ?? "none"
+            let phase = event.metadata["selectedConversationPhase"] ?? "unknown"
+            return "\(event.kind):\(event.reason):\(event.metadata["directQuicTransportPath"] ?? "none"):\(selected):\(phase)"
+        }.joined(separator: " | ")
+    }
+
+    private static func iso8601String(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+}
+
 @MainActor
 @Observable
 final class DiagnosticsStore {

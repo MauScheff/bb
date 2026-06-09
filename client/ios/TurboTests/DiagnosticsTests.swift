@@ -300,6 +300,203 @@ struct DiagnosticsTests {
         #expect(DiagnosticsUploadMode.tiny.defaultEngineTraceStepLimit == nil)
     }
 
+    @Test func appRunLedgerReportsPreviousForegroundTerminationOnNextLaunch() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-run-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let firstRun = try #require(AppRunLedger(fileURL: url))
+        #expect(
+            firstRun.startNewRun(
+                appVersion: "1.0 (test)",
+                handle: "@mau",
+                deviceID: "unconfigured"
+            ) == nil
+        )
+        firstRun.recordLifecycleEvent(
+            lifecycleState: "active",
+            reason: "application-did-become-active",
+            fields: [
+                "selectedContact": "@ilki",
+                "selectedConversationPhase": "ready",
+                "isJoined": "true",
+                "directQuicLocalDeviceId": "device-a",
+                "directQuicTransportPath": "fast-relay",
+            ]
+        )
+
+        let secondRun = try #require(AppRunLedger(fileURL: url))
+        let observation = try #require(
+            secondRun.startNewRun(
+                appVersion: "1.0 (test)",
+                handle: "@mau",
+                deviceID: "device-a"
+            )
+        )
+
+        #expect(observation.invariantID == "app.previous_run_unexpected_termination")
+        #expect(observation.metadata["previousRunLifecycleState"] == "active")
+        #expect(observation.metadata["previousRunDeviceId"] == "device-a")
+        #expect(observation.metadata["previousRunTerminationKind"] == "foreground")
+        #expect(observation.metadata["selectedContact"] == "@ilki")
+        #expect(observation.metadata["selectedConversationPhase"] == "ready")
+        #expect(observation.metadata["previousRunReliabilityCritical"] == "true")
+        #expect(observation.metadata["previousRunRecentEvents"]?.contains("application-did-become-active") == true)
+    }
+
+    @Test func appRunLedgerDoesNotReportIdleBackgroundTermination() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-run-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let idleFields = [
+            "selectedContact": "none",
+            "selectedConversationPhase": "idle",
+            "isJoined": "false",
+            "isTransmitting": "false",
+            "systemSession": "none",
+            "mediaState": "idle",
+            "pendingIncomingPush": "none",
+        ]
+
+        let firstRun = try #require(AppRunLedger(fileURL: url))
+        _ = firstRun.startNewRun(appVersion: "1.0 (test)", handle: "@mau", deviceID: "device-a")
+        firstRun.recordStateCapture(reason: "idle", fields: idleFields)
+        firstRun.recordLifecycleEvent(
+            lifecycleState: "background",
+            reason: "application-did-enter-background",
+            fields: idleFields
+        )
+
+        let secondRun = try #require(AppRunLedger(fileURL: url))
+        #expect(
+            secondRun.startNewRun(
+                appVersion: "1.0 (test)",
+                handle: "@mau",
+                deviceID: "device-a"
+            ) == nil
+        )
+    }
+
+    @Test func appRunLedgerReportsLiveBackgroundTermination() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-run-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let liveFields = [
+            "selectedContact": "@ilki",
+            "selectedConversationPhase": "receiving",
+            "activeChannelId": UUID().uuidString,
+            "isJoined": "true",
+            "systemSession": "active(contactID: test)",
+            "directQuicTransportPath": "relay",
+        ]
+
+        let firstRun = try #require(AppRunLedger(fileURL: url))
+        _ = firstRun.startNewRun(appVersion: "1.0 (test)", handle: "@mau", deviceID: "device-a")
+        firstRun.recordLifecycleEvent(
+            lifecycleState: "background",
+            reason: "application-did-enter-background",
+            fields: liveFields
+        )
+
+        let secondRun = try #require(AppRunLedger(fileURL: url))
+        let observation = try #require(
+            secondRun.startNewRun(
+                appVersion: "1.0 (test)",
+                handle: "@mau",
+                deviceID: "device-a"
+            )
+        )
+
+        #expect(observation.metadata["previousRunLifecycleState"] == "background")
+        #expect(observation.metadata["previousRunTerminationKind"] == "live-background")
+        #expect(observation.metadata["selectedConversationPhase"] == "receiving")
+        #expect(observation.metadata["previousRunReliabilityCritical"] == "true")
+    }
+
+    @Test func viewModelRecordsPreviousRunTerminationInvariantFromLedger() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-run-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let firstRun = try #require(AppRunLedger(fileURL: url))
+        _ = firstRun.startNewRun(appVersion: "1.0 (test)", handle: "@mau", deviceID: "device-a")
+        firstRun.recordLifecycleEvent(
+            lifecycleState: "active",
+            reason: "application-did-become-active",
+            fields: [
+                "selectedContact": "@ilki",
+                "selectedConversationPhase": "ready",
+                "isJoined": "true",
+            ]
+        )
+
+        let ledger = try #require(AppRunLedger(fileURL: url))
+        let viewModel = PTTViewModel(appRunLedger: ledger)
+
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "app.previous_run_unexpected_termination"
+                    && $0.metadata["previousRunLifecycleState"] == "active"
+                    && $0.metadata["detectedAt"] == "view-model-init"
+            }
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains("app.previous_run_unexpected_termination")
+        )
+    }
+
+    @Test func previousRunTerminationReportDefersWhileCallScreenVisible() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-run-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let firstRun = try #require(AppRunLedger(fileURL: url))
+        _ = firstRun.startNewRun(appVersion: "1.0 (test)", handle: "@mau", deviceID: "device-a")
+        firstRun.recordLifecycleEvent(
+            lifecycleState: "active",
+            reason: "application-did-become-active",
+            fields: [
+                "selectedContact": "@ilki",
+                "selectedConversationPhase": "ready",
+                "isJoined": "true",
+            ]
+        )
+
+        let ledger = try #require(AppRunLedger(fileURL: url))
+        let viewModel = PTTViewModel(appRunLedger: ledger)
+        viewModel.uiProjectionDiagnostics = UIProjectionDiagnostics(
+            route: "live",
+            callScreenVisible: true,
+            callScreenContactHandle: "@ilki",
+            callScreenRequestedExpanded: true,
+            callScreenMinimized: false,
+            primaryActionKind: "holdToTalk",
+            primaryActionLabel: "Hold To Talk",
+            primaryActionEnabled: true,
+            selectedConversationPhase: "ready",
+            selectedConversationStatus: "Connected"
+        )
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@mau",
+                deviceID: "device-a"
+            )
+        )
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-mau",
+            mode: "cloud"
+        )
+
+        viewModel.publishPendingPreviousRunTerminationReportIfNeeded(reason: "test")
+
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Deferred previous run termination diagnostics during live media"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("deferralReason=call-screen"))
+    }
+
     @MainActor
     @Test func automaticDiagnosticsPublishDefersDuringLiveMedia() {
         let viewModel = PTTViewModel()
