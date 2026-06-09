@@ -1079,9 +1079,6 @@ extension PTTViewModel {
         guard let attempt = mediaRuntime.directQuicUpgrade.attempt(for: contactID) else {
             return
         }
-        guard mediaRuntime.directQuicProbeController == nil else {
-            return
-        }
         guard mediaTransportPathState == .relay || mediaTransportPathState.isFastRelay else {
             return
         }
@@ -1095,6 +1092,9 @@ extension PTTViewModel {
             return
         }
 
+        let hadProbeController = mediaRuntime.directQuicProbeController != nil
+        mediaRuntime.directQuicProbeController?.cancel(reason: "stale-attempt-blocking-reprobe")
+        mediaRuntime.directQuicProbeController = nil
         diagnostics.recordInvariantViolation(
             invariantID: "direct-quic.stale_attempt_blocks_reprobe",
             scope: .local,
@@ -1105,6 +1105,7 @@ extension PTTViewModel {
                 "attemptId": attempt.attemptId,
                 "isDirectActive": String(attempt.isDirectActive),
                 "transportPath": mediaTransportPathState.rawValue,
+                "probeControllerActive": String(hadProbeController),
                 "staleAgeMilliseconds": "\(staleAgeMilliseconds)",
                 "trigger": trigger,
             ]

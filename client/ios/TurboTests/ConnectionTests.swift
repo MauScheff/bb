@@ -2711,7 +2711,7 @@ struct ConnectionTests {
         #expect(ready == .ready([viableCandidate], viableCandidateCount: 1))
     }
 
-    @Test func directQuicProbeBatchSelectionPrefersRoutableAndIPv6Candidates() {
+    @Test func directQuicProbeBatchSelectionPrefersLanHostBeforeRoutableCandidates() {
         let privateHost = TurboDirectQuicCandidate(
             foundation: "host-private",
             component: "media",
@@ -2794,11 +2794,11 @@ struct ConnectionTests {
 
         #expect(selection == .ready(
             [
-                ipv6ServerReflexive,
-                ipv4ServerReflexive,
+                privateHost,
                 ipv6Host,
                 publicHost,
-                privateHost,
+                ipv6ServerReflexive,
+                ipv4ServerReflexive,
             ],
             viableCandidateCount: 5
         ))
@@ -7073,6 +7073,92 @@ struct ConnectionTests {
             viewModel.diagnosticsTranscript.contains(
                 "direct-quic.stale_attempt_blocks_reprobe"
             )
+        )
+    }
+
+    @MainActor
+    @Test func selectedDirectQuicPrewarmClearsStaleFallbackAttemptWithProbeControllerBlockingReprobe() {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "device-a"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+        let viewModel = PTTViewModel()
+        viewModel.selectedContactDirectQuicPrewarmEnabled = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    peerDirectQuicIdentity: TurboDirectQuicPeerIdentityPayload(
+                        fingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        status: "active",
+                        createdAt: nil,
+                        updatedAt: nil
+                    ),
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel",
+            attemptID: "attempt-stale",
+            peerDeviceID: "peer-device",
+            now: Date().addingTimeInterval(-30)
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
+
+        #expect(viewModel.selectedContactDirectQuicPrewarmBlockReason(for: contactID) == nil)
+        #expect(viewModel.mediaRuntime.directQuicUpgrade.attempt(for: contactID) == nil)
+        #expect(viewModel.mediaRuntime.directQuicProbeController == nil)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "direct-quic.stale_attempt_blocks_reprobe"
+            )
+        )
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "direct-quic.stale_attempt_blocks_reprobe"
+                    && $0.metadata["probeControllerActive"] == "true"
+            }
         )
     }
 

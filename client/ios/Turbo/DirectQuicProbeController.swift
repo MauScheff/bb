@@ -4869,16 +4869,16 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
 
     private static func candidateSortRank(_ candidate: TurboDirectQuicCandidate) -> Int {
         switch candidate.kind {
-        case .serverReflexive where isIPv6Address(candidate.address):
-            return 0
-        case .serverReflexive:
-            return 1
-        case .host where isGlobalIPv6Address(candidate.address):
-            return 2
         case .host where isPrivateOrLoopbackIPv4Address(candidate.address):
-            return 4
+            return 0
+        case .host where isGlobalIPv6Address(candidate.address):
+            return 1
         case .host:
+            return 2
+        case .serverReflexive where isIPv6Address(candidate.address):
             return 3
+        case .serverReflexive:
+            return 4
         case .relay:
             return 5
         }
