@@ -133,6 +133,8 @@ Compose maps runtime QUIC control from public `443/udp` to container
 `8443/udp`, matching the firewall-friendly QUIC shape. Runtime TLS control
 uses `8443/tcp` because nginx owns public `443/tcp` for HTTPS. HTTP remains
 behind nginx on `443/tcp`; runtime control must not carry live media.
+The runtime service mounts host `/etc/letsencrypt` read-only so the same
+certificate chain used by nginx can be used by runtime QUIC/TLS control.
 
 The deploy script creates a private remote `.env` file on first install, including a generated Postgres password. Later deploys update the image tag but preserve the same durable volume and credentials. The VM service account needs Artifact Registry read access for the selected repository.
 
