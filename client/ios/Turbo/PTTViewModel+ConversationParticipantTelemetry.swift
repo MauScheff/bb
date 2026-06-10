@@ -226,7 +226,7 @@ extension PTTViewModel {
 
         let targetDeviceID = receiverAudioReadinessTargetDeviceID(for: contactID)
         do {
-            try await backend.sendSignal(
+            _ = try await backend.sendRuntimeControlSignal(
                 TurboSignalEnvelope(
                     type: .conversationParticipantTelemetry,
                     channelId: backendChannelID,
@@ -241,7 +241,7 @@ extension PTTViewModel {
             lastPublishedConversationParticipantTelemetryAtByContactID[contactID] = now
             diagnostics.record(
                 .media,
-                message: "Published conversation participant telemetry",
+                message: "Published conversation participant telemetry over runtime control",
                 metadata: [
                     "contactId": contactID.uuidString,
                     "reason": reason,

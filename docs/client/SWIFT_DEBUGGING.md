@@ -305,6 +305,12 @@ Friend offline is not enough to infer wake is possible. A joined Friend that bac
 
 Foreground signaling uses runtime control. Background receive needs PushToTalk wake:
 
+- Conversation participant telemetry is also runtime-control metadata. The app
+  publishes `conversation-participant-telemetry` through
+  `/v1/runtime-control/signals/send` over the selected runtime control lane
+  (QUIC, TLS, then HTTP recovery) and drains it with
+  `/v1/runtime-control/signals/drain`. Do not route this through backend
+  WebSocket, and never use runtime control for live `audio-chunk` media.
 - direct APNs from Unison is intended long-term path, pending upstream runtime rollout
 - interim path uses backend-triggered Cloudflare sender in [`APNS_DELIVERY_PLAN.md`](/Users/mau/Development/bb/docs/client/APNS_DELIVERY_PLAN.md)
 - backend chooses wake target through `/ptt-push-target` and `/readiness.wakeReadiness`

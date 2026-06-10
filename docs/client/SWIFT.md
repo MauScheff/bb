@@ -192,6 +192,7 @@ struct Payment {
   - real-device Apple PushToTalk client plus simulator shim
 - [`Turbo/BackendClient.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendClient.swift)
   - backend HTTP plus runtime-control compatibility transport
+  - Direct QUIC setup signals use `/v1/direct-quic/signals/*`; non-media participant metadata such as `conversation-participant-telemetry` uses `/v1/runtime-control/signals/*`
 - [`Turbo/BackendSyncCoordinator.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendSyncCoordinator.swift)
   - summaries, Beeps/Beep Threads, channel refresh, and reconciliation triggers
 - [`Turbo/BackendCommandCoordinator.swift`](/Users/mau/Development/bb/client/ios/Turbo/BackendCommandCoordinator.swift)

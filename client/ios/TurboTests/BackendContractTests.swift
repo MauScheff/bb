@@ -1834,12 +1834,24 @@ struct BackendContractTests {
             )
         )
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
         )
-        client.enableSentSignalCaptureForTesting()
+        var sentSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            sentSignals.append(try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8)))
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
 
         let viewModel = PTTViewModel()
-        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "self-hosted")
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -1857,8 +1869,8 @@ struct BackendContractTests {
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "test")
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "same")
 
-        #expect(client.sentSignalsForTesting().count == 1)
-        let first = try #require(client.sentSignalsForTesting().first)
+        #expect(sentSignals.count == 1)
+        let first = try #require(sentSignals.first)
         #expect(first.type == .conversationParticipantTelemetry)
         #expect(first.channelId == "channel")
         #expect(first.fromDeviceId == "self-device")
@@ -1872,8 +1884,8 @@ struct BackendContractTests {
         viewModel.localConversationNetworkInterface = .cellular
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "network-change")
 
-        #expect(client.sentSignalsForTesting().count == 2)
-        let second = try #require(client.sentSignalsForTesting().last)
+        #expect(sentSignals.count == 2)
+        let second = try #require(sentSignals.last)
         let secondPayload = try JSONDecoder().decode(
             ConversationParticipantTelemetry.self,
             from: Data(second.payload.utf8)
@@ -1893,12 +1905,24 @@ struct BackendContractTests {
             )
         )
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
         )
-        client.enableSentSignalCaptureForTesting()
+        var sentSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            sentSignals.append(try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8)))
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
 
         let viewModel = PTTViewModel()
-        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "self-hosted")
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -1915,13 +1939,13 @@ struct BackendContractTests {
 
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "initial")
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "too-soon")
-        #expect(client.sentSignalsForTesting().count == 1)
+        #expect(sentSignals.count == 1)
 
         viewModel.lastPublishedConversationParticipantTelemetryAtByContactID[contactID] = Date()
             .addingTimeInterval(-(viewModel.conversationParticipantTelemetryRepublishIntervalSeconds + 1))
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "liveness")
 
-        #expect(client.sentSignalsForTesting().count == 2)
+        #expect(sentSignals.count == 2)
         #expect(viewModel.diagnosticsTranscript.contains("republished=true"))
     }
 
@@ -1937,12 +1961,24 @@ struct BackendContractTests {
             )
         )
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
         )
-        client.enableSentSignalCaptureForTesting()
+        var sentSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            sentSignals.append(try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8)))
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
 
         let viewModel = PTTViewModel()
-        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "self-hosted")
         viewModel.contacts = [
             Contact(
                 id: contactID,
@@ -1962,7 +1998,7 @@ struct BackendContractTests {
             .addingTimeInterval(-(viewModel.conversationParticipantTelemetryMissingRemoteRepublishIntervalSeconds + 0.1))
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "remote-telemetry-missing")
 
-        #expect(client.sentSignalsForTesting().count == 2)
+        #expect(sentSignals.count == 2)
     }
 
     @MainActor
@@ -2002,6 +2038,78 @@ struct BackendContractTests {
             )
         )
 
+        #expect(viewModel.conversationParticipantTelemetry(for: contactID) == telemetry)
+    }
+
+    @MainActor
+    @Test func runtimeControlSignalDrainUpdatesConversationParticipantTelemetryWithoutWebSocket() async throws {
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
+        )
+
+        let telemetry = ConversationParticipantTelemetry(
+            audio: .init(routeName: "Speaker", volumePercent: 64),
+            connection: .init(interface: .wifi)
+        )
+        let payload = String(
+            data: try JSONEncoder().encode(telemetry),
+            encoding: .utf8
+        )!
+        let envelope = TurboSignalEnvelope(
+            type: .conversationParticipantTelemetry,
+            channelId: "channel",
+            fromUserId: "peer-user",
+            fromDeviceId: "peer-device",
+            toUserId: "self-user",
+            toDeviceId: "test-device",
+            payload: payload
+        )
+
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/drain")
+            #expect(command.commandKind == "runtime-control-signal-drain")
+            #expect(command.generation == 0)
+            let signalObject = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(envelope)
+            )
+            return try JSONSerialization.data(withJSONObject: [
+                "status": "drained",
+                "latestSequence": 1,
+                "signals": [
+                    [
+                        "sequence": 1,
+                        "envelope": signalObject,
+                    ],
+                ],
+            ])
+        }
+
+        let viewModel = PTTViewModel()
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "self-hosted")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer-user"
+            )
+        ]
+
+        await viewModel.drainRuntimeControlSignalsOnce()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(viewModel.backendRuntime.runtimeControlSignalDrainSequence == 1)
         #expect(viewModel.conversationParticipantTelemetry(for: contactID) == telemetry)
     }
 

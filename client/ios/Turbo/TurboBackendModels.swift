@@ -2096,6 +2096,17 @@ enum TurboSignalKind: String, Codable {
             return false
         }
     }
+
+    var isRuntimeControlSignal: Bool {
+        switch self {
+        case .receiverReady, .receiverNotReady, .audioPlaybackStarted,
+             .selectedFriendPrewarm, .conversationParticipantTelemetry:
+            return true
+        case .offer, .answer, .iceCandidate, .hangup, .directQuicUpgradeRequest,
+             .transmitStart, .transmitStop, .audioChunk:
+            return false
+        }
+    }
 }
 
 nonisolated enum TurboDirectQuicRoleIntent: String, Codable, Equatable {

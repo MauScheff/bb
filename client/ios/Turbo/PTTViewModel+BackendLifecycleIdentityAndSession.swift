@@ -591,6 +591,7 @@ extension PTTViewModel {
         replaceDirectQuicSignalDrainTask(with: Task { [weak self] in
             while let self, !Task.isCancelled {
                 await self.drainDirectQuicRuntimeControlSignalsOnce()
+                await self.drainRuntimeControlSignalsOnce()
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         })
@@ -628,6 +629,43 @@ extension PTTViewModel {
                 .backend,
                 level: .debug,
                 message: "Direct QUIC runtime-control signal drain failed",
+                metadata: ["error": error.localizedDescription]
+            )
+        }
+    }
+
+    func drainRuntimeControlSignalsOnce() async {
+        guard let backend = backendServices else { return }
+        do {
+            let response = try await backend.drainRuntimeControlSignals(
+                after: backendRuntime.runtimeControlSignalDrainSequence
+            )
+            backendRuntime.runtimeControlSignalDrainSequence = max(
+                backendRuntime.runtimeControlSignalDrainSequence,
+                response.latestSequence
+            )
+            for delivery in response.signals {
+                backendRuntime.runtimeControlSignalDrainSequence = max(
+                    backendRuntime.runtimeControlSignalDrainSequence,
+                    delivery.sequence
+                )
+                scheduleIncomingSignalDelivery(delivery.envelope)
+            }
+            if !response.signals.isEmpty {
+                diagnostics.record(
+                    .backend,
+                    message: "Drained runtime-control signals",
+                    metadata: [
+                        "count": String(response.signals.count),
+                        "latestSequence": String(backendRuntime.runtimeControlSignalDrainSequence),
+                    ]
+                )
+            }
+        } catch {
+            diagnostics.record(
+                .backend,
+                level: .debug,
+                message: "Runtime-control signal drain failed",
                 metadata: ["error": error.localizedDescription]
             )
         }

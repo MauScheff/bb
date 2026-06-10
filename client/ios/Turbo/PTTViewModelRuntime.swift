@@ -396,6 +396,7 @@ final class BackendRuntimeState {
     var trackedContactIDs: Set<UUID> = []
     private var lastPresenceHeartbeatSentAt: Date?
     var directQuicSignalDrainSequence: UInt64 = 0
+    var runtimeControlSignalDrainSequence: UInt64 = 0
     private var backendJoinSettlingStartedAtByContactID: [UUID: Date] = [:]
     private var receiverAudioReadinessDeliveryRecoveryStartedAtByContactID: [UUID: Date] = [:]
     var transportFaults = TransportFaultRuntimeState()
@@ -449,6 +450,7 @@ final class BackendRuntimeState {
         directQuicSignalDrainTask?.cancel()
         directQuicSignalDrainTask = nil
         directQuicSignalDrainSequence = 0
+        runtimeControlSignalDrainSequence = 0
         lastPresenceHeartbeatSentAt = nil
         backendJoinSettlingStartedAtByContactID.removeAll()
         receiverAudioReadinessDeliveryRecoveryStartedAtByContactID.removeAll()
@@ -5771,10 +5773,22 @@ struct BackendServices {
         try await client.sendDirectQuicSignal(envelope)
     }
 
+    func sendRuntimeControlSignal(
+        _ envelope: TurboSignalEnvelope
+    ) async throws -> TurboRuntimeControlSignalSendResponse {
+        try await client.sendRuntimeControlSignal(envelope)
+    }
+
     func drainDirectQuicSignals(
         after sequence: UInt64
     ) async throws -> TurboRuntimeDirectQuicSignalDrainResponse {
         try await client.drainDirectQuicSignals(after: sequence)
+    }
+
+    func drainRuntimeControlSignals(
+        after sequence: UInt64
+    ) async throws -> TurboRuntimeControlSignalDrainResponse {
+        try await client.drainRuntimeControlSignals(after: sequence)
     }
 }
 
