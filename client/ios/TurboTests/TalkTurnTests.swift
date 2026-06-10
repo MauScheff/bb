@@ -16586,6 +16586,17 @@ struct TalkTurnTests {
 
     @MainActor
     @Test func outgoingAudioSendGateDoesNotReleaseWakeGraceWhileSenderIsBackgrounded() async {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboMediaRelayDebugOverride.setEnabled(false)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.clearConfig()
+        defer {
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -16674,6 +16685,95 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func outgoingAudioSendGateReleasesBackgroundWakeGraceWhenRelayContinuityAvailable() async {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .background
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .idle,
+                    canTransmit: false,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: false,
+                    remoteAudioReadiness: .wakeCapable,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device")
+                )
+            )
+        )
+
+        let didRelease = await viewModel.waitForRemoteReceiverAudioReadinessBeforeSendingIfNeeded(
+            target: TransmitTarget(
+                contactID: contactID,
+                userID: "peer-user",
+                deviceID: "peer-device",
+                channelID: "channel"
+            ),
+            timeoutNanoseconds: 180_000_000,
+            pollNanoseconds: 10_000_000,
+            wakeRecoveryGraceNanoseconds: 50_000_000
+        )
+
+        #expect(didRelease)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Wake-capable receiver grace elapsed; releasing outbound audio send gate over relay continuity"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Holding wake-capable receiver send gate until receiver readiness while sender is backgrounded"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Timed out waiting for remote receiver audio readiness; not sending outbound audio"
+            )
+        )
+    }
+
+    @MainActor
     @Test func outgoingAudioSendGateDoesNotReleaseWakeCapableAudioWithoutReceiverReady() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -16730,7 +16830,7 @@ struct TalkTurnTests {
             timeoutNanoseconds: 220_000_000,
             pollNanoseconds: 10_000_000,
             wakeRecoveryGraceNanoseconds: 90_000_000,
-            postReleaseWakeRecoveryGraceNanoseconds: 20_000_000
+            postReleaseWakeRecoveryGraceNanoseconds: 80_000_000
         )
 
         #expect(!didBecomeReady)
@@ -16808,7 +16908,7 @@ struct TalkTurnTests {
             timeoutNanoseconds: 180_000_000,
             pollNanoseconds: 10_000_000,
             wakeRecoveryGraceNanoseconds: 90_000_000,
-            postReleaseWakeRecoveryGraceNanoseconds: 40_000_000
+            postReleaseWakeRecoveryGraceNanoseconds: 80_000_000
         )
 
         #expect(!didBecomeReady)

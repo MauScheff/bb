@@ -3233,7 +3233,23 @@ extension PTTViewModel {
 
             if wakeCapableReceiver && waitedNanoseconds >= wakeRecoveryGraceNanoseconds {
                 if transmitRuntime.isPressingTalk {
-                    guard currentApplicationState() == .active else {
+                    let applicationState = currentApplicationState()
+                    if applicationState != .active,
+                       canAttemptMediaRelayForWakeContinuityAudioSend() {
+                        diagnostics.record(
+                            .media,
+                            message: "Wake-capable receiver grace elapsed; releasing outbound audio send gate over relay continuity",
+                            metadata: [
+                                "contactId": target.contactID.uuidString,
+                                "channelId": target.channelID,
+                                "waitedMilliseconds": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
+                                "wakeRecoveryGraceMilliseconds": String(wakeRecoveryGraceNanoseconds / 1_000_000),
+                                "applicationState": String(describing: applicationState),
+                            ]
+                        )
+                        return true
+                    }
+                    guard applicationState == .active else {
                         if !backgroundWakeHoldLogged {
                             backgroundWakeHoldLogged = true
                             diagnostics.record(
@@ -3244,7 +3260,7 @@ extension PTTViewModel {
                                     "channelId": target.channelID,
                                     "waitedMilliseconds": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
                                     "wakeRecoveryGraceMilliseconds": String(wakeRecoveryGraceNanoseconds / 1_000_000),
-                                    "applicationState": String(describing: currentApplicationState()),
+                                    "applicationState": String(describing: applicationState),
                                 ]
                             )
                         }
