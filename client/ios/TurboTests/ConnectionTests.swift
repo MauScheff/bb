@@ -17095,7 +17095,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func wakeContinuityAudioRefreshesPeerUnavailableRouteScopedRelayClient() async throws {
+    @Test func wakeContinuityAudioRetriesPeerUnavailableRouteScopedRelayClientBeforeRescue() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
@@ -17117,6 +17117,8 @@ struct ConnectionTests {
         }
 
         let viewModel = PTTViewModel()
+        viewModel.wakeContinuityPeerJoinRetryDelayNanoseconds = 0
+        viewModel.wakeContinuityPeerJoinRetryLimit = 1
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.setRuntimeConfigForTesting(
             TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
@@ -17203,12 +17205,17 @@ struct ConnectionTests {
             connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
             return .tcpTls
         }
+        var sendAttemptCount = 0
         let sentRelayClientIDs = LockedStringEvents()
         let sentMediaRelayPayloads = LockedStringEvents()
         viewModel.mediaRelayAudioSendOverride = { relayClient, payload in
+            sendAttemptCount += 1
             sentRelayClientIDs.append(String(describing: ObjectIdentifier(relayClient)))
+            if sendAttemptCount == 1 {
+                throw DirectQuicProbeError.connectionFailed("media relay peer is unavailable")
+            }
             sentMediaRelayPayloads.append(payload)
-            return .tcpOrdered
+            return .quicDatagram
         }
         viewModel.seedEngineActiveTransmitForTesting(
             contactID: target.contactID,
@@ -17221,23 +17228,26 @@ struct ConnectionTests {
         viewModel.transmitRuntime.markPressBegan()
 
         viewModel.configureOutgoingAudioRoute(target: target)
-        staleRelayClient.markPeerUnavailable()
 
         let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
         try await sendAudioChunk("payload-1")
 
         #expect(sentMediaRelayPayloads.snapshot() == ["payload-1"])
-        #expect(!sentRelayClientIDs.snapshot().contains(staleRelayClientID))
-        #expect(connectRequests.count == 1)
-        #expect(connectRequests.first?.contactID == target.contactID)
-        #expect(connectRequests.first?.channelID == target.channelID)
-        #expect(connectRequests.first?.peerDeviceID == target.deviceID)
-        #expect(connectRequests.first?.localDeviceID == client.deviceID)
-        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) !== staleRelayClient)
+        #expect(sendAttemptCount == 2)
+        #expect(sentRelayClientIDs.snapshot() == [staleRelayClientID, staleRelayClientID])
+        #expect(connectRequests.isEmpty)
+        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) === staleRelayClient)
         #expect(
             viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
-                == ["media-relay-tcp"]
+                == ["media-relay-packet"]
         )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Media relay peer has not rejoined yet; retrying wake-continuity audio send"
+            )
+        )
+        #expect(!viewModel.diagnosticsTranscript.contains("Cleared stale media relay client after peer unavailable"))
+        #expect(!viewModel.diagnosticsTranscript.contains("Refreshing media relay after peer unavailable"))
         #expect(!viewModel.diagnosticsTranscript.contains("No legal live media lane available"))
     }
 

@@ -259,6 +259,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var remoteTransmitStopProjectionGraceNanoseconds: UInt64 = 8_000_000_000
     var localTransmitStopProjectionGraceNanoseconds: UInt64 = 3_000_000_000
     var firstAudioPlaybackAckTimeoutNanoseconds: UInt64 = 2_000_000_000
+    var wakeContinuityPeerJoinRetryDelayNanoseconds: UInt64 = 350_000_000
+    var wakeContinuityPeerJoinRetryLimit: Int = 2
     var firstAudioPlaybackAckClearedKeyGraceSeconds: TimeInterval = 10
     var appleGatedAudioActivationTimeoutNanoseconds: UInt64 = 5_000_000_000
     var foregroundSystemReceivePlaybackFallbackDelayNanoseconds: UInt64 = 300_000_000

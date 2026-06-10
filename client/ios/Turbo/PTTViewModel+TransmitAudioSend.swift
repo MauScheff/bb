@@ -72,6 +72,21 @@ extension PTTViewModel {
         )
     }
 
+    func existingMediaRelayClientForWakeContinuityAudioSend(
+        target: TransmitTarget,
+        localDeviceID: String
+    ) async -> TurboMediaRelayClient? {
+        guard !localDeviceID.isEmpty else { return nil }
+        return await MainActor.run {
+            let key = MediaRelayConnectionKey(
+                sessionID: target.channelID,
+                localDeviceID: localDeviceID,
+                peerDeviceID: target.deviceID
+            )
+            return mediaRuntime.existingMediaRelayClient(for: key)
+        }
+    }
+
     func clearFirstAudioPlaybackAckExpectations() {
         let clearedAt = Date()
         for expectation in firstAudioPlaybackAckExpectationsByContactID.values {
@@ -1263,6 +1278,9 @@ extension PTTViewModel {
         let directQuicAudioSendOverride = self.directQuicAudioSendOverride
         let usesWakeBackgroundContinuityForOutgoingAudio =
             shouldUseWakeBackgroundContinuityForOutgoingAudio(for: target.contactID)
+        let wakeContinuityPeerJoinRetryLimit = self.wakeContinuityPeerJoinRetryLimit
+        let wakeContinuityPeerJoinRetryDelayNanoseconds =
+            self.wakeContinuityPeerJoinRetryDelayNanoseconds
         let wakeContinuityMediaRelayAudioClientTask: Task<TurboMediaRelayClient?, Never>? =
             usesWakeBackgroundContinuityForOutgoingAudio
             && canAttemptMediaRelayForWakeContinuityAudioSend()
@@ -1458,9 +1476,13 @@ extension PTTViewModel {
                 if usesWakeBackgroundContinuityForOutgoingAudio {
                     let routeScopedRelayClient = await wakeContinuityMediaRelayAudioClientTask?.value
                     var relayClient: TurboMediaRelayClient?
-                    if let routeScopedRelayClient,
-                       !routeScopedRelayClient.hasFreshPeerUnavailable() {
+                    if let routeScopedRelayClient {
                         relayClient = routeScopedRelayClient
+                    } else if let existingRelayClient = await self.existingMediaRelayClientForWakeContinuityAudioSend(
+                        target: target,
+                        localDeviceID: fromDeviceID
+                    ) {
+                        relayClient = existingRelayClient
                     } else {
                         relayClient = await self.mediaRelayClientForAudioSend(target: target)
                     }
@@ -1495,28 +1517,81 @@ extension PTTViewModel {
                                 }
                             }
                         }
+                    let sendWakeContinuityPayloadWithPeerJoinRetry:
+                        @Sendable (TurboMediaRelayClient, String) async throws -> Void = {
+                            relayClient,
+                            recoveryReason in
+                            var attempt = 0
+                            while true {
+                                do {
+                                    try await sendWakeContinuityPayload(
+                                        relayClient,
+                                        attempt == 0 ? recoveryReason : "peer-join-retry-\(attempt)"
+                                    )
+                                    return
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch {
+                                    guard self.isMediaRelayPeerUnavailable(error),
+                                          attempt < wakeContinuityPeerJoinRetryLimit else {
+                                        throw error
+                                    }
+                                    attempt += 1
+                                    let currentAttempt = attempt
+                                    await MainActor.run {
+                                        self.diagnostics.record(
+                                            .media,
+                                            level: .notice,
+                                            message: "Media relay peer has not rejoined yet; retrying wake-continuity audio send",
+                                            metadata: [
+                                                "contactId": target.contactID.uuidString,
+                                                "channelId": target.channelID,
+                                                "toDeviceId": target.deviceID,
+                                                "attempt": String(currentAttempt),
+                                                "retryLimit": String(wakeContinuityPeerJoinRetryLimit),
+                                                "retryDelayMs": String(
+                                                    wakeContinuityPeerJoinRetryDelayNanoseconds / 1_000_000
+                                                ),
+                                                "error": error.localizedDescription,
+                                            ]
+                                        )
+                                    }
+                                    let retryDelayNanoseconds = wakeContinuityPeerJoinRetryDelayNanoseconds
+                                    if retryDelayNanoseconds > 0 {
+                                        try await Task.sleep(nanoseconds: retryDelayNanoseconds)
+                                    }
+                                    try Task.checkCancellation()
+                                    try requireCurrentOutgoingAudioTarget()
+                                    relayClient.clearPeerUnavailable()
+                                }
+                            }
+                        }
                     if let relayClient {
                         do {
-                            try await sendWakeContinuityPayload(relayClient, "none")
+                            try await sendWakeContinuityPayloadWithPeerJoinRetry(relayClient, "none")
                             return
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
                             if self.isMediaRelayPeerUnavailable(error) {
                                 await MainActor.run {
-                                    self.recordMediaRelayPeerUnavailableInvariantIfNeeded(
-                                        error: error,
-                                        contactID: target.contactID,
-                                        channelID: target.channelID,
-                                        peerDeviceID: target.deviceID,
-                                        operation: "wake-continuity-audio-payload"
+                                    self.diagnostics.record(
+                                        .media,
+                                        level: .notice,
+                                        message: "Media relay peer did not rejoin during wake-continuity retry window; trying TLS continuity",
+                                        metadata: [
+                                            "contactId": target.contactID.uuidString,
+                                            "channelId": target.channelID,
+                                            "toDeviceId": target.deviceID,
+                                            "error": error.localizedDescription,
+                                        ]
                                     )
                                     self.clearStaleMediaRelayClient(
                                         localDeviceID: fromDeviceID,
                                         channelID: target.channelID,
                                         peerDeviceID: target.deviceID,
                                         client: relayClient,
-                                        reason: "wake-continuity-audio-payload"
+                                        reason: "wake-continuity-tls-rescue"
                                     )
                                 }
                                 if let refreshedRelayClient = await self.mediaRelayClientForAudioSend(
@@ -1524,9 +1599,9 @@ extension PTTViewModel {
                                     preferredTransport: .tcpTls
                                 ) {
                                     do {
-                                        try await sendWakeContinuityPayload(
+                                        try await sendWakeContinuityPayloadWithPeerJoinRetry(
                                             refreshedRelayClient,
-                                            "peer-unavailable-refresh"
+                                            "peer-unavailable-tls-rescue"
                                         )
                                         return
                                     } catch is CancellationError {
