@@ -1131,6 +1131,8 @@ extension PTTViewModel {
         let outboundDeliveryDiagnosticsLimiter = MediaHotPathEventLimiter(
             minimumIntervalNanoseconds: 1_000_000_000
         )
+        let usesWakeBackgroundContinuityForOutgoingAudio =
+            shouldUseWakeBackgroundContinuityForOutgoingAudio(for: target.contactID)
         let initialOutboundAudioSendGate = MediaHotPathOneShotGate(
             consumed: !takeShouldAwaitInitialOutboundAudioSendGate()
         )
@@ -1203,6 +1205,14 @@ extension PTTViewModel {
                             deliveredTransports: deliveredTransports
                         )
                     }
+                }
+            let noteFirstOutboundAudioPayloadQueuedOnceIfCurrent:
+                @Sendable (String, [String]) async throws -> Bool = { deliveredPayload, deliveredTransports in
+                    guard firstPlaybackAckExpectationGate.take() else { return false }
+                    return try await noteFirstOutboundAudioPayloadQueuedIfCurrent(
+                        deliveredPayload,
+                        deliveredTransports
+                    )
                 }
 
             let mediaRelaySend: @Sendable (TurboMediaRelayClient) async throws -> TurboMediaRelayMediaMode = { relayClient in
@@ -1285,10 +1295,7 @@ extension PTTViewModel {
                     return
                 }
 
-                let shouldUseWakeContinuityAudioPath = await MainActor.run {
-                    self.shouldUseWakeBackgroundContinuityForOutgoingAudio(for: target.contactID)
-                }
-                if shouldUseWakeContinuityAudioPath {
+                if usesWakeBackgroundContinuityForOutgoingAudio {
                     let shouldRecoverWithMediaRelay = await MainActor.run {
                         self.currentApplicationState() != .active
                             && self.backendServices?.isWebSocketConnected != true
@@ -1303,7 +1310,7 @@ extension PTTViewModel {
                                 mediaRelayMediaMode: mediaMode
                             ).diagnosticsValue
                             scheduleLocalAudioCapturedSync(transportPayload)
-                            _ = try await noteFirstOutboundAudioPayloadQueuedIfCurrent(
+                            _ = try await noteFirstOutboundAudioPayloadQueuedOnceIfCurrent(
                                 transportPayload,
                                 [deliveredTransport]
                             )
@@ -1360,46 +1367,20 @@ extension PTTViewModel {
                         if bypassMediaRelayPacket {
                             recordLegacyPCMMediaRelayPacketBypass("forced-media-relay-packet-legacy-pcm")
                         } else if isMediaRelayTcpContinuityPath(relayClient) {
-                            var prearmedTcpContinuityAckExpectation = false
                             do {
-                                prearmedTcpContinuityAckExpectation =
-                                    try await noteFirstOutboundAudioPayloadQueuedIfCurrent(
-                                        transportPayload,
-                                        ["media-relay-tcp"]
-                                    )
                                 let mediaMode = try await mediaRelaySend(relayClient)
                                 let deliveredTransport = IncomingAudioPayloadTransport(
                                     mediaRelayMediaMode: mediaMode
                                 ).diagnosticsValue
                                 scheduleLocalAudioCapturedSync(transportPayload)
-                                await MainActor.run {
-                                    self.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
-                                        contactID: target.contactID,
-                                        deliveredTransports: [deliveredTransport]
-                                    )
-                                }
+                                _ = try await noteFirstOutboundAudioPayloadQueuedOnceIfCurrent(
+                                    transportPayload,
+                                    [deliveredTransport]
+                                )
                                 return
                             } catch is CancellationError {
-                                if prearmedTcpContinuityAckExpectation {
-                                    await MainActor.run {
-                                        self.clearFirstAudioPlaybackAckState(
-                                            contactID: target.contactID,
-                                            channelID: target.channelID,
-                                            senderDeviceID: fromDeviceID
-                                        )
-                                    }
-                                }
                                 throw CancellationError()
                             } catch {
-                                if prearmedTcpContinuityAckExpectation {
-                                    await MainActor.run {
-                                        self.clearFirstAudioPlaybackAckState(
-                                            contactID: target.contactID,
-                                            channelID: target.channelID,
-                                            senderDeviceID: fromDeviceID
-                                        )
-                                    }
-                                }
                                 recordMediaRelayTcpContinuityFailure(
                                     "Media relay TCP continuity send failed",
                                     "forced-media-relay-tcp",
@@ -1408,46 +1389,20 @@ extension PTTViewModel {
                             }
                         }
                         if !bypassMediaRelayPacket {
-                            var prearmedPacketRelayAckExpectation = false
                             do {
-                                prearmedPacketRelayAckExpectation =
-                                    try await noteFirstOutboundAudioPayloadQueuedIfCurrent(
-                                        transportPayload,
-                                        ["media-relay-packet"]
-                                    )
                                 let mediaMode = try await mediaRelaySend(relayClient)
                                 let deliveredTransport = IncomingAudioPayloadTransport(
                                     mediaRelayMediaMode: mediaMode
                                 ).diagnosticsValue
                                 scheduleLocalAudioCapturedSync(transportPayload)
-                                await MainActor.run {
-                                    self.mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
-                                        contactID: target.contactID,
-                                        deliveredTransports: [deliveredTransport]
-                                    )
-                                }
+                                _ = try await noteFirstOutboundAudioPayloadQueuedOnceIfCurrent(
+                                    transportPayload,
+                                    [deliveredTransport]
+                                )
                                 return
                             } catch is CancellationError {
-                                if prearmedPacketRelayAckExpectation {
-                                    await MainActor.run {
-                                        self.clearFirstAudioPlaybackAckState(
-                                            contactID: target.contactID,
-                                            channelID: target.channelID,
-                                            senderDeviceID: fromDeviceID
-                                        )
-                                    }
-                                }
                                 throw CancellationError()
                             } catch {
-                                if prearmedPacketRelayAckExpectation {
-                                    await MainActor.run {
-                                        self.clearFirstAudioPlaybackAckState(
-                                            contactID: target.contactID,
-                                            channelID: target.channelID,
-                                            senderDeviceID: fromDeviceID
-                                        )
-                                    }
-                                }
                                 await MainActor.run {
                                     self.recordMediaRelayPeerUnavailableInvariantIfNeeded(
                                         error: error,

@@ -15672,6 +15672,102 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func forcedFastRelayQuicSecondPacketDoesNotWaitForMainActorAfterAckArmed() async throws {
+        let previousMediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayQuic)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousMediaLaneOverride)
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        guard case .newAttempt(let relayAttempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(relayAttempt, client: relayClient))
+
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        let relaySendCount = LockedTestCounter()
+        viewModel.mediaRelayAudioSendOverride = { _, _ in
+            _ = relaySendCount.incrementAndGet()
+            return .quicDatagram
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+
+        try await sendAudioChunk("payload-1")
+        #expect(relaySendCount.current == 1)
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID] != nil)
+
+        let secondSendStarted = LockedTestFlag()
+        let secondSendCompleted = LockedTestFlag()
+        let secondSendTask = Task.detached {
+            secondSendStarted.set(true)
+            try await sendAudioChunk("payload-2")
+            secondSendCompleted.set(true)
+        }
+        for _ in 0..<20 {
+            if secondSendStarted.current { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(secondSendStarted.current)
+
+        Self.blockCurrentThreadForTesting(milliseconds: 200)
+
+        #expect(secondSendCompleted.current)
+        try await secondSendTask.value
+        #expect(relaySendCount.current == 2)
+    }
+
+    @MainActor
     @Test func forcedFastRelayTlsOverrideReplacesPacketClientAndUsesTcpLane() async throws {
         let previousMediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
