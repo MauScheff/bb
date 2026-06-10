@@ -1542,6 +1542,105 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func activeTransmitPlaybackAckBeforeExpectationSuppressesLaterTimeout() async {
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "sender-user",
+            mode: "cloud"
+        )
+        let contactID = UUID()
+        let target = TransmitTarget(
+            contactID: contactID,
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-1"
+        )
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: contactID,
+            channelID: "channel-1",
+            localDeviceID: client.deviceID,
+            peerDeviceID: "peer-device",
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.startTransmitStartupTiming(
+            for: TransmitRequestContext(
+                contactID: contactID,
+                contactHandle: "@peer",
+                backendChannelID: "channel-1",
+                remoteUserID: "peer-user",
+                channelUUID: nil,
+                usesLocalHTTPBackend: false,
+                backendSupportsWebSocket: true
+            ),
+            source: "test"
+        )
+
+        viewModel.handleAudioPlaybackStartedAck(
+            TurboAudioPlaybackStartedPayload(
+                ackId: "ack-early",
+                channelId: "channel-1",
+                senderDeviceId: client.deviceID,
+                receiverDeviceId: "peer-device",
+                transport: "media-relay-packet",
+                transportDigest: "early-digest",
+                encryptedSequenceNumber: 2
+            ),
+            contactID: contactID,
+            source: .mediaRelay
+        )
+
+        let completedKey = FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: client.deviceID,
+            receiverDeviceID: "peer-device"
+        )
+        #expect(viewModel.firstAudioPlaybackAckCompletedKeys.contains(completedKey))
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Recorded first audio playback delivery proof"
+            )
+        )
+
+        viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] =
+            FirstAudioPlaybackAckExpectation(
+                ackID: "ack-timeout",
+                contactID: contactID,
+                channelID: "channel-1",
+                senderDeviceID: client.deviceID,
+                receiverDeviceID: "peer-device",
+                transportDigest: "later-digest",
+                encryptedSequenceNumber: 4,
+                queuedAt: Date(),
+                deliveredTransports: ["media-relay-packet"]
+            )
+
+        await viewModel.handleFirstAudioPlaybackAckTimeout(
+            contactID: contactID,
+            ackID: "ack-timeout"
+        )
+
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] == nil)
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "transmit.first_audio_playback_ack_missing"
+            }
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Suppressed first audio playback ACK timeout after delivery proof"
+            )
+        )
+    }
+
+    @MainActor
     @Test func delayedRelayPlaybackAckAfterClearedExpectationDoesNotRecordViolation() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

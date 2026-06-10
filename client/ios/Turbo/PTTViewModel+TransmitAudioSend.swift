@@ -117,6 +117,65 @@ extension PTTViewModel {
         )
     }
 
+    func audioPlaybackAckMatchesActiveTransmit(
+        _ payload: TurboAudioPlaybackStartedPayload,
+        contactID: UUID
+    ) -> Bool {
+        guard let activeTarget = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget else {
+            return false
+        }
+        let localDeviceID = backendServices?.deviceID ?? backendConfig?.deviceID ?? ""
+        guard !localDeviceID.isEmpty else { return false }
+        if let pressRequestedAt = transmitStartupTiming.pressRequestedAt {
+            let pressRequestedAtMilliseconds = Int64(pressRequestedAt.timeIntervalSince1970 * 1_000)
+            let acceptedClockSkewGraceMilliseconds: Int64 = 5_000
+            guard payload.acceptedAtMilliseconds + acceptedClockSkewGraceMilliseconds >= pressRequestedAtMilliseconds else {
+                return false
+            }
+        }
+        return activeTarget.contactID == contactID
+            && activeTarget.channelID == payload.channelId
+            && activeTarget.deviceID == payload.receiverDeviceId
+            && payload.senderDeviceId == localDeviceID
+    }
+
+    func recordFirstAudioPlaybackDeliveryProof(
+        _ payload: TurboAudioPlaybackStartedPayload,
+        contactID: UUID,
+        source: ControlEventSource,
+        reason: String
+    ) {
+        let completedKey = firstAudioPlaybackAckKey(
+            contactID: contactID,
+            channelID: payload.channelId,
+            senderDeviceID: payload.senderDeviceId,
+            receiverDeviceID: payload.receiverDeviceId
+        )
+        firstAudioPlaybackAckCompletedKeys.insert(completedKey)
+        firstAudioPlaybackAckRecentlyClearedKeys.removeValue(forKey: completedKey)
+        mediaRuntime.markActiveMediaEpochTransport(payload.transport)
+        if payload.transport == "direct-quic" {
+            directAudioPlaybackVerifiedKeys.insert(completedKey)
+        }
+        diagnostics.record(
+            .media,
+            message: "Recorded first audio playback delivery proof",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": payload.channelId,
+                "senderDeviceId": payload.senderDeviceId,
+                "receiverDeviceId": payload.receiverDeviceId,
+                "transport": payload.transport,
+                "transportDigest": payload.transportDigest,
+                "encryptedSequenceNumber": payload.encryptedSequenceNumber.map(String.init) ?? "none",
+                "acceptedAtMilliseconds": String(payload.acceptedAtMilliseconds),
+                "ackId": payload.ackId,
+                "source": source.rawValue,
+                "reason": reason,
+            ]
+        )
+    }
+
     func firstAudioPlaybackAckKeyMatchesClearFilter(
         _ key: FirstAudioPlaybackAckSentKey,
         contactID: UUID,
@@ -296,7 +355,20 @@ extension PTTViewModel {
             receiverDeviceID: target.deviceID
         )
         firstAudioPlaybackAckRecentlyClearedKeys.removeValue(forKey: key)
-        guard !firstAudioPlaybackAckCompletedKeys.contains(key) else { return false }
+        guard !firstAudioPlaybackAckCompletedKeys.contains(key) else {
+            diagnostics.record(
+                .media,
+                message: "Skipped first audio playback ACK wait because delivery proof already exists",
+                metadata: [
+                    "contactId": target.contactID.uuidString,
+                    "channelId": target.channelID,
+                    "senderDeviceId": senderDeviceID,
+                    "receiverDeviceId": target.deviceID,
+                    "deliveredTransports": deliveredTransports.joined(separator: ","),
+                ]
+            )
+            return false
+        }
         let identity = audioPayloadIdentity(payload)
         let ackID = UUID().uuidString
         let expectation = FirstAudioPlaybackAckExpectation(
@@ -352,6 +424,25 @@ extension PTTViewModel {
             return
         }
         firstAudioPlaybackAckTimeoutTasksByContactID[contactID] = nil
+        let completedKey = firstAudioPlaybackAckKey(for: expectation)
+        if firstAudioPlaybackAckCompletedKeys.contains(completedKey) {
+            firstAudioPlaybackAckExpectationsByContactID[contactID] = nil
+            diagnostics.record(
+                .media,
+                message: "Suppressed first audio playback ACK timeout after delivery proof",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": expectation.channelID,
+                    "senderDeviceId": expectation.senderDeviceID,
+                    "receiverDeviceId": expectation.receiverDeviceID,
+                    "transportDigest": expectation.transportDigest,
+                    "encryptedSequenceNumber": expectation.encryptedSequenceNumber.map(String.init) ?? "none",
+                    "deliveredTransports": expectation.deliveredTransports.joined(separator: ","),
+                    "ackId": expectation.ackID,
+                ]
+            )
+            return
+        }
         let timeoutMilliseconds = firstAudioPlaybackAckTimeoutNanoseconds / 1_000_000
         diagnostics.recordContractViolation(
             DiagnosticsContracts.Media.firstAudioPlaybackAckMissing(
@@ -464,6 +555,18 @@ extension PTTViewModel {
         guard let expectation = firstAudioPlaybackAckExpectationsByContactID[contactID] else {
             let completedKeyExists = firstAudioPlaybackAckCompletedKeys.contains(completedKey)
             let recentlyClearedKeyExists = hasRecentlyClearedFirstAudioPlaybackAckKey(completedKey)
+            if !completedKeyExists,
+               audioPlaybackAckMatchesActiveTransmit(payload, contactID: contactID) {
+                recordFirstAudioPlaybackDeliveryProof(
+                    payload,
+                    contactID: contactID,
+                    source: source,
+                    reason: recentlyClearedKeyExists
+                        ? "active-transmit-ack-after-cleared-expectation"
+                        : "active-transmit-ack-before-expectation"
+                )
+                return
+            }
             if completedKeyExists || recentlyClearedKeyExists {
                 let verifiedDirectAudio = payload.transport == "direct-quic"
                 if verifiedDirectAudio && completedKeyExists {
@@ -588,11 +691,12 @@ extension PTTViewModel {
         firstAudioPlaybackAckTimeoutTasksByContactID[contactID]?.cancel()
         firstAudioPlaybackAckTimeoutTasksByContactID[contactID] = nil
         firstAudioPlaybackAckExpectationsByContactID[contactID] = nil
-        firstAudioPlaybackAckCompletedKeys.insert(completedKey)
-        mediaRuntime.markActiveMediaEpochTransport(payload.transport)
-        if payload.transport == "direct-quic" {
-            directAudioPlaybackVerifiedKeys.insert(completedKey)
-        }
+        recordFirstAudioPlaybackDeliveryProof(
+            payload,
+            contactID: contactID,
+            source: source,
+            reason: "matched-pending-expectation"
+        )
         diagnostics.record(
             .media,
             message: "First audio playback ACK received",
