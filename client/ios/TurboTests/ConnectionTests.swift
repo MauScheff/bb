@@ -1640,6 +1640,8 @@ struct ConnectionTests {
     }
 
     @Test func selectedMediaTransportStatePreservesPathAndFallbackEvidence() {
+        #expect(!TurboBackendClient.runtimeControlFrameSendMarksStreamComplete)
+
         let direct = SelectedMediaTransportState(
             pathState: .direct,
             directActive: true,
@@ -9255,9 +9257,89 @@ struct ConnectionTests {
         #expect(response.signals.first?.envelope == envelope)
     }
 
+    @MainActor
+    @Test func directQuicSignalDrainDecodesPersistentRuntimeControlFrame() async throws {
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsDirectQuicUpgrade: true,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(
+                        supported: true,
+                        endpoint: "api.beepbeep.to:443",
+                        alpn: "beep-runtime-control-v1",
+                        migrationEnabled: true
+                    ),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+        let envelope = try TurboSignalEnvelope.directQuicAnswer(
+            channelId: "channel-a",
+            fromUserId: "user-peer",
+            fromDeviceId: "device-b",
+            toUserId: "user-self",
+            toDeviceId: "test-device",
+            payload: TurboDirectQuicAnswerPayload(
+                attemptId: "attempt-a",
+                accepted: true,
+                certificateFingerprint: "sha256:def",
+                candidates: []
+            )
+        )
+
+        var runtimeLane: TurboRuntimeControlLane?
+        var runtimeCommand: TurboControlCommandEnvelope?
+        var httpAttempted = false
+        client.controlCommandRuntimePersistentResponseForTesting = { lane, command in
+            runtimeLane = lane
+            runtimeCommand = command
+            let signalObject = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(envelope)
+            )
+            let body = try JSONSerialization.data(withJSONObject: [
+                "status": "drained",
+                "deviceId": "test-device",
+                "afterSequence": 41,
+                "latestSequence": 42,
+                "signals": [
+                    [
+                        "sequence": 42,
+                        "operationId": "signal-op-b",
+                        "envelope": signalObject,
+                    ],
+                ],
+            ])
+            return makeRuntimeControlFrameResponseData(
+                transport: "runtime-quic-control",
+                body: body
+            )
+        }
+        client.controlCommandHTTPResponseForTesting = { _, _ in
+            httpAttempted = true
+            return Data(#"{"status":"drained","latestSequence":41,"signals":[]}"#.utf8)
+        }
+
+        let response = try await client.drainDirectQuicSignals(after: 41)
+
+        #expect(runtimeLane == .runtimeQuicControl)
+        #expect(runtimeCommand?.commandKind == "direct-quic-signal-drain")
+        #expect(runtimeCommand?.generation == 41)
+        #expect(!httpAttempted)
+        #expect(response.latestSequence == 42)
+        #expect(response.signals.first?.sequence == 42)
+        #expect(response.signals.first?.envelope == envelope)
+    }
+
     @Test func legacyRuntimeAudioDoesNotProjectAsRemovedRelayWebSocketLane() {
-        #expect(MediaTransportPathState.relay.rawValue == "runtime-control")
-        #expect(MediaTransportPathState.relay.diagnosticsValue == "runtime-control")
+        #expect(MediaTransportPathState.relay.rawValue == "no-live-media-lane")
+        #expect(MediaTransportPathState.relay.diagnosticsValue == "no-live-media-lane")
         #expect(IncomingAudioPayloadTransport.relayWebSocket.diagnosticsValue == "legacy-runtime-audio")
         #expect(IncomingAudioPayloadTransport.mediaRelayTcp.diagnosticsValue == "media-relay-tcp")
 

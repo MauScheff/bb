@@ -60,7 +60,7 @@ Do not ask the physical operator to retest shared session/media/transport behavi
 Device setup:
 
 - two iPhones: `<A_HANDLE>`, `<B_HANDLE>`
-- backend: `https://beepbeep.to` unless changed by agent
+- backend: `https://api.beepbeep.to` unless changed by agent
 - build: latest debug/TestFlight/production-like build under test
 - permissions: microphone, notifications, Local Network
 - first pass: Low Power Mode off, Focus/Do Not Disturb off
@@ -107,6 +107,21 @@ control lane, fallback reason, and whether the effective lane is persistent.
 | T3 Direct QUIC | device-to-device promotion and first-talk behavior | `automatic` or `force-direct-quic`; Local Network allowed | backend advertised/effective upgrade yes; production identity ready; peer device known; proven lane `Direct` while live |
 
 T2 old ports `9443`/`9444` are debug fallback only. T3 `Promoting`, `Recovering`, or relay-only delivery is not a Direct pass; use `Force probe` once only if asked. Later retry-only audio success is a T3 failure.
+
+### Lane Acceptance Gate
+
+Each transport mode must pass as a lane, not as an incidental successful call.
+
+| Criterion | Pass condition | Failure examples |
+| --- | --- | --- |
+| Signaling | The selected lane establishes the required control/signaling path and the peer adapts without manually matching local overrides. | Direct QUIC offer/answer/candidate drain fails; one-sided forced relay requires toggling both devices. |
+| Projection | The visible badge shows the current proven media lane while live; runtime control is never shown as a live media lane. | `Runtime Control` or stale `Direct` shown while audio is unavailable or relayed. |
+| First audio | A->B and B->A first press are heard from the start of speech on the intended lane. | First numbers/words missing, no audio, or audio only after a second retry. |
+| Repetition | At least 10 clean back-and-forth presses remain responsive and converge to ready after release. | Stuck talking/listening tail, delayed button release, UI freeze, or accumulated receive backlog. |
+| Degradation | When the intended lane fails, the app either selects an explicit fallback lane or ends the turn cleanly. | Silent lane loss, hidden runtime-media fallback, stale ready/connected state, or orphaned Apple/PTT transmit. |
+| Evidence | Diagnostics include requested override, effective lane, proven active lane, runtime control lane, and failure/rescue reason. | Missing lane facts, ambiguous `relayed`, or no shake/intake artifact for a failure. |
+
+Do not mark a cell passed until every row passes for both directions.
 
 ### Network-Migration Hardening Cells
 

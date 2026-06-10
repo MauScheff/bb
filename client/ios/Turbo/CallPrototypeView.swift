@@ -1128,7 +1128,7 @@ struct TurboCallPrototypeView: View {
         case .fastRelayTcp:
             return "Fast Relay TCP"
         case .relay:
-            return "Runtime Control"
+            return "Waiting"
         case .promoting, .recovering, .none:
             return nil
         }
@@ -1143,7 +1143,7 @@ struct TurboCallPrototypeView: View {
         case .fastRelayTcp:
             return "fast relay tcp"
         case .relay:
-            return "relayed"
+            return "waiting for media path"
         case .promoting, .recovering, .none:
             return nil
         }

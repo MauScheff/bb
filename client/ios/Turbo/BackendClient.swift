@@ -87,6 +87,8 @@ private func configuredSessionConfiguration(
 
 @MainActor
 final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
+    static let runtimeControlFrameSendMarksStreamComplete = false
+
     enum ControlCommandTransportTrace: String {
         case runtimeQuic = "runtime-quic-control"
         case runtimeTls = "runtime-tls-control"
@@ -1720,7 +1722,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
             connection.send(
                 content: data,
                 contentContext: .defaultMessage,
-                isComplete: true,
+                isComplete: Self.runtimeControlFrameSendMarksStreamComplete,
                 completion: .contentProcessed { error in
                     if let error {
                         continuation.resume(throwing: error)
@@ -1760,7 +1762,11 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     return
                 }
                 if isComplete {
-                    continuation.resume(throwing: TurboBackendError.invalidResponse)
+                    continuation.resume(
+                        throwing: TurboBackendError.invalidResponseDetails(
+                            "Runtime control connection closed before a response line was received"
+                        )
+                    )
                     return
                 }
                 continuation.resume(returning: Data())

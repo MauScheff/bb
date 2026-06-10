@@ -5155,7 +5155,7 @@ final class MediaRuntimeState {
 }
 
 enum MediaTransportPathState: String, Codable, Equatable {
-    case relay = "runtime-control"
+    case relay = "no-live-media-lane"
     case fastRelay = "fast-relay"
     case fastRelayTcp = "fast-relay-tcp"
     case promoting
@@ -5165,7 +5165,7 @@ enum MediaTransportPathState: String, Codable, Equatable {
     var label: String {
         switch self {
         case .relay:
-            return "Runtime Control"
+            return "Waiting"
         case .fastRelay:
             return "Fast Relay"
         case .fastRelayTcp:
@@ -5182,7 +5182,7 @@ enum MediaTransportPathState: String, Codable, Equatable {
     nonisolated var diagnosticsValue: String {
         switch self {
         case .relay:
-            return "runtime-control"
+            return "no-live-media-lane"
         case .fastRelay:
             return "fast-relay"
         case .fastRelayTcp:
