@@ -6046,7 +6046,7 @@ struct ConnectionTests {
         #expect(TurboMediaRelayClient.datagramJoinWaitsForProcessing)
         #expect(TurboMediaRelayClient.datagramJoinArmsReceiveBeforeSend)
         #expect(!TurboMediaRelayClient.livePacketAudioWaitsForProcessing)
-        #expect(!TurboMediaRelayClient.binaryPacketAudioDatagramsEnabled)
+        #expect(TurboMediaRelayClient.binaryPacketAudioDatagramsEnabled)
         #expect(TurboMediaRelayClient.liveAudioMaxConcurrentIncomingHandlers == 16)
         #expect(TurboMediaRelayClient.liveAudioMaxPendingIncomingHandlers == 96)
         #expect(TurboMediaRelayClient.liveAudioIncomingHandlerExpirationNanoseconds == 2_000_000_000)
