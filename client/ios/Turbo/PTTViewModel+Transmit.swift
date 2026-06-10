@@ -1275,6 +1275,47 @@ extension PTTViewModel {
         )
     }
 
+    func shouldDeferBeginTransmitUntilForcedDirectQuicIsReady(
+        contact: Contact,
+        request: TransmitRequestContext
+    ) -> Bool {
+        guard TurboMediaLaneDebugOverride.mediaLaneOverride() == .forceDirectQuic else { return false }
+        guard !shouldUseDirectQuicAudioTransport(for: contact.id) else { return false }
+
+        diagnostics.record(
+            .media,
+            level: .notice,
+            message: "Deferred begin transmit until forced Direct QUIC media lane is ready",
+            metadata: [
+                "reason": "forced-direct-quic-not-ready",
+                "contact": contact.handle,
+                "contactId": contact.id.uuidString,
+                "channelId": request.backendChannelID,
+                "mediaLaneOverride": TurboMediaLaneOverride.forceDirectQuic.rawValue,
+                "mediaLaneEffective": mediaTransportPathState.diagnosticsValue,
+                "directQuicActive": String(shouldUseDirectQuicTransport(for: contact.id)),
+                "directQuicAudioEligible": String(shouldUseDirectQuicAudioTransport(for: contact.id)),
+            ]
+        )
+        backendStatusMessage = "Preparing Direct QUIC"
+        statusMessage = "Preparing Direct QUIC"
+        updateStatusForSelectedContact()
+        captureDiagnosticsState("transmit-begin:forced-direct-quic-not-ready")
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.maybeStartAutomaticDirectQuicProbe(
+                for: contact.id,
+                reason: "forced-direct-quic-begin-blocked"
+            )
+            await self.requestReceiverPrewarmForFirstTalk(
+                for: contact.id,
+                reason: "forced-direct-quic-begin-blocked"
+            )
+        }
+        return true
+    }
+
     func beginTransmit() {
         guard isJoined else {
             diagnostics.record(.media, message: "Ignored begin transmit request", metadata: ["reason": "not-joined"])
@@ -1425,6 +1466,13 @@ extension PTTViewModel {
                 )
                 return
             }
+        }
+
+        guard !shouldDeferBeginTransmitUntilForcedDirectQuicIsReady(
+            contact: contact,
+            request: request
+        ) else {
+            return
         }
 
         diagnostics.record(.media, message: "Begin transmit requested", metadata: ["contact": contact.handle])

@@ -13219,6 +13219,96 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func forcedDirectQuicBeginTransmitWaitsForLegalDirectMediaLane() async throws {
+        actor LeaseRecorder {
+            private var requests: [TurboBeginTransmitLeaseRequest] = []
+
+            func append(_ request: TurboBeginTransmitLeaseRequest) {
+                requests.append(request)
+            }
+
+            func snapshot() -> [TurboBeginTransmitLeaseRequest] {
+                requests
+            }
+        }
+
+        let previousOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceDirectQuic)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousOverride)
+        }
+
+        let leaseRecorder = LeaseRecorder()
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+        TurboBackendCriticalHTTPClient.beginTransmitOverride = { _, request in
+            await leaseRecorder.append(request)
+            return TurboBeginTransmitResponse(status: "transmitting")
+        }
+        defer { TurboBackendCriticalHTTPClient.beginTransmitOverride = nil }
+
+        viewModel.applicationStateOverride = .active
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "self-user", mode: "cloud")
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    remoteAudioReadiness: .ready,
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        viewModel.beginTransmit()
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        #expect(pttClient.beginTransmitRequests.isEmpty)
+        #expect((await leaseRecorder.snapshot()).isEmpty)
+        #expect(mediaSession.startSendingAudioCallCount == 0)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Deferred begin transmit until forced Direct QUIC media lane is ready"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("reason=forced-direct-quic-not-ready"))
+    }
+
+    @MainActor
     @Test func fastRelayForegroundTransmitRequestsAppleHandoffAfterBackendLeaseGrant() async throws {
         actor LeaseRecorder {
             private var requests: [TurboBeginTransmitLeaseRequest] = []
