@@ -836,6 +836,32 @@ extension PTTViewModel {
         return mediaRuntime.isMediaRelayAudioSendSuppressed(for: key)
     }
 
+    func canAttemptMediaRelayForWakeContinuityAudioSend() -> Bool {
+        let mediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        guard !mediaLaneOverride.disablesMediaRelay else { return false }
+        guard !isDirectPathRelayOnlyForced || mediaLaneOverride == .forceFastRelayTls else {
+            return false
+        }
+        let hasRelayClientOrAttempt =
+            mediaRuntime.hasActiveMediaRelayClient
+            || mediaRuntime.hasInFlightMediaRelayConnection
+        guard hasRelayClientOrAttempt
+                || TurboMediaRelayDebugOverride.config()?.isConfigured == true else {
+            return false
+        }
+        return hasRelayClientOrAttempt
+            || TurboMediaRelayDebugOverride.isEnabled()
+            || TurboMediaRelayDebugOverride.isForced()
+            || mediaLaneOverride.forcesFastRelay
+    }
+
+    func shouldRecoverMediaRelayAudioSendForActiveTarget(_ target: TransmitTarget) -> Bool {
+        guard let activeTarget = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget else {
+            return false
+        }
+        return activeTarget == target
+    }
+
     func clearMediaRelayAudioSendSuppressionIfPresent(
         target: TransmitTarget,
         reason: String
@@ -1300,10 +1326,7 @@ extension PTTViewModel {
 
                 if usesWakeBackgroundContinuityForOutgoingAudio {
                     let shouldRecoverWithMediaRelay = await MainActor.run {
-                        self.currentApplicationState() != .active
-                            && self.backendServices?.isWebSocketConnected != true
-                            && (self.mediaRuntime.hasActiveMediaRelayClient
-                                || self.mediaRuntime.hasInFlightMediaRelayConnection)
+                        self.canAttemptMediaRelayForWakeContinuityAudioSend()
                     }
                     if shouldRecoverWithMediaRelay,
                        let relayClient = await self.mediaRelayClientForAudioSend(target: target) {
@@ -1838,7 +1861,12 @@ extension PTTViewModel {
         let localDeviceID = await MainActor.run {
             backendServices?.deviceID ?? backendConfig?.deviceID ?? ""
         }
-        if !localDeviceID.isEmpty, !bypassAudioSendSuppression {
+        let recoverActiveAudioSendSuppression = await MainActor.run {
+            shouldRecoverMediaRelayAudioSendForActiveTarget(target)
+        }
+        if !localDeviceID.isEmpty,
+           !bypassAudioSendSuppression,
+           !recoverActiveAudioSendSuppression {
             let key = MediaRelayConnectionKey(
                 sessionID: target.channelID,
                 localDeviceID: localDeviceID,
@@ -1855,7 +1883,9 @@ extension PTTViewModel {
             contactID: target.contactID,
             channelID: target.channelID,
             peerDeviceID: target.deviceID,
-            clearsAudioSendSuppressionOnSuccess: bypassAudioSendSuppression,
+            clearsAudioSendSuppressionOnSuccess: bypassAudioSendSuppression
+                || recoverActiveAudioSendSuppression,
+            reconnectAfterPeerUnavailableForActiveAudioSend: recoverActiveAudioSendSuppression,
             missingConfigMessage: "Media relay skipped because relay config is missing",
             connectingMessage: "Connecting media relay",
             selectedMessage: "Media relay selected",
@@ -1923,6 +1953,38 @@ extension PTTViewModel {
         peerDeviceID: String,
         allowConfiguredReceiveWithoutLocalToggle: Bool = false,
         clearsAudioSendSuppressionOnSuccess: Bool = false,
+        missingConfigMessage: String,
+        connectingMessage: String,
+        selectedMessage: String,
+        failureMessage: String,
+        cancelledMessage: String,
+        preferredTransport: TurboMediaRelayTransport? = nil,
+        fromUserIDForIncoming: @escaping @Sendable () async -> String
+    ) async -> TurboMediaRelayClient? {
+        await mediaRelayClientIfEnabled(
+            contactID: contactID,
+            channelID: channelID,
+            peerDeviceID: peerDeviceID,
+            allowConfiguredReceiveWithoutLocalToggle: allowConfiguredReceiveWithoutLocalToggle,
+            clearsAudioSendSuppressionOnSuccess: clearsAudioSendSuppressionOnSuccess,
+            reconnectAfterPeerUnavailableForActiveAudioSend: false,
+            missingConfigMessage: missingConfigMessage,
+            connectingMessage: connectingMessage,
+            selectedMessage: selectedMessage,
+            failureMessage: failureMessage,
+            cancelledMessage: cancelledMessage,
+            preferredTransport: preferredTransport,
+            fromUserIDForIncoming: fromUserIDForIncoming
+        )
+    }
+
+    func mediaRelayClientIfEnabled(
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        allowConfiguredReceiveWithoutLocalToggle: Bool = false,
+        clearsAudioSendSuppressionOnSuccess: Bool = false,
+        reconnectAfterPeerUnavailableForActiveAudioSend: Bool,
         missingConfigMessage: String,
         connectingMessage: String,
         selectedMessage: String,
@@ -2014,6 +2076,7 @@ extension PTTViewModel {
                         peerDeviceID: peerDeviceID,
                         allowConfiguredReceiveWithoutLocalToggle: allowConfiguredReceiveWithoutLocalToggle,
                         clearsAudioSendSuppressionOnSuccess: clearsAudioSendSuppressionOnSuccess,
+                        reconnectAfterPeerUnavailableForActiveAudioSend: reconnectAfterPeerUnavailableForActiveAudioSend,
                         missingConfigMessage: missingConfigMessage,
                         connectingMessage: connectingMessage,
                         selectedMessage: selectedMessage,
@@ -2025,6 +2088,41 @@ extension PTTViewModel {
                 }
             }
             if client.hasFreshPeerUnavailable() {
+                if reconnectAfterPeerUnavailableForActiveAudioSend {
+                    await MainActor.run {
+                        clearStaleMediaRelayClient(
+                            localDeviceID: localDeviceId,
+                            channelID: channelID,
+                            peerDeviceID: peerDeviceID,
+                            client: client,
+                            reason: "active-audio-send-peer-unavailable"
+                        )
+                        diagnostics.record(
+                            .media,
+                            message: "Refreshing media relay after peer unavailable for active audio send",
+                            metadata: [
+                                "contactId": contactID.uuidString,
+                                "channelId": channelID,
+                                "peerDeviceId": peerDeviceID,
+                            ]
+                        )
+                    }
+                    return await mediaRelayClientIfEnabled(
+                        contactID: contactID,
+                        channelID: channelID,
+                        peerDeviceID: peerDeviceID,
+                        allowConfiguredReceiveWithoutLocalToggle: allowConfiguredReceiveWithoutLocalToggle,
+                        clearsAudioSendSuppressionOnSuccess: clearsAudioSendSuppressionOnSuccess,
+                        reconnectAfterPeerUnavailableForActiveAudioSend: false,
+                        missingConfigMessage: missingConfigMessage,
+                        connectingMessage: connectingMessage,
+                        selectedMessage: selectedMessage,
+                        failureMessage: failureMessage,
+                        cancelledMessage: cancelledMessage,
+                        preferredTransport: preferredTransport,
+                        fromUserIDForIncoming: fromUserIDForIncoming
+                    )
+                }
                 await MainActor.run {
                     suppressMediaRelayAudioSendUntilNextIdlePrewarm(
                         localDeviceID: localDeviceId,
