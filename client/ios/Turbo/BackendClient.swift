@@ -1412,7 +1412,11 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         let frameData = try runtimeControlFrameData(for: envelope, requestID: requestID)
         let connection = try await activeRuntimeControlConnection(
             lane: lane,
-            endpoint: endpoint
+            endpoint: endpoint,
+            identity: RuntimeControlConnectionIdentity(
+                userHandle: envelope.userHandle,
+                deviceID: envelope.deviceId
+            )
         )
         do {
             try await sendRuntimeControlFrame(frameData, on: connection)
@@ -1466,8 +1470,12 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         }
         guard let type = object["type"] as? String,
               type == "control-command-response" || type == "presence-command-response" else {
+            let returnedType = object["type"] as? String ?? "missing-type"
+            let message = object["error"] as? String
+                ?? (object["body"] as? [String: Any])?["error"] as? String
+                ?? "missing-error"
             throw TurboBackendError.invalidResponseDetails(
-                "\(transport.label) \(body.commandKind) returned an unexpected runtime control frame"
+                "\(transport.label) \(body.commandKind) returned unexpected runtime control frame \(returnedType): \(message)"
             )
         }
         if let requestID,
@@ -1500,7 +1508,13 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private struct RuntimeControlConnection {
         let lane: TurboRuntimeControlLane
         let endpoint: RuntimeControlEndpoint
+        let identity: RuntimeControlConnectionIdentity
         let connection: NWConnection
+    }
+
+    private struct RuntimeControlConnectionIdentity: Equatable {
+        let userHandle: String?
+        let deviceID: String
     }
 
     private func runtimeControlEndpoint(for lane: TurboRuntimeControlLane) -> RuntimeControlEndpoint? {
@@ -1575,11 +1589,13 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
 
     private func activeRuntimeControlConnection(
         lane: TurboRuntimeControlLane,
-        endpoint: RuntimeControlEndpoint
+        endpoint: RuntimeControlEndpoint,
+        identity: RuntimeControlConnectionIdentity
     ) async throws -> NWConnection {
         if let runtimeControlConnection,
            runtimeControlConnection.lane == lane,
-           runtimeControlConnection.endpoint == endpoint {
+           runtimeControlConnection.endpoint == endpoint,
+           runtimeControlConnection.identity == identity {
             return runtimeControlConnection.connection
         }
 
@@ -1593,6 +1609,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         runtimeControlConnection = RuntimeControlConnection(
             lane: lane,
             endpoint: endpoint,
+            identity: identity,
             connection: connection
         )
         return connection

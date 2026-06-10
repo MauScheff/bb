@@ -63,11 +63,11 @@ Persistent ordered runtime control streams use
 [`backend/runtime/src/control_stream.rs`](/Users/mau/Development/bb/backend/runtime/src/control_stream.rs):
 newline-delimited runtime-control frames, multiple commands per persistent
 connection, command-level errors without closing the stream, and the same
-transport-labelled response envelope. The first valid command frame binds the
-connection identity from `userId` or `userHandle` plus `deviceId`; later frames
-with a different identity are rejected before backend truth is touched. Runtime
-TLS wraps this stream in TLS. Runtime QUIC control uses the same command
-envelope with QUIC stream delivery.
+transport-labelled response envelope. Runtime TLS binds the connection identity
+from `userId` or `userHandle` plus `deviceId`; later frames with a different
+identity are rejected before backend truth is touched. Runtime QUIC control
+uses the same command envelope with QUIC stream delivery and binds identity per
+bidirectional control stream, not per QUIC connection.
 
 Runtime TLS uses [`backend/runtime/src/runtime_tls.rs`](/Users/mau/Development/bb/backend/runtime/src/runtime_tls.rs):
 Rustls server config, runtime-control ALPN, PEM certificate/key loading, and the
@@ -78,9 +78,9 @@ Tests prove real Rustls client/server handshakes, command responses, transport
 metadata, and runtime state updates through both direct stream IO and a TCP
 listener.
 
-Runtime TLS command handling uses the same frame-bound identity rule as runtime
-QUIC: first valid frame binds the persistent connection, later mismatches are
-rejected, and command-level errors do not close the stream.
+Runtime TLS command handling uses the same frame-bound identity rule on its one
+persistent stream: first valid frame binds the persistent connection, later
+mismatches are rejected, and command-level errors do not close the stream.
 
 Runtime config advertises the control-plane contract explicitly:
 
@@ -99,19 +99,21 @@ runtime-control stream adapter, UDP socket loop, and endpoint state machine.
 The production runtime starts the QUIC listener when
 `BEEP_RUNTIME_QUIC_CONTROL_BIND`, `BEEP_RUNTIME_CONTROL_CERT_PEM`, and
 `BEEP_RUNTIME_CONTROL_KEY_PEM` are set. Tests prove command response, identity
-mismatch rejection, live-media rejection, and runtime state mutation over real
-in-memory `quiche` client/server connections plus the UDP endpoint path.
+mismatch rejection, per-stream identity separation, live-media rejection, and
+runtime state mutation over real in-memory `quiche` client/server connections
+plus the UDP endpoint path.
 It uses `quiche`, the runtime-control ALPN, stream-oriented limits, and the
 same active-migration law as Fast Relay. The module also owns the QUIC stream
 adapter that reads newline-delimited runtime-control frames and writes
 transport-labelled responses on the same stream, plus a UDP endpoint primitive
 that accepts packets, manages runtime QUIC connections, binds identity from
-the first command frame, and emits outbound packets. Tests prove command
-handling, identity mismatch rejection, and live-media rejection over real
-in-memory `quiche` client/server connections, plus presence commands mutating
-runtime state through both stream and UDP endpoint paths. Production config
-must advertise runtime QUIC only when the UDP socket, cert/key config, and
-lifecycle are enabled.
+the first command frame on each bidirectional control stream, and emits
+outbound packets. Tests prove command handling, identity mismatch rejection,
+per-stream identity separation, and live-media rejection over real in-memory
+`quiche` client/server connections, plus presence commands mutating runtime
+state through both stream and UDP endpoint paths. Production config must
+advertise runtime QUIC only when the UDP socket, cert/key config, and lifecycle
+are enabled.
 
 ## State Ownership
 

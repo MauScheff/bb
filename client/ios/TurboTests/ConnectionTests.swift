@@ -31280,6 +31280,66 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func runtimeControlErrorFrameIncludesReturnedErrorInFallbackNotice() async throws {
+        let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
+        TurboControlCommandTransportDebugOverride.setPolicy(nil)
+        defer {
+            TurboControlCommandTransportDebugOverride.setPolicy(previousPolicy)
+        }
+
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: false,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(supported: true, endpoint: "api.beepbeep.to:443"),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+
+        var notices: [String] = []
+        var httpPath: String?
+        client.onServerNotice = { notice in
+            notices.append(notice)
+        }
+        client.controlCommandRuntimePersistentResponseForTesting = { _, _ in
+            Data(
+                """
+                {
+                  "type": "runtime-control-error",
+                  "protocolVersion": "beep-runtime-control-v1",
+                  "status": "error",
+                  "transport": "runtime-quic-control",
+                  "persistentTransport": true,
+                  "error": "runtime control frame identity did not match the bound connection identity"
+                }
+                """.utf8
+            )
+        }
+        client.controlCommandHTTPResponseForTesting = { path, _ in
+            httpPath = path
+            return makeLeaveResponseData(status: "left")
+        }
+
+        let response = try await client.leaveChannel(channelId: "channel-runtime-error", operationId: "leave-runtime-error")
+
+        #expect(response.status == "left")
+        #expect(httpPath == "/v1/channels/channel-runtime-error/leave")
+        #expect(
+            notices.contains {
+                $0.contains("runtime-control-error")
+                    && $0.contains("identity did not match")
+            }
+        )
+    }
+
+    @MainActor
     @Test func runtimeTlsPresenceCommandUsesPersistentLaneWhenForced() async throws {
         let previousPolicy = TurboControlCommandTransportDebugOverride.policy()
         TurboControlCommandTransportDebugOverride.setPolicy(.forceRuntimeTls)

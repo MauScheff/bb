@@ -94,6 +94,11 @@ self-hosted-websocket-probe output="/tmp/turbo-self-hosted-websocket-probe.json"
   cargo test -q -p beepbeep-runtime --lib websocket_self_hosted_probe
   TURBO_WEBSOCKET_PROBE_OUTPUT="{{output}}" cargo run -q -p beepbeep-runtime --bin websocket-probe
 
+runtime-quic-probe endpoint="api.beepbeep.to:443" output="/tmp/turbo-runtime-quic-probe.json":
+  TURBO_RUNTIME_QUIC_PROBE_ENDPOINT="{{endpoint}}" \
+  TURBO_RUNTIME_QUIC_PROBE_OUTPUT="{{output}}" \
+  cargo run -q -p beepbeep-runtime --bin runtime-quic-probe
+
 self-hosted-scenario-fuzz-local seed count output="/tmp/turbo-self-hosted-fuzz/report.json":
   cargo test -q -p beepbeep-runtime --lib self_hosted_scenario_fuzz_local
   TURBO_FUZZ_SEED="{{seed}}" TURBO_FUZZ_COUNT="{{count}}" TURBO_FUZZ_OUTPUT="/tmp/turbo-self-hosted-fuzz/in-memory-report.json" cargo run -q -p beepbeep-runtime --bin self-hosted-scenario-fuzz

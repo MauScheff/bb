@@ -93,6 +93,7 @@ The active deployed target is `https://api.beepbeep.to`.
 | Relay VM deploy | `just gce-relay-deploy <gcp-project>` |
 | Hosted simulator postdeploy canary | `just postdeploy-check https://api.beepbeep.to` |
 | Hosted backend stability | `just backend-stability-probe https://api.beepbeep.to` |
+| Hosted runtime QUIC control probe | `just runtime-quic-probe api.beepbeep.to:443` |
 | Hosted simulator smoke | `just simulator-scenario-suite-hosted-smoke` |
 
 API VM deploys are registry-backed. The runtime image is
@@ -144,10 +145,11 @@ and command-level errors do not close the stream. Enable it by setting
 Server-side runtime QUIC control uses the `quiche` server config, UDP listener,
 stream adapter, and endpoint state machine: runtime-control ALPN,
 stream-oriented limits, active-migration config, command response, live-media
-rejection, first-frame identity binding, identity mismatch rejection, and state
-mutation over real in-memory `quiche` client/server connections. Enable it by
-setting `BEEP_RUNTIME_QUIC_CONTROL_BIND`, `BEEP_RUNTIME_CONTROL_CERT_PEM`,
-`BEEP_RUNTIME_CONTROL_KEY_PEM`, `BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true`, and
+rejection, per-stream first-frame identity binding, identity mismatch
+rejection, and state mutation over real in-memory `quiche` client/server
+connections. Enable it by setting `BEEP_RUNTIME_QUIC_CONTROL_BIND`,
+`BEEP_RUNTIME_CONTROL_CERT_PEM`, `BEEP_RUNTIME_CONTROL_KEY_PEM`,
+`BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true`, and
 `BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT`.
 
 | Policy | Launch argument / env value | Effect |

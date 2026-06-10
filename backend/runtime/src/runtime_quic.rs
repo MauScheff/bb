@@ -156,13 +156,13 @@ pub struct RuntimeQuicControlEndpoint {
 struct RuntimeQuicControlConnection {
     conn: quiche::Connection,
     streams: RuntimeQuicControlStreams,
-    identity_binding: RuntimeControlIdentityBinding,
     remote: SocketAddr,
 }
 
 #[derive(Debug, Default)]
 struct RuntimeQuicControlStream {
     input: Vec<u8>,
+    identity_binding: RuntimeControlIdentityBinding,
     pending: VecDeque<PendingStreamWrite>,
 }
 
@@ -221,7 +221,6 @@ impl RuntimeQuicControlStreams {
     pub fn process_readable_with_identity_binding<F>(
         &mut self,
         connection: &mut quiche::Connection,
-        binding: &mut RuntimeControlIdentityBinding,
         mut handle: F,
     ) -> Result<usize, RuntimeQuicError>
     where
@@ -243,10 +242,11 @@ impl RuntimeQuicControlStreams {
                         }
                         let lines = self.collect_stream_lines(stream_id, &stream_buf[..read])?;
                         for line in lines {
+                            let stream = self.streams.entry(stream_id).or_default();
                             let response = runtime_control_response_for_line_with_identity_binding(
                                 &line,
                                 RuntimeControlTransport::RuntimeQuicControl,
-                                binding,
+                                &mut stream.identity_binding,
                                 &mut handle,
                             );
                             let encoded = serde_json::to_string(&response)
@@ -398,7 +398,6 @@ impl RuntimeQuicControlEndpoint {
                 RuntimeQuicControlConnection {
                     conn,
                     streams: RuntimeQuicControlStreams::default(),
-                    identity_binding: RuntimeControlIdentityBinding::default(),
                     remote: from,
                 },
             );
@@ -426,7 +425,6 @@ impl RuntimeQuicControlEndpoint {
             process_runtime_quic_control_streams_with_identity_binding(
                 &mut connection.streams,
                 &mut connection.conn,
-                &mut connection.identity_binding,
                 service,
             )?;
             connection.streams.flush_pending(&mut connection.conn)?;
@@ -497,7 +495,6 @@ impl RuntimeQuicControlEndpoint {
 pub fn process_runtime_quic_control_streams_with_identity_binding<S, W, C>(
     streams: &mut RuntimeQuicControlStreams,
     connection: &mut quiche::Connection,
-    binding: &mut RuntimeControlIdentityBinding,
     service: Arc<Mutex<RuntimeHttpService<S, W, C>>>,
 ) -> Result<usize, RuntimeQuicError>
 where
@@ -512,7 +509,7 @@ where
         + Send
         + 'static,
 {
-    streams.process_readable_with_identity_binding(connection, binding, |identity, frame| {
+    streams.process_readable_with_identity_binding(connection, |identity, frame| {
         handle_authenticated_runtime_control_frame(
             &service,
             &identity.participant_id,
@@ -954,6 +951,120 @@ mod tests {
 
         assert_eq!(presence.status, 200);
         assert_eq!(presence.body["isOnline"], true);
+
+        let _ = std::fs::remove_file(cert_path);
+        let _ = std::fs::remove_file(key_path);
+    }
+
+    #[test]
+    fn runtime_quic_endpoint_binds_identity_per_control_stream() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("certificate should generate");
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+        let (cert_path, key_path) = write_temp_cert_pair(&cert_pem, &key_pem);
+        let mut server_config =
+            server_config(&cert_path, &key_path, RuntimeQuicServerConfig::default())
+                .expect("server config should build");
+        let mut client_config = client_config();
+        let client_addr: SocketAddr = "127.0.0.1:44004".parse().expect("client addr");
+        let server_addr: SocketAddr = "127.0.0.1:44304".parse().expect("server addr");
+        let scid = quiche::ConnectionId::from_ref(&[0xac; 16]);
+        let mut client = quiche::connect(
+            Some("localhost"),
+            &scid,
+            client_addr,
+            server_addr,
+            &mut client_config,
+        )
+        .expect("client should connect");
+        let mut endpoint = RuntimeQuicControlEndpoint::default();
+        let service = runtime_service();
+        complete_endpoint_handshake(
+            &mut client,
+            client_addr,
+            server_addr,
+            &mut endpoint,
+            &mut server_config,
+            service,
+        );
+        assert!(client.is_established());
+
+        let avery = serde_json::json!({
+            "type": "presence-command",
+            "requestId": "stream-0-avery",
+            "commandKind": "presence-foreground",
+            "userHandle": "@avery",
+            "deviceId": "device-a",
+            "operationId": "stream-0-avery-op",
+            "generation": 1
+        })
+        .to_string()
+            + "\n";
+        let blake = serde_json::json!({
+            "type": "presence-command",
+            "requestId": "stream-4-blake",
+            "commandKind": "presence-foreground",
+            "userHandle": "@blake",
+            "deviceId": "device-b",
+            "operationId": "stream-4-blake-op",
+            "generation": 1
+        })
+        .to_string()
+            + "\n";
+        client
+            .stream_send(0, avery.as_bytes(), false)
+            .expect("client should write first identity stream");
+        client
+            .stream_send(4, blake.as_bytes(), false)
+            .expect("client should write second identity stream");
+        exchange_client_with_endpoint(
+            &mut client,
+            client_addr,
+            server_addr,
+            &mut endpoint,
+            &mut server_config,
+            runtime_service(),
+        );
+
+        let stream_0_responses = read_available_stream_lines(&mut client, 0);
+        let stream_4_responses = read_available_stream_lines(&mut client, 4);
+        assert_eq!(stream_0_responses[0]["type"], "presence-command-response");
+        assert_eq!(stream_0_responses[0]["body"]["userId"], "user-avery");
+        assert_eq!(stream_4_responses[0]["type"], "presence-command-response");
+        assert_eq!(stream_4_responses[0]["body"]["userId"], "user-blake");
+
+        let stream_0_mismatch = serde_json::json!({
+            "type": "presence-command",
+            "requestId": "stream-0-blake-mismatch",
+            "commandKind": "presence-foreground",
+            "userHandle": "@blake",
+            "deviceId": "device-b",
+            "operationId": "stream-0-blake-mismatch-op",
+            "generation": 2
+        })
+        .to_string()
+            + "\n";
+        client
+            .stream_send(0, stream_0_mismatch.as_bytes(), false)
+            .expect("client should write mismatched identity on first stream");
+        exchange_client_with_endpoint(
+            &mut client,
+            client_addr,
+            server_addr,
+            &mut endpoint,
+            &mut server_config,
+            runtime_service(),
+        );
+
+        let mismatch_responses = read_available_stream_lines(&mut client, 0);
+        assert_eq!(mismatch_responses[0]["type"], "runtime-control-error");
+        assert!(
+            mismatch_responses[0]["error"]
+                .as_str()
+                .expect("error should be string")
+                .contains("identity did not match")
+        );
 
         let _ = std::fs::remove_file(cert_path);
         let _ = std::fs::remove_file(key_path);

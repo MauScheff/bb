@@ -47,12 +47,13 @@ its relay-specific ALPN.
 owns the runtime-side `quiche` server configuration: runtime-control ALPN,
 stream-oriented limits, active-migration configuration, the newline-delimited
 runtime-control stream adapter, UDP socket loop, and endpoint state machine
-that binds identity from the first valid command frame. Tests prove command
-response, identity mismatch rejection, and live-media rejection over real
-in-memory `quiche` client/server connections, plus a presence command mutating
-runtime state through both stream and UDP endpoint paths. The runtime uses the
-same QUIC stack family as Fast Relay while keeping runtime control separate
-from relay media. Enable production QUIC control with
+that binds identity from the first valid command frame on each bidirectional
+control stream. Tests prove command response, per-stream identity separation,
+identity mismatch rejection, and live-media rejection over real in-memory
+`quiche` client/server connections, plus a presence command mutating runtime
+state through both stream and UDP endpoint paths. The runtime uses the same
+QUIC stack family as Fast Relay while keeping runtime control separate from
+relay media. Enable production QUIC control with
 `BEEP_RUNTIME_QUIC_CONTROL_BIND`, `BEEP_RUNTIME_CONTROL_CERT_PEM`,
 `BEEP_RUNTIME_CONTROL_KEY_PEM`, `BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true`, and
 `BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT`.
@@ -68,11 +69,11 @@ Persistent ordered runtime control uses
 [`runtime/src/control_stream.rs`](/Users/mau/Development/bb/backend/runtime/src/control_stream.rs).
 The stream accepts multiple newline-delimited command frames on one
 connection, preserves operation/generation fields in responses, and reports
-command-level errors without tearing down the stream. The first valid command
-frame binds the connection identity from `userId` or `userHandle` plus
-`deviceId`; later frames with a different identity are rejected before backend
-truth is touched. Runtime TLS wraps this stream; runtime QUIC control uses the
-same envelope on QUIC streams.
+command-level errors without tearing down the stream. Runtime TLS binds the
+connection identity from `userId` or `userHandle` plus `deviceId`; later frames
+with a different identity are rejected before backend truth is touched. Runtime
+QUIC control uses the same envelope and binds identity per bidirectional stream
+so QUIC connection multiplexing cannot mix logical identities.
 
 [`runtime/src/runtime_tls.rs`](/Users/mau/Development/bb/backend/runtime/src/runtime_tls.rs)
 owns the Rustls wrapper: PEM certificate/key loading, runtime-control ALPN, and
