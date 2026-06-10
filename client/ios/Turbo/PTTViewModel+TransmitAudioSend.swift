@@ -43,7 +43,7 @@ extension PTTViewModel {
         return session
     }
 
-    func isMediaRelayPeerUnavailable(_ error: Error) -> Bool {
+    nonisolated func isMediaRelayPeerUnavailable(_ error: Error) -> Bool {
         guard case let DirectQuicProbeError.connectionFailed(message) = error else { return false }
         return message == "media relay peer is unavailable"
     }
@@ -506,6 +506,25 @@ extension PTTViewModel {
             localDeviceID: expectation.senderDeviceID,
             peerDeviceID: expectation.receiverDeviceID
         )
+        if let activeTarget = transmitRuntime.activeTarget ?? transmitCoordinator.state.activeTarget,
+           activeTarget.contactID == expectation.contactID,
+           activeTarget.channelID == expectation.channelID,
+           activeTarget.deviceID == expectation.receiverDeviceID {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Preserved active media relay after missing first playback ACK",
+                metadata: [
+                    "contactId": expectation.contactID.uuidString,
+                    "channelId": expectation.channelID,
+                    "peerDeviceId": expectation.receiverDeviceID,
+                    "transports": mediaRelayTransports.joined(separator: ","),
+                    "transportDigest": expectation.transportDigest,
+                    "ackId": expectation.ackID,
+                ]
+            )
+            return
+        }
         mediaRuntime.suppressMediaRelayAudioSend(for: key)
         await mediaServices.session()?.resetOutgoingAudioTransport(
             reason: "missing-first-playback-ack"
@@ -1438,14 +1457,17 @@ extension PTTViewModel {
 
                 if usesWakeBackgroundContinuityForOutgoingAudio {
                     let routeScopedRelayClient = await wakeContinuityMediaRelayAudioClientTask?.value
-                    let relayClient: TurboMediaRelayClient?
-                    if let routeScopedRelayClient {
+                    var relayClient: TurboMediaRelayClient?
+                    if let routeScopedRelayClient,
+                       !routeScopedRelayClient.hasFreshPeerUnavailable() {
                         relayClient = routeScopedRelayClient
                     } else {
                         relayClient = await self.mediaRelayClientForAudioSend(target: target)
                     }
-                    if let relayClient {
-                        do {
+                    let sendWakeContinuityPayload:
+                        @Sendable (TurboMediaRelayClient, String) async throws -> Void = {
+                            relayClient,
+                            recoveryReason in
                             let mediaMode = try await mediaRelaySend(relayClient)
                             let deliveredTransport = IncomingAudioPayloadTransport(
                                 mediaRelayMediaMode: mediaMode
@@ -1467,14 +1489,64 @@ extension PTTViewModel {
                                             "transport": deliveredTransport,
                                             "transportPath": self.mediaTransportPathState.rawValue,
                                             "applicationState": String(describing: self.currentApplicationState()),
+                                            "recoveryReason": recoveryReason,
                                         ]
                                     )
                                 }
                             }
+                        }
+                    if let relayClient {
+                        do {
+                            try await sendWakeContinuityPayload(relayClient, "none")
                             return
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
+                            if self.isMediaRelayPeerUnavailable(error) {
+                                await MainActor.run {
+                                    self.recordMediaRelayPeerUnavailableInvariantIfNeeded(
+                                        error: error,
+                                        contactID: target.contactID,
+                                        channelID: target.channelID,
+                                        peerDeviceID: target.deviceID,
+                                        operation: "wake-continuity-audio-payload"
+                                    )
+                                    self.clearStaleMediaRelayClient(
+                                        localDeviceID: fromDeviceID,
+                                        channelID: target.channelID,
+                                        peerDeviceID: target.deviceID,
+                                        client: relayClient,
+                                        reason: "wake-continuity-audio-payload"
+                                    )
+                                }
+                                if let refreshedRelayClient = await self.mediaRelayClientForAudioSend(
+                                    target: target,
+                                    preferredTransport: .tcpTls
+                                ) {
+                                    do {
+                                        try await sendWakeContinuityPayload(
+                                            refreshedRelayClient,
+                                            "peer-unavailable-refresh"
+                                        )
+                                        return
+                                    } catch is CancellationError {
+                                        throw CancellationError()
+                                    } catch {
+                                        await MainActor.run {
+                                            self.diagnostics.record(
+                                                .media,
+                                                level: .error,
+                                                message: "Media relay background-continuity audio send refresh failed; live audio lane is unavailable",
+                                                metadata: [
+                                                    "contactId": target.contactID.uuidString,
+                                                    "channelId": target.channelID,
+                                                    "error": error.localizedDescription,
+                                                ]
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                             await MainActor.run {
                                 self.diagnostics.record(
                                     .media,
@@ -1824,6 +1896,16 @@ extension PTTViewModel {
                     }
                 }
                 if deliveredTransports.isEmpty, let firstFailure = deliveryFailures.first {
+                    if directTransport == nil {
+                        try await failNoLegalLiveMediaLane(
+                            "media-relay-standby-unavailable",
+                            [
+                                "runtimeLiveMedia": "forbidden",
+                                "failedTransport": firstFailure.transport,
+                                "error": firstFailure.error.localizedDescription,
+                            ]
+                        )
+                    }
                     throw firstFailure.error
                 }
                 if !deliveredTransports.isEmpty {

@@ -17095,6 +17095,153 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func wakeContinuityAudioRefreshesPeerUnavailableRouteScopedRelayClient() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        TurboMediaRelayDebugOverride.setEnabled(true)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let viewModel = PTTViewModel()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "self-user",
+            mode: "cloud"
+        )
+
+        let target = TransmitTarget(
+            contactID: UUID(),
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel"
+        )
+        viewModel.contacts = [
+            Contact(
+                id: target.contactID,
+                name: "Peer",
+                handle: "@peer",
+                isOnline: true,
+                channelId: UUID(),
+                backendChannelId: target.channelID,
+                remoteUserId: target.userID
+            )
+        ]
+        viewModel.selectedContactId = target.contactID
+        viewModel.applicationStateOverride = .background
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: target.contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: target.contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: true,
+                    remoteAudioReadiness: .ready,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: target.deviceID),
+                    peerTargetDeviceId: target.deviceID
+                )
+            )
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+
+        let key = MediaRelayConnectionKey(
+            sessionID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID
+        )
+        let staleRelayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.example.test",
+                quicPort: 9443,
+                tcpPort: 9444,
+                token: "token"
+            ),
+            sessionId: key.sessionID,
+            localDeviceId: key.localDeviceID,
+            peerDeviceId: key.peerDeviceID,
+            onIncomingAudioPayload: { _ in }
+        )
+        let staleRelayClientID = String(describing: ObjectIdentifier(staleRelayClient))
+        guard case .newAttempt(let attempt) = viewModel.mediaRuntime.mediaRelayConnectionStart(for: key) else {
+            Issue.record("expected media relay connection attempt")
+            return
+        }
+        #expect(viewModel.mediaRuntime.finishMediaRelayConnectionAttempt(attempt, client: staleRelayClient))
+
+        var connectRequests: [(contactID: UUID, channelID: String, peerDeviceID: String, localDeviceID: String)] = []
+        viewModel.mediaRelayConnectOverride = { _, _, contactID, channelID, peerDeviceID, localDeviceID in
+            connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
+            return .tcpTls
+        }
+        let sentRelayClientIDs = LockedStringEvents()
+        let sentMediaRelayPayloads = LockedStringEvents()
+        viewModel.mediaRelayAudioSendOverride = { relayClient, payload in
+            sentRelayClientIDs.append(String(describing: ObjectIdentifier(relayClient)))
+            sentMediaRelayPayloads.append(payload)
+            return .tcpOrdered
+        }
+        viewModel.seedEngineActiveTransmitForTesting(
+            contactID: target.contactID,
+            channelID: target.channelID,
+            localDeviceID: client.deviceID,
+            peerDeviceID: target.deviceID,
+            transport: .fastRelay
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+        viewModel.transmitRuntime.markPressBegan()
+
+        viewModel.configureOutgoingAudioRoute(target: target)
+        staleRelayClient.markPeerUnavailable()
+
+        let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
+        try await sendAudioChunk("payload-1")
+
+        #expect(sentMediaRelayPayloads.snapshot() == ["payload-1"])
+        #expect(!sentRelayClientIDs.snapshot().contains(staleRelayClientID))
+        #expect(connectRequests.count == 1)
+        #expect(connectRequests.first?.contactID == target.contactID)
+        #expect(connectRequests.first?.channelID == target.channelID)
+        #expect(connectRequests.first?.peerDeviceID == target.deviceID)
+        #expect(connectRequests.first?.localDeviceID == client.deviceID)
+        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) !== staleRelayClient)
+        #expect(
+            viewModel.firstAudioPlaybackAckExpectationsByContactID[target.contactID]?.deliveredTransports
+                == ["media-relay-tcp"]
+        )
+        #expect(!viewModel.diagnosticsTranscript.contains("No legal live media lane available"))
+    }
+
+    @MainActor
     @Test func productionMediaRelayPacketSendDoesNotNeedMainActorAfterFirstAckArm() async throws {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
@@ -20166,7 +20313,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func missingFastRelayFirstPlaybackAckDemotesActiveSenderToOrderedContinuity() async {
+    @Test func missingFastRelayFirstPlaybackAckPreservesActiveSenderLane() async {
         let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
         let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
         TurboMediaRelayDebugOverride.setEnabled(false)
@@ -20263,12 +20410,11 @@ struct ConnectionTests {
 
         await viewModel.handleFirstAudioPlaybackAckTimeout(contactID: contactID, ackID: "ack-1")
 
-        #expect(viewModel.mediaRuntime.isMediaRelayAudioSendSuppressed(for: key))
-        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) == nil)
-        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .orderedContinuity)
-        #expect(mediaSession.resetOutgoingAudioTransportReasons == ["missing-first-playback-ack"])
-        #expect(mediaSession.senderConfigurationUpdates.last == .orderedContinuity)
-        #expect(mediaSession.outboundOpusEncodingPolicyUpdates.last == .reliableFallback)
+        #expect(!viewModel.mediaRuntime.isMediaRelayAudioSendSuppressed(for: key))
+        #expect(viewModel.mediaRuntime.existingMediaRelayClient(for: key) === relayClient)
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .fastRelayBalanced)
+        #expect(mediaSession.resetOutgoingAudioTransportReasons.isEmpty)
+        #expect(mediaSession.senderConfigurationUpdates.last == .fastRelayBalanced)
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "transmit.first_audio_playback_ack_missing"
@@ -20276,7 +20422,7 @@ struct ConnectionTests {
         )
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Demoted media relay audio to ordered continuity after missing first playback ACK"
+                "Preserved active media relay after missing first playback ACK"
             )
         )
     }
