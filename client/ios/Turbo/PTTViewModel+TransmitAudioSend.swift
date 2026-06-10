@@ -388,6 +388,24 @@ extension PTTViewModel {
             $0 == "media-relay-packet" || $0 == "media-relay-tcp"
         }
         guard !mediaRelayTransports.isEmpty else { return }
+        let mediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        guard mediaLaneOverride == .automatic else {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Preserved forced media lane after missing first playback ACK",
+                metadata: [
+                    "contactId": expectation.contactID.uuidString,
+                    "channelId": expectation.channelID,
+                    "peerDeviceId": expectation.receiverDeviceID,
+                    "mediaLaneOverride": mediaLaneOverride.rawValue,
+                    "transports": mediaRelayTransports.joined(separator: ","),
+                    "transportDigest": expectation.transportDigest,
+                    "ackId": expectation.ackID,
+                ]
+            )
+            return
+        }
         guard !expectation.senderDeviceID.isEmpty,
               !expectation.receiverDeviceID.isEmpty else {
             return
