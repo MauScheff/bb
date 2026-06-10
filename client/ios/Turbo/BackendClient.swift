@@ -159,6 +159,8 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private var webSocketPresenceCommandsRejected = false
     private let runtimeControlQueue = DispatchQueue(label: "TurboBackendClient.runtime-control")
     private var runtimeControlConnection: RuntimeControlConnection?
+    private var runtimeControlCommandInFlight = false
+    private var runtimeControlCommandWaiters: [CheckedContinuation<Void, Never>] = []
     private var runtimePersistentControlBackoffUntilByLane: [String: Date] = [:]
 #if DEBUG
     var channelStateResponseForTesting: (@MainActor (String) async throws -> TurboChannelStateResponse)?
@@ -1466,6 +1468,14 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         }
 
         let requestID = UUID().uuidString.lowercased()
+        guard let endpoint = runtimeControlEndpoint(for: lane) else {
+            throw TurboBackendError.invalidConfiguration
+        }
+
+        let frameData = try runtimeControlFrameData(for: envelope, requestID: requestID)
+        await acquireRuntimeControlCommandSlot()
+        defer { releaseRuntimeControlCommandSlot() }
+
         if let controlCommandRuntimePersistentResponseForTesting {
             let frameData = try await controlCommandRuntimePersistentResponseForTesting(lane, envelope)
             return try decodeRuntimeControlResponseBody(
@@ -1476,11 +1486,6 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
             )
         }
 
-        guard let endpoint = runtimeControlEndpoint(for: lane) else {
-            throw TurboBackendError.invalidConfiguration
-        }
-
-        let frameData = try runtimeControlFrameData(for: envelope, requestID: requestID)
         let connection = try await activeRuntimeControlConnection(
             lane: lane,
             endpoint: endpoint,
@@ -1511,6 +1516,25 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         } catch {
             invalidateRuntimeControlConnection(connection)
             throw error
+        }
+    }
+
+    private func acquireRuntimeControlCommandSlot() async {
+        if !runtimeControlCommandInFlight {
+            runtimeControlCommandInFlight = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            runtimeControlCommandWaiters.append(continuation)
+        }
+    }
+
+    private func releaseRuntimeControlCommandSlot() {
+        if runtimeControlCommandWaiters.isEmpty {
+            runtimeControlCommandInFlight = false
+        } else {
+            let continuation = runtimeControlCommandWaiters.removeFirst()
+            continuation.resume()
         }
     }
 

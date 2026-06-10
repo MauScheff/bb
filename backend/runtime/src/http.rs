@@ -3372,11 +3372,7 @@ fn validate_direct_quic_runtime_signal_envelope(
     let signal_type = required_string(envelope, &["type"], "type")?;
     if !matches!(
         signal_type,
-        "direct-quic-offer"
-            | "direct-quic-answer"
-            | "ice-candidate"
-            | "hangup"
-            | "direct-quic-upgrade-request"
+        "offer" | "answer" | "ice-candidate" | "hangup" | "direct-quic-upgrade-request"
     ) {
         return Err(RuntimeHttpError::MalformedRequest);
     }
@@ -4150,7 +4146,7 @@ mod tests {
             ..RuntimeHttpConfig::default()
         });
         let signal = serde_json::json!({
-            "type": "direct-quic-offer",
+            "type": "offer",
             "channelId": "channel-a",
             "fromUserId": user_id_for_handle("@avery"),
             "fromDeviceId": "device-a",

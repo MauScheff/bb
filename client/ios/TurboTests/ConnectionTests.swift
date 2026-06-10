@@ -9337,6 +9337,145 @@ struct ConnectionTests {
         #expect(response.signals.first?.envelope == envelope)
     }
 
+    @MainActor
+    @Test func directQuicSignalSendDecodesPersistentRuntimeControlFrame() async throws {
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsDirectQuicUpgrade: true,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(
+                        supported: true,
+                        endpoint: "api.beepbeep.to:443",
+                        alpn: "beep-runtime-control-v1",
+                        migrationEnabled: true
+                    ),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+
+        let envelope = try TurboSignalEnvelope.directQuicOffer(
+            channelId: "channel-a",
+            fromUserId: "user-self",
+            fromDeviceId: "test-device",
+            toUserId: "user-peer",
+            toDeviceId: "device-b",
+            payload: TurboDirectQuicOfferPayload(
+                attemptId: "attempt-a",
+                channelId: "channel-a",
+                fromDeviceId: "test-device",
+                toDeviceId: "device-b",
+                quicAlpn: "turbo-direct-quic-v1",
+                certificateFingerprint: "sha256:abc",
+                candidates: [],
+                roleIntent: .listener
+            )
+        )
+
+        var runtimeLane: TurboRuntimeControlLane?
+        var runtimeCommand: TurboControlCommandEnvelope?
+        var httpAttempted = false
+        client.controlCommandRuntimePersistentResponseForTesting = { lane, command in
+            runtimeLane = lane
+            runtimeCommand = command
+            let subject = try #require(command.subject)
+            let routedEnvelope = try JSONDecoder().decode(
+                TurboSignalEnvelope.self,
+                from: Data(subject.utf8)
+            )
+            #expect(routedEnvelope == envelope)
+            return makeRuntimeControlFrameResponseData(
+                transport: "runtime-quic-control",
+                body: Data(#"{"status":"stored","deduplicated":false,"sequence":9}"#.utf8)
+            )
+        }
+        client.controlCommandHTTPResponseForTesting = { _, _ in
+            httpAttempted = true
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":0}"#.utf8)
+        }
+
+        let response = try await client.sendDirectQuicSignal(envelope)
+
+        #expect(runtimeLane == .runtimeQuicControl)
+        #expect(runtimeCommand?.commandKind == "direct-quic-signal-send")
+        #expect(runtimeCommand?.channelId == "channel-a")
+        #expect(runtimeCommand?.deviceId == "test-device")
+        #expect(!httpAttempted)
+        #expect(response.sequence == 9)
+    }
+
+    @MainActor
+    @Test func persistentRuntimeControlCommandsAreSerializedOnOrderedStream() async throws {
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsDirectQuicUpgrade: true,
+                supportsRuntimeQuicControl: true,
+                supportsRuntimeTlsControl: false,
+                runtimeControl: TurboRuntimeControlConfig(
+                    preference: [.runtimeQuicControl, .runtimeHttpRequest],
+                    quic: TurboRuntimeQuicControlConfig(
+                        supported: true,
+                        endpoint: "api.beepbeep.to:443",
+                        alpn: "beep-runtime-control-v1",
+                        migrationEnabled: true
+                    ),
+                    tls: TurboRuntimeTlsControlConfig(supported: false),
+                    http: TurboRuntimeHttpControlConfig(supported: true)
+                )
+            )
+        )
+
+        var activeRuntimeCommands = 0
+        var maximumConcurrentRuntimeCommands = 0
+        var commandKinds: [String] = []
+        client.controlCommandRuntimePersistentResponseForTesting = { _, command in
+            activeRuntimeCommands += 1
+            maximumConcurrentRuntimeCommands = max(
+                maximumConcurrentRuntimeCommands,
+                activeRuntimeCommands
+            )
+            commandKinds.append(command.commandKind)
+            defer { activeRuntimeCommands -= 1 }
+
+            try await Task.sleep(nanoseconds: 50_000_000)
+
+            switch command.commandKind {
+            case "presence-foreground":
+                return makeRuntimeControlFrameResponseData(
+                    type: "presence-command-response",
+                    transport: "runtime-quic-control",
+                    body: makePresenceHeartbeatResponseData(status: "runtime-quic")
+                )
+            case "direct-quic-signal-drain":
+                return makeRuntimeControlFrameResponseData(
+                    transport: "runtime-quic-control",
+                    body: Data(#"{"status":"drained","latestSequence":0,"signals":[]}"#.utf8)
+                )
+            default:
+                throw TurboBackendError.invalidResponse
+            }
+        }
+
+        async let presenceResponse = client.foregroundPresence()
+        async let drainResponse = client.drainDirectQuicSignals(after: 0)
+        let (presence, drain) = try await (presenceResponse, drainResponse)
+
+        #expect(presence.status == "runtime-quic")
+        #expect(drain.latestSequence == 0)
+        #expect(commandKinds.sorted() == ["direct-quic-signal-drain", "presence-foreground"])
+        #expect(maximumConcurrentRuntimeCommands == 1)
+    }
+
     @Test func legacyRuntimeAudioDoesNotProjectAsRemovedRelayWebSocketLane() {
         #expect(MediaTransportPathState.relay.rawValue == "no-live-media-lane")
         #expect(MediaTransportPathState.relay.diagnosticsValue == "no-live-media-lane")
