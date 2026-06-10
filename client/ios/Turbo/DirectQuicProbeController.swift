@@ -1320,6 +1320,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
+    static let binaryPacketAudioDatagramsEnabled = false
     static let liveAudioMaxConcurrentIncomingHandlers = 16
     static let liveAudioMaxPendingIncomingHandlers = 96
     static let liveAudioIncomingHandlerExpirationNanoseconds: UInt64 = 2_000_000_000
@@ -1453,7 +1454,8 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         let sequenceNumber = nextSequenceNumber()
         let sentAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
         let packetFrame: TurboMediaRelayFrame
-        if let binaryPacketPayload = VoiceAudioFramePayloadCodec.singleBinaryOpusPacketData(payload) {
+        if Self.binaryPacketAudioDatagramsEnabled,
+           let binaryPacketPayload = VoiceAudioFramePayloadCodec.singleBinaryOpusPacketData(payload) {
             packetFrame = .binaryPacketAudio(
                 sessionId: sessionId,
                 senderDeviceId: localDeviceId,
