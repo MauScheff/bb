@@ -519,7 +519,7 @@ extension PTTViewModel {
             return
         }
 
-        let bufferedAudioChunks = pttWakeRuntime.takeBufferedAudioChunks(for: contactID)
+        let bufferedAudioChunks = pttWakeRuntime.takeBufferedWakeAudioChunks(for: contactID)
         pttWakeRuntime.markAppManagedFallbackStarted(for: contactID)
         recordWakeReceiveTiming(
             stage: "app-managed-fallback-flush-started",
@@ -539,9 +539,12 @@ extension PTTViewModel {
             ]
         )
         markRemoteAudioActivity(for: contactID, source: .audioChunk)
-        for payload in bufferedAudioChunks {
-            await receiveRemoteAudioChunk(payload)
-        }
+        await playBufferedWakeAudioChunks(
+            bufferedAudioChunks,
+            contactID: contactID,
+            reason: reason,
+            flushSource: "app-managed-fallback"
+        )
         recordWakeReceiveTiming(
             stage: "app-managed-fallback-flush-completed",
             contactID: contactID,
@@ -558,5 +561,49 @@ extension PTTViewModel {
                 "fallbackReason": reason,
             ]
         )
+    }
+
+    func playBufferedWakeAudioChunks(
+        _ bufferedAudioChunks: BufferedWakeAudioChunkBatch,
+        contactID: UUID,
+        reason: String,
+        flushSource: String
+    ) async {
+        if bufferedAudioChunks.canUseStructuredMediaChunks {
+            diagnostics.record(
+                .media,
+                message: "Flushing structured wake media chunks",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "bufferedChunkCount": String(bufferedAudioChunks.count),
+                    "flushSource": flushSource,
+                    "reason": reason,
+                ]
+            )
+            await playBufferedForegroundSystemReceiveAudioChunks(
+                bufferedAudioChunks.mediaChunks,
+                contactID: contactID
+            )
+            return
+        }
+
+        if !bufferedAudioChunks.mediaChunks.isEmpty {
+            diagnostics.recordInvariantViolation(
+                invariantID: "media.wake_buffer_identity_matches_audio_buffer",
+                scope: .local,
+                message: "wake buffered media identity count diverged from buffered audio payload count",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "audioPayloadCount": String(bufferedAudioChunks.audioPayloads.count),
+                    "mediaChunkCount": String(bufferedAudioChunks.mediaChunks.count),
+                    "flushSource": flushSource,
+                    "reason": reason,
+                ]
+            )
+        }
+
+        for payload in bufferedAudioChunks.audioPayloads {
+            await receiveRemoteAudioChunk(payload)
+        }
     }
 }

@@ -949,6 +949,90 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func wakeBufferedMediaFlushSendsPlaybackAckForOriginalEncryptedPacket() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
+        client.enableSentSignalCaptureForTesting()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "receiver-user",
+            mode: "cloud"
+        )
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.updateConnectionState(.connected)
+        viewModel.pttWakeRuntime.store(
+            PendingIncomingPTTPush(
+                contactID: contactID,
+                channelUUID: channelUUID,
+                payload: TurboPTTPushPayload(
+                    event: .transmitStart,
+                    channelId: "channel-1",
+                    activeSpeaker: "Blake",
+                    senderUserId: "peer-user",
+                    senderDeviceId: "peer-device"
+                )
+            )
+        )
+
+        let encryptedPacket = try encodedEncryptedAudioPacket(sequenceNumber: 991)
+        let buffered = viewModel.bufferWakeAudioChunkUntilPTTActivation(
+            "pcm-audio",
+            channelID: "channel-1",
+            fromUserID: "peer-user",
+            fromDeviceID: "peer-device",
+            contactID: contactID,
+            incomingMediaPayload: encryptedPacket,
+            incomingAudioTransport: .mediaRelayPacket,
+            playbackSequenceNumber: 991,
+            localQueueDelayNanoseconds: 0,
+            senderSentAtMilliseconds: nil,
+            frameDurationNanoseconds: 20_000_000,
+            ingressSource: "test"
+        )
+        #expect(buffered)
+
+        await viewModel.runWakePlaybackFallbackIfNeeded(
+            for: contactID,
+            reason: "test-ptt-activation",
+            applicationState: .active
+        )
+
+        #expect(mediaSession.receivedRemoteAudioChunks == ["pcm-audio"])
+        let playbackAcks = client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }
+        #expect(playbackAcks.count == 1)
+        let envelope = try #require(playbackAcks.first)
+        let payload = try envelope.decodeAudioPlaybackStartedPayload()
+        #expect(envelope.toUserId == "peer-user")
+        #expect(envelope.toDeviceId == "peer-device")
+        #expect(payload.channelId == "channel-1")
+        #expect(payload.senderDeviceId == "peer-device")
+        #expect(payload.receiverDeviceId == client.deviceID)
+        #expect(payload.transport == "media-relay-packet")
+        #expect(payload.encryptedSequenceNumber == 991)
+        #expect(payload.transportDigest == AudioChunkPayloadCodec.transportDigest(encryptedPacket))
+    }
+
+    @MainActor
     @Test func firstAudioPlaybackAckSuppressesDuplicateEncryptedReceiveSequenceAfterSentLatchCleared() async throws {
         let viewModel = PTTViewModel()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())

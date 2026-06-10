@@ -588,10 +588,35 @@ extension PTTViewModel {
     func bufferWakeAudioChunkUntilPTTActivation(
         _ payload: String,
         channelID: String,
-        contactID: UUID
+        fromUserID: String,
+        fromDeviceID: String,
+        contactID: UUID,
+        incomingMediaPayload: String,
+        incomingAudioTransport: IncomingAudioPayloadTransport,
+        playbackSequenceNumber: UInt64?,
+        localQueueDelayNanoseconds: UInt64,
+        senderSentAtMilliseconds: Int64?,
+        frameDurationNanoseconds: UInt64?,
+        ingressSource: String
     ) -> Bool {
         guard pttWakeRuntime.shouldBufferAudioChunk(for: contactID) else { return false }
-        pttWakeRuntime.bufferAudioChunk(payload, for: contactID)
+        pttWakeRuntime.bufferAudioChunk(
+            payload,
+            mediaChunk: BufferedForegroundReceiveAudioChunk(
+                payload: payload,
+                incomingMediaPayload: incomingMediaPayload,
+                channelID: channelID,
+                fromUserID: fromUserID,
+                fromDeviceID: fromDeviceID,
+                transport: incomingAudioTransport,
+                playbackSequenceNumber: playbackSequenceNumber,
+                localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                senderSentAtMilliseconds: senderSentAtMilliseconds,
+                frameDurationNanoseconds: frameDurationNanoseconds,
+                ingressSource: ingressSource
+            ),
+            for: contactID
+        )
         recordWakeReceiveTiming(
             stage: "first-audio-buffered",
             contactID: contactID,
@@ -606,7 +631,12 @@ extension PTTViewModel {
         diagnostics.record(
             .media,
             message: "Buffered wake audio chunk until PTT activation",
-            metadata: ["channelId": channelID, "contactId": contactID.uuidString]
+            metadata: [
+                "channelId": channelID,
+                "contactId": contactID.uuidString,
+                "incomingTransport": incomingAudioTransport.diagnosticsValue,
+                "playbackSequenceNumber": playbackSequenceNumber.map(String.init) ?? "none",
+            ]
         )
         return true
     }

@@ -1413,7 +1413,16 @@ extension PTTViewModel {
         if bufferWakeAudioChunkUntilPTTActivation(
             audioPayload,
             channelID: channelID,
-            contactID: contactID
+            fromUserID: fromUserID,
+            fromDeviceID: fromDeviceID,
+            contactID: contactID,
+            incomingMediaPayload: incomingMediaPayload,
+            incomingAudioTransport: incomingAudioTransport,
+            playbackSequenceNumber: playbackSequenceNumber,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            frameDurationNanoseconds: frameDurationNanoseconds,
+            ingressSource: ingressContext?.source ?? "incoming-audio"
         ) {
             return
         }
@@ -1434,7 +1443,16 @@ extension PTTViewModel {
                 if bufferWakeAudioChunkUntilPTTActivation(
                     audioPayload,
                     channelID: channelID,
-                    contactID: contactID
+                    fromUserID: fromUserID,
+                    fromDeviceID: fromDeviceID,
+                    contactID: contactID,
+                    incomingMediaPayload: incomingMediaPayload,
+                    incomingAudioTransport: incomingAudioTransport,
+                    playbackSequenceNumber: playbackSequenceNumber,
+                    localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+                    senderSentAtMilliseconds: senderSentAtMilliseconds,
+                    frameDurationNanoseconds: frameDurationNanoseconds,
+                    ingressSource: ingressContext?.source ?? "incoming-audio"
                 ) {
                     return
                 }

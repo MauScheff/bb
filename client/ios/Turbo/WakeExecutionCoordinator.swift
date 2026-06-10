@@ -295,6 +295,23 @@ struct PendingIncomingPTTPush: Equatable {
     }
 }
 
+struct BufferedWakeAudioChunkBatch: Equatable {
+    let audioPayloads: [String]
+    let mediaChunks: [BufferedForegroundReceiveAudioChunk]
+
+    var count: Int {
+        audioPayloads.count
+    }
+
+    var isEmpty: Bool {
+        audioPayloads.isEmpty
+    }
+
+    var canUseStructuredMediaChunks: Bool {
+        !mediaChunks.isEmpty && mediaChunks.count == audioPayloads.count
+    }
+}
+
 struct WakeExecutionSessionState: Equatable {
     var wakeReceiveState: WakeReceiveState = .idle
     var suppressedProvisionalWakeCandidateContactIDs: Set<UUID> = []
@@ -622,6 +639,7 @@ final class PTTWakeRuntimeState {
     private let maximumBufferedAudioChunks = 12
     private(set) var state = WakeExecutionSessionState()
     private(set) var timing = WakeReceiveTimingState()
+    private var bufferedMediaAudioChunksByContactID: [UUID: [BufferedForegroundReceiveAudioChunk]] = [:]
     private var playbackFallbackTasks: [UUID: Task<Void, Never>] = [:]
 
     var wakeReceiveState: WakeReceiveState {
@@ -639,6 +657,24 @@ final class PTTWakeRuntimeState {
             maximumBufferedAudioChunks: maximumBufferedAudioChunks
         )
         state = transition.state
+        switch event {
+        case .store(let push):
+            bufferedMediaAudioChunksByContactID[push.contactID] = []
+        case .clearBufferedAudioChunks(let contactID),
+             .clear(let contactID),
+             .markSystemActivationInterruptedByTransmitEnd(let contactID):
+            bufferedMediaAudioChunksByContactID.removeValue(forKey: contactID)
+        case .clearAll:
+            bufferedMediaAudioChunksByContactID.removeAll(keepingCapacity: false)
+        case .confirmIncomingPush,
+             .markAudioSessionActivated,
+             .markAppManagedFallbackStarted,
+             .markFallbackDeferredUntilForeground,
+             .bufferAudioChunk,
+             .suppressProvisionalWakeCandidate,
+             .clearProvisionalWakeCandidateSuppression:
+            break
+        }
         for effect in transition.effects {
             switch effect {
             case .cancelPlaybackFallbackTask(let contactID):
@@ -734,7 +770,26 @@ final class PTTWakeRuntimeState {
     }
 
     func bufferAudioChunk(_ payload: String, for contactID: UUID) {
+        bufferAudioChunk(payload, mediaChunk: nil, for: contactID)
+    }
+
+    func bufferAudioChunk(
+        _ payload: String,
+        mediaChunk: BufferedForegroundReceiveAudioChunk?,
+        for contactID: UUID
+    ) {
+        let canBuffer = state.shouldBufferAudioChunk(for: contactID)
         apply(.bufferAudioChunk(contactID: contactID, payload: payload))
+        if canBuffer, let mediaChunk {
+            var bufferedMediaAudioChunks = bufferedMediaAudioChunksByContactID[contactID] ?? []
+            bufferedMediaAudioChunks.append(mediaChunk)
+            if bufferedMediaAudioChunks.count > maximumBufferedAudioChunks {
+                bufferedMediaAudioChunks.removeFirst(
+                    bufferedMediaAudioChunks.count - maximumBufferedAudioChunks
+                )
+            }
+            bufferedMediaAudioChunksByContactID[contactID] = bufferedMediaAudioChunks
+        }
         if timing.contactID == contactID {
             _ = timing.noteStageIfAbsent("first-audio-buffered")
             _ = timing.noteStage("latest-audio-buffered")
@@ -742,9 +797,18 @@ final class PTTWakeRuntimeState {
     }
 
     func takeBufferedAudioChunks(for contactID: UUID) -> [String] {
-        let bufferedAudioChunks = state.bufferedAudioChunks(for: contactID)
-        apply(.clearBufferedAudioChunks(contactID: contactID))
+        let bufferedAudioChunks = takeBufferedWakeAudioChunks(for: contactID).audioPayloads
         return bufferedAudioChunks
+    }
+
+    func takeBufferedWakeAudioChunks(for contactID: UUID) -> BufferedWakeAudioChunkBatch {
+        let bufferedAudioChunks = state.bufferedAudioChunks(for: contactID)
+        let bufferedMediaAudioChunks = bufferedMediaAudioChunksByContactID[contactID] ?? []
+        apply(.clearBufferedAudioChunks(contactID: contactID))
+        return BufferedWakeAudioChunkBatch(
+            audioPayloads: bufferedAudioChunks,
+            mediaChunks: bufferedMediaAudioChunks
+        )
     }
 
     func noteTimingStage(

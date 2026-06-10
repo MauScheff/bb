@@ -5325,7 +5325,7 @@ extension PTTViewModel {
                 activationMode: .systemActivated,
                 startupMode: .playbackOnly
             )
-            let bufferedAudioChunks = pttWakeRuntime.takeBufferedAudioChunks(for: contactID)
+            let bufferedAudioChunks = pttWakeRuntime.takeBufferedWakeAudioChunks(for: contactID)
             if !bufferedAudioChunks.isEmpty {
                 markRemoteAudioActivity(for: contactID, source: .audioChunk)
                 recordWakeReceiveTiming(
@@ -5343,9 +5343,12 @@ extension PTTViewModel {
                         "bufferedChunkCount": String(bufferedAudioChunks.count)
                     ]
                 )
-                for payload in bufferedAudioChunks {
-                    await receiveRemoteAudioChunk(payload)
-                }
+                await playBufferedWakeAudioChunks(
+                    bufferedAudioChunks,
+                    contactID: contactID,
+                    reason: "system-audio-activated",
+                    flushSource: "system-activated-buffered-flush"
+                )
                 recordWakeReceiveTiming(
                     stage: "buffered-audio-flush-completed",
                     contactID: contactID,
