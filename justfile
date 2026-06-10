@@ -94,6 +94,9 @@ self-hosted-websocket-probe output="/tmp/turbo-self-hosted-websocket-probe.json"
   cargo test -q -p beepbeep-runtime --lib websocket_self_hosted_probe
   TURBO_WEBSOCKET_PROBE_OUTPUT="{{output}}" cargo run -q -p beepbeep-runtime --bin websocket-probe
 
+runtime-control-probe output="/tmp/turbo-runtime-control-probe.json":
+  python3 backend/scripts/runtime_control_probe.py --output "{{output}}"
+
 runtime-quic-probe endpoint="api.beepbeep.to:443" output="/tmp/turbo-runtime-quic-probe.json":
   TURBO_RUNTIME_QUIC_PROBE_ENDPOINT="{{endpoint}}" \
   TURBO_RUNTIME_QUIC_PROBE_OUTPUT="{{output}}" \

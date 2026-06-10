@@ -40,7 +40,7 @@ Use legacy backend docs only when reading old Cloud behavior or recovering old a
 | Kernel decision semantics | `just kernel-fuzz` | Rust runtime effect execution matters |
 | Kernel/Rust contract | `just kernel-corpus-json`, then runtime tests | Postgres, Redis, or runtime transport behavior matters |
 | Runtime behavior | `just rust-runtime-test`, `just runtime-postgres-integration` | deployed production behavior matters |
-| App-compatible runtime-control surface | `just self-hosted-http-probe`, `just self-hosted-websocket-probe` | simulator app integration matters |
+| App-compatible runtime-control surface | `just self-hosted-http-probe`, `just runtime-control-probe` | simulator app integration matters |
 | Broad backend confidence | `just beepbeep-backend-gate` | hosted production must be proven |
 | Hosted production confidence | `just beepbeep-backend-production-gate` | Apple/PTT/audio hardware remains the only unknown |
 

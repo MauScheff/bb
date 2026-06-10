@@ -106,7 +106,7 @@ def planned_steps(args: argparse.Namespace) -> list[dict[str, Any]]:
             ],
         },
         {"name": "self-hosted-http-probe", "command": ["just", "self-hosted-http-probe"]},
-        {"name": "self-hosted-websocket-probe", "command": ["just", "self-hosted-websocket-probe"]},
+        {"name": "runtime-control-probe", "command": ["just", "runtime-control-probe"]},
         {
             "name": "self-hosted-scenario-fuzz-local",
             "command": [
@@ -193,7 +193,7 @@ def validate_artifacts(args: argparse.Namespace, started_monotonic: float) -> li
         artifact_check("kernel-corpus", "/tmp/turbo-kernel-corpus.json", lambda p: require_cases(p, 10)),
         artifact_check("rust-runtime-fuzz", "/tmp/turbo-rust-runtime-fuzz/report.json", lambda p: require_gate(p, "rust-runtime-fuzz")),
         artifact_check("self-hosted-http-probe", "/tmp/turbo-self-hosted-http-probe.json", require_ok),
-        artifact_check("self-hosted-websocket-probe", "/tmp/turbo-self-hosted-websocket-probe.json", require_ok),
+        artifact_check("runtime-control-probe", "/tmp/turbo-runtime-control-probe.json", require_ok),
         artifact_check("self-hosted-scenario-fuzz-local", "/tmp/turbo-self-hosted-fuzz/report.json", lambda p: require_gate(p, "self-hosted-scenario-fuzz-local")),
         artifact_check("shadow-backend-fuzz", "/tmp/turbo-shadow-backend-fuzz/report.json", lambda p: require_gate(p, "shadow-backend-fuzz")),
         artifact_check("rust-runtime-integration", "/tmp/turbo-rust-runtime-integration.json", require_ok),

@@ -45,10 +45,11 @@ The old `/Users/mau/Development/Turbo` checkout is the recovery archive. Do not 
 | Rust runtime tests | `just rust-runtime-test` | `beepbeep-runtime` tests pass |
 | Runtime/Postgres integration | `just runtime-postgres-integration` | `/tmp/turbo-rust-runtime-integration.json` reports success |
 | Local HTTP process probe | `just self-hosted-http-probe` | `/tmp/turbo-self-hosted-http-probe.json` reports success |
-| Local realtime control probe | `just self-hosted-websocket-probe` | `/tmp/turbo-self-hosted-websocket-probe.json` reports success for the current runtime-control compatibility lane |
+| Local runtime-control probe | `just runtime-control-probe` | `/tmp/turbo-runtime-control-probe.json` proves runtime QUIC, runtime TLS, persistent control stream, HTTP bootstrap/recovery, and WebSocket retired-by-default config |
+| Legacy WebSocket compatibility probe | `just self-hosted-websocket-probe` | `/tmp/turbo-self-hosted-websocket-probe.json` reports success only for explicit compatibility debugging |
 | Local backend gate | `just beepbeep-backend-gate` | `/tmp/beepbeep-backend-reliability-gate.json` reports no failed step |
 | Dry-run backend gate | `just beepbeep-backend-gate-dry-run local 123 3 /tmp/beepbeep-backend-gate-dry.json` | gate orchestration is valid without running heavy steps |
-| Hosted production gate | `just beepbeep-backend-production-gate https://api.beepbeep.to` | production routes, runtime-control compatibility, fuzz, and probe evidence pass |
+| Hosted production gate | `just beepbeep-backend-production-gate https://api.beepbeep.to` | production routes, runtime QUIC/TLS/HTTP control, fuzz, and probe evidence pass |
 | Release readiness | `just beepbeep-backend-cutover-readiness` | machine-readable readiness artifact has no blocking missing evidence |
 
 Promote production bugs downward: hosted failure -> hosted probe -> self-hosted probe/fuzz -> Rust runtime proof -> Unison kernel proof.
