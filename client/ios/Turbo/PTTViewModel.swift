@@ -2415,6 +2415,21 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     func mediaTransportPolicyForOutgoingAudio(for contactID: UUID) -> MediaTransportPolicy {
         if shouldUseWakeBackgroundContinuityForOutgoingAudio(for: contactID) {
+            switch TurboMediaLaneDebugOverride.mediaLaneOverride() {
+            case .forceFastRelayTls:
+                return .orderedContinuity
+            case .forceFastRelayQuic:
+                return .fastRelayBalanced
+            case .automatic, .forceDirectQuic:
+                break
+            }
+            if mediaTransportPathState == .fastRelayTcp {
+                return .orderedContinuity
+            }
+            if mediaTransportPathState == .fastRelay
+                || canAttemptMediaRelayForWakeContinuityAudioSend() {
+                return .fastRelayBalanced
+            }
             return .wakeBackgroundContinuity
         }
         switch TurboMediaLaneDebugOverride.mediaLaneOverride() {

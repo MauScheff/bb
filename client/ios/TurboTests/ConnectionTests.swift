@@ -16932,7 +16932,11 @@ struct ConnectionTests {
         viewModel.configureOutgoingAudioRoute(target: target)
         let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
 
-        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID) == .wakeBackgroundContinuity)
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID) == .fastRelayBalanced)
+        #expect(
+            viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID)
+                .senderConfiguration.maximumPayloadsPerMessage == 1
+        )
         try await sendAudioChunk("payload-1")
 
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
@@ -17052,7 +17056,11 @@ struct ConnectionTests {
         viewModel.configureOutgoingAudioRoute(target: target)
         let sendAudioChunk = try #require(viewModel.mediaRuntime.sendAudioChunk)
 
-        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID) == .wakeBackgroundContinuity)
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID) == .fastRelayBalanced)
+        #expect(
+            viewModel.mediaTransportPolicyForOutgoingAudio(for: target.contactID)
+                .senderConfiguration.maximumPayloadsPerMessage == 1
+        )
         try await sendAudioChunk("payload-1")
 
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
