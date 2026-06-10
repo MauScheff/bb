@@ -639,6 +639,19 @@ extension PTTViewModel {
         guard self.channelUUID(for: contactID) == channelUUID else { return false }
         guard pttCoordinator.state.systemChannelUUID == channelUUID else { return false }
         guard !pttCoordinator.state.isTransmitting else { return false }
+        guard backendAuthorizesRemoteParticipantReassert(for: contactID) else {
+            diagnostics.record(
+                .pushToTalk,
+                message: "Skipped active remote participant reassert because backend is not peer-transmitting",
+                metadata: [
+                    "channelUUID": channelUUID.uuidString,
+                    "contactId": contactID.uuidString,
+                    "backendChannelStatus": selectedChannelSnapshot(for: contactID)?.status?.rawValue ?? "none",
+                    "backendReadiness": selectedChannelSnapshot(for: contactID)?.readinessStatus?.kind ?? "none",
+                ]
+            )
+            return false
+        }
         if remoteTransmittingContactIDs.contains(contactID) {
             return true
         }
@@ -648,6 +661,15 @@ extension PTTViewModel {
             return false
         }
         return hasActiveOrPreparedRemoteReceiveEpoch(channelID: channelID)
+    }
+
+    private func backendAuthorizesRemoteParticipantReassert(for contactID: UUID) -> Bool {
+        guard let channelSnapshot = selectedChannelSnapshot(for: contactID) else { return false }
+        let backendShowsPeerTransmit =
+            channelSnapshot.status == .receiving
+            || channelSnapshot.readinessStatus?.isPeerTransmitting == true
+        guard backendShowsPeerTransmit else { return false }
+        return !selectedPeerTransmitLeaseExpired(for: contactID)
     }
 
     func performReconciledTeardown(for contactID: UUID) {

@@ -10958,6 +10958,31 @@ struct TalkTurnTests {
             .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
         )
         viewModel.syncPTTState()
+        let leaseFormatter = ISO8601DateFormatter()
+        let leaseExpiresAt = leaseFormatter.string(from: Date().addingTimeInterval(30))
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    channelId: "channel-123",
+                    activeTransmitId: "transmit-new",
+                    activeTransmitterUserId: "peer-user",
+                    transmitLeaseExpiresAt: leaseExpiresAt
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "peer-user"),
+                    activeTransmitId: "transmit-new",
+                    activeTransmitExpiresAt: leaseExpiresAt
+                )
+            )
+        )
 
         _ = try await viewModel.setSystemActiveRemoteParticipant(
             name: "Blake",
@@ -10993,6 +11018,89 @@ struct TalkTurnTests {
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Reasserting active remote participant after stale clear completion"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func staleRemoteParticipantClearDoesNotReassertWhenBackendIsReady() async throws {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.applicationStateOverride = .background
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    channelId: "channel-123"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready)
+            )
+        )
+
+        _ = try await viewModel.setSystemActiveRemoteParticipant(
+            name: "Blake",
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "test-previous-receive"
+        )
+
+        pttClient.activeRemoteParticipantDelayNanoseconds = 100_000_000
+        let clearTask = Task { @MainActor in
+            try await viewModel.setSystemActiveRemoteParticipant(
+                name: nil,
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "backend-sync-remote-inactive"
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        viewModel.syncEngineRemoteTransmitStarted(
+            contactID: contactID,
+            channelID: "channel-123",
+            senderDeviceID: "peer-device",
+            source: "stale-local-receive-epoch"
+        )
+
+        #expect(try await clearTask.value)
+        #expect(pttClient.activeRemoteParticipantUpdates.map(\.name) == [
+            "Blake",
+            nil,
+        ])
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Reasserting active remote participant after stale clear completion"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Skipped active remote participant reassert because backend is not peer-transmitting"
             )
         )
     }
