@@ -19183,6 +19183,38 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func forcedFastRelayQuicUsesPacketLanePolicyBeforeProjectionCatchesUp() {
+        let previousOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayQuic)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousOverride)
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.mediaRuntime.updateTransportPathState(.relay)
+
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .fastRelayBalanced)
+    }
+
+    @MainActor
+    @Test func forcedFastRelayTlsUsesOrderedContinuityPolicyBeforeProjectionCatchesUp() {
+        let previousOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayTls)
+        defer {
+            TurboMediaLaneDebugOverride.setMediaLaneOverride(previousOverride)
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        viewModel.applicationStateOverride = .active
+        viewModel.mediaRuntime.updateTransportPathState(.relay)
+
+        #expect(viewModel.mediaTransportPolicyForOutgoingAudio(for: contactID) == .orderedContinuity)
+    }
+
+    @MainActor
     @Test func outgoingFastRelayConfiguresPacketLaneSenderBeforeReceiverPrewarmAck() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

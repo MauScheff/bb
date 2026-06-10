@@ -2400,6 +2400,14 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         if shouldUseWakeBackgroundContinuityForOutgoingAudio(for: contactID) {
             return .wakeBackgroundContinuity
         }
+        switch TurboMediaLaneDebugOverride.mediaLaneOverride() {
+        case .forceFastRelayQuic:
+            return .fastRelayBalanced
+        case .forceFastRelayTls:
+            return .orderedContinuity
+        case .automatic, .forceDirectQuic:
+            break
+        }
         if shouldUseDirectQuicAudioTransport(for: contactID) {
             return .directLowLatency
         }
