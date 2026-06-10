@@ -497,12 +497,12 @@ struct ConnectionTests {
             TurboAudioDiagnosticsDebugOverride.setLiveAudioDiagnosticsEnabled(previousLiveAudioDiagnostics)
         }
 
-        let cases: [(IncomingAudioPayloadTransport, String, String)] = [
-            (.mediaRelayPacket, "relay-packet-audio", "forced-peer-fast-relay-quic"),
-            (.mediaRelayTcp, "relay-tcp-audio", "forced-peer-fast-relay-tls"),
+        let cases: [(IncomingAudioPayloadTransport, String, String, MediaTransportPathState)] = [
+            (.mediaRelayPacket, "relay-packet-audio", "forced-peer-fast-relay-quic", .fastRelay),
+            (.mediaRelayTcp, "relay-tcp-audio", "forced-peer-fast-relay-tls", .fastRelayTcp),
         ]
 
-        for (transport, payload, source) in cases {
+        for (transport, payload, source, expectedPathState) in cases {
             let viewModel = PTTViewModel()
             let contactID = UUID()
             let channelUUID = UUID()
@@ -578,6 +578,8 @@ struct ConnectionTests {
 
             #expect(await mediaSession.waitForReceivedChunkCount(1, timeoutNanoseconds: 500_000_000))
             #expect(mediaSession.receivedRemoteAudioChunks == [payload])
+            #expect(viewModel.mediaRuntime.activeMediaEpochPathState == expectedPathState)
+            #expect(viewModel.transportPathBadgeState == expectedPathState)
             #expect(
                 !viewModel.diagnostics.invariantViolations.contains {
                     $0.invariantID == "media.runtime_never_carries_live_audio"

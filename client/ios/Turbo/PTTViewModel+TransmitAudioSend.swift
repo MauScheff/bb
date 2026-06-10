@@ -619,6 +619,9 @@ extension PTTViewModel {
         contactID: UUID,
         incomingAudioTransport: IncomingAudioPayloadTransport
     ) async {
+        mediaRuntime.markActiveMediaEpochTransport(
+            audioPlaybackAckTransportLabel(incomingAudioTransport)
+        )
         guard let backend = backendServices else { return }
         let sentKey = FirstAudioPlaybackAckSentKey(
             contactID: contactID,
