@@ -2205,7 +2205,7 @@ extension PTTViewModel {
             : playbackDeadlineNanoseconds
         mediaRuntime.incomingAudioPlaybackQueue.enqueue(
             expiringAtNanoseconds: playbackQueueExpirationNanoseconds,
-            expiresRunningHandler: false,
+            expiresRunningHandler: true,
             onExpired: { [weak self] in
                 guard let self,
                       let dropReason = await self.incomingAudioAsyncPlaybackDropReason(

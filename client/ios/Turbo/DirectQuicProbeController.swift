@@ -2439,7 +2439,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
             : incomingOrderedAudioPayloadQueue
         queue.enqueue(
             expiringAtNanoseconds: expirationNanoseconds,
-            expiresRunningHandler: false,
+            expiresRunningHandler: true,
             onExpired: { [weak self] in
                 guard let self else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
@@ -3721,7 +3721,7 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
         }
         incomingAudioPayloadQueue.enqueue(
             expiringAtNanoseconds: expirationNanoseconds,
-            expiresRunningHandler: false,
+            expiresRunningHandler: true,
             onExpired: { [weak self] in
                 guard let self else { return }
                 let nowNanoseconds = DispatchTime.now().uptimeNanoseconds

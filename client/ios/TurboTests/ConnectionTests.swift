@@ -4827,7 +4827,7 @@ struct ConnectionTests {
         client.close()
     }
 
-    @Test func turboMediaRelayDatagramBurstDoesNotExpireWhileAppleGateHoldsParallelHandlers() async {
+    @Test func turboMediaRelayDatagramBurstExpiresRunningHandlersWhenAppleGateStalls() async {
         actor Recorder {
             private var values: [Int] = []
 
@@ -4910,7 +4910,7 @@ struct ConnectionTests {
 
         #expect(await recorder.waitForCount(burstCount))
         try? await Task.sleep(nanoseconds: 150_000_000)
-        #expect(await expiredRecorder.snapshot().isEmpty)
+        #expect(Set(await expiredRecorder.snapshot()) == Set(0..<burstCount))
 
         await gate.open()
         client.close()
