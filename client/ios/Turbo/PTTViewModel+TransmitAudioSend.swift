@@ -801,7 +801,7 @@ extension PTTViewModel {
                 toDeviceId: fromDeviceID,
                 payload: payload
             )
-            try await backend.client.sendSignal(envelope)
+            _ = try await backend.sendRuntimeControlSignal(envelope)
             sentTransports.append("runtime-control")
         } catch {
             failures.append("runtime-control:\(error.localizedDescription)")

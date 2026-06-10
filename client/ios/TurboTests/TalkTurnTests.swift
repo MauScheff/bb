@@ -872,15 +872,18 @@ struct TalkTurnTests {
         let mediaSession = RecordingMediaSession()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: false)
         )
-        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        client.enableSentSignalCaptureForTesting()
-        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        client.enableSentSignalCaptureForTesting()
-        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        client.enableSentSignalCaptureForTesting()
-        client.enableSentSignalCaptureForTesting()
+        var runtimeControlSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            runtimeControlSignals.append(
+                try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8))
+            )
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "receiver-user",
@@ -928,8 +931,16 @@ struct TalkTurnTests {
             incomingAudioTransport: .relayWebSocket
         )
 
+        try await waitForCondition(
+            "first accepted audio playback ACK over runtime control",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            mediaSession.receivedRemoteAudioChunks == ["pcm-audio"]
+                && runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }.count == 1
+        }
         #expect(mediaSession.receivedRemoteAudioChunks == ["pcm-audio"])
-        let playbackAcks = client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }
+        let playbackAcks = runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }
         #expect(playbackAcks.count == 1)
         let envelope = try #require(playbackAcks.first)
         let payload = try envelope.decodeAudioPlaybackStartedPayload()
@@ -943,9 +954,8 @@ struct TalkTurnTests {
         #expect(payload.transport == "direct-quic")
         #expect(payload.transportDigest == AudioChunkPayloadCodec.transportDigest("pcm-audio"))
         let diagnosticMessages = viewModel.diagnostics.entries.map(\.message)
-        let sentAckIndex = try #require(diagnosticMessages.firstIndex(of: "Sent first audio playback ACK"))
-        let ingressSummaryIndex = try #require(diagnosticMessages.firstIndex(of: "Incoming audio ingress summary"))
-        #expect(sentAckIndex > ingressSummaryIndex)
+        #expect(diagnosticMessages.contains("Sent first audio playback ACK"))
+        #expect(!diagnosticMessages.contains("Failed to send first audio playback ACK"))
     }
 
     @MainActor
@@ -956,10 +966,18 @@ struct TalkTurnTests {
         let mediaSession = RecordingMediaSession()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: false)
         )
-        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        client.enableSentSignalCaptureForTesting()
+        var runtimeControlSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            runtimeControlSignals.append(
+                try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8))
+            )
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "receiver-user",
@@ -1017,8 +1035,16 @@ struct TalkTurnTests {
             applicationState: .active
         )
 
+        try await waitForCondition(
+            "wake buffered media playback ACK over runtime control",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            mediaSession.receivedRemoteAudioChunks == ["pcm-audio"]
+                && runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }.count == 1
+        }
         #expect(mediaSession.receivedRemoteAudioChunks == ["pcm-audio"])
-        let playbackAcks = client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }
+        let playbackAcks = runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }
         #expect(playbackAcks.count == 1)
         let envelope = try #require(playbackAcks.first)
         let payload = try envelope.decodeAudioPlaybackStartedPayload()
@@ -1037,10 +1063,18 @@ struct TalkTurnTests {
         let viewModel = PTTViewModel()
         let client = TurboBackendClient(config: makeUnreachableBackendConfig())
         client.setRuntimeConfigForTesting(
-            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: false)
         )
-        client.setWebSocketConnectedForControlCommandTesting(sessionID: "session-1")
-        client.enableSentSignalCaptureForTesting()
+        var runtimeControlSignals: [TurboSignalEnvelope] = []
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            #expect(path == "/v1/runtime-control/signals/send")
+            #expect(command.commandKind == "runtime-control-signal-send")
+            let subject = try #require(command.subject)
+            runtimeControlSignals.append(
+                try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8))
+            )
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
+        }
         viewModel.applyAuthenticatedBackendSession(
             client: client,
             userID: "receiver-user",
@@ -1059,7 +1093,7 @@ struct TalkTurnTests {
             incomingAudioTransport: .relayWebSocket
         )
 
-        #expect(client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }.count == 1)
+        #expect(runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }.count == 1)
 
         viewModel.clearFirstAudioPlaybackAckSentState(
             contactID: contactID,
@@ -1076,7 +1110,7 @@ struct TalkTurnTests {
             incomingAudioTransport: .relayWebSocket
         )
 
-        #expect(client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }.count == 1)
+        #expect(runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }.count == 1)
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Suppressed duplicate first audio playback ACK for encrypted receive epoch"
@@ -1092,7 +1126,7 @@ struct TalkTurnTests {
             incomingAudioTransport: .relayWebSocket
         )
 
-        let playbackAcks = client.sentSignalsForTesting().filter { $0.type == .audioPlaybackStarted }
+        let playbackAcks = runtimeControlSignals.filter { $0.type == .audioPlaybackStarted }
         #expect(playbackAcks.count == 2)
         let secondPayload = try playbackAcks[1].decodeAudioPlaybackStartedPayload()
         #expect(secondPayload.encryptedSequenceNumber == 0)
