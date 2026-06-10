@@ -11,6 +11,14 @@ import AVFAudio
 import UIKit
 import TurboEngine
 
+private enum TransmitMediaSessionStartupError: LocalizedError {
+    case missingMediaSession
+
+    var errorDescription: String? {
+        "Media session is not available for startup"
+    }
+}
+
 extension PTTViewModel {
     private final class MediaSessionCleanupHandle: @unchecked Sendable {
         private let mediaSession: (any MediaSession)?
@@ -26,6 +34,13 @@ extension PTTViewModel {
         func stopSendingAudio() async {
             try? await mediaSession?.stopSendingAudio()
         }
+    }
+
+    private func currentMediaSessionForStartup() throws -> any MediaSession {
+        guard let session = mediaServices.session() else {
+            throw TransmitMediaSessionStartupError.missingMediaSession
+        }
+        return session
     }
 
     func isMediaRelayPeerUnavailable(_ error: Error) -> Bool {
@@ -3788,7 +3803,8 @@ extension PTTViewModel {
 
         do {
             let startRequestedAt = Date()
-            try await media.session()?.start(
+            let session = try currentMediaSessionForStartup()
+            try await session.start(
                 activationMode: resolvedActivationMode,
                 startupMode: startupMode
             )

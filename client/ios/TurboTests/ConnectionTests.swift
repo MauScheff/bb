@@ -31610,6 +31610,13 @@ struct ConnectionTests {
         #endif
     }
 
+    @Test func realDeviceMediaSessionDoesNotDependOnRuntimeWebSocketSupport() {
+        #expect(shouldUseRealDeviceMediaSession(isSimulator: false, supportsWebSocket: false))
+        #expect(shouldUseRealDeviceMediaSession(isSimulator: false, supportsWebSocket: true))
+        #expect(!shouldUseRealDeviceMediaSession(isSimulator: true, supportsWebSocket: false))
+        #expect(!shouldUseRealDeviceMediaSession(isSimulator: true, supportsWebSocket: true))
+    }
+
     private static func bigEndianBytes<Integer: FixedWidthInteger>(_ value: Integer) -> [UInt8] {
         withUnsafeBytes(of: value.bigEndian, Array.init)
     }

@@ -391,21 +391,36 @@ func makeDefaultMediaSession(
     voiceMediaCoreMode: VoiceMediaCoreMode = TurboVoiceMediaCoreDebugOverride.liveMode()
 ) -> any MediaSession {
     #if targetEnvironment(simulator)
+    _ = shouldUseRealDeviceMediaSession(isSimulator: true, supportsWebSocket: supportsWebSocket)
     // Simulator scenarios validate control-plane behavior, not real audio I/O.
     return StubRelayMediaSession()
     #else
-    if supportsWebSocket {
-        return PCMWebSocketMediaSession(
-            sendAudioChunk: sendAudioChunk,
-            reportEvent: reportEvent,
-            senderConfiguration: senderConfiguration,
-            outboundVoiceMediaPolicy: outboundVoiceMediaPolicy,
-            outboundOpusEncodingPolicy: outboundOpusEncodingPolicy,
-            voiceMediaCoreMode: voiceMediaCoreMode
-        )
+    guard shouldUseRealDeviceMediaSession(
+        isSimulator: false,
+        supportsWebSocket: supportsWebSocket
+    ) else {
+        return StubRelayMediaSession()
     }
-    return StubRelayMediaSession()
+    return PCMWebSocketMediaSession(
+        sendAudioChunk: sendAudioChunk,
+        reportEvent: reportEvent,
+        senderConfiguration: senderConfiguration,
+        outboundVoiceMediaPolicy: outboundVoiceMediaPolicy,
+        outboundOpusEncodingPolicy: outboundOpusEncodingPolicy,
+        voiceMediaCoreMode: voiceMediaCoreMode
+    )
     #endif
+}
+
+nonisolated
+func shouldUseRealDeviceMediaSession(
+    isSimulator: Bool,
+    supportsWebSocket: Bool
+) -> Bool {
+    // Runtime WebSocket support is a control-plane capability. Physical devices
+    // still need the real media engine for Direct QUIC and Fast Relay media.
+    _ = supportsWebSocket
+    return !isSimulator
 }
 
 final class StubRelayMediaSession: MediaSession {

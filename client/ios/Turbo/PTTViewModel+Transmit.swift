@@ -11,6 +11,14 @@ import AVFAudio
 import UIKit
 import TurboEngine
 
+private enum TransmitAudioCaptureStartError: LocalizedError {
+    case missingMediaSession
+
+    var errorDescription: String? {
+        "Media session is not available for transmit audio capture"
+    }
+}
+
 extension PTTViewModel {
     func shouldUseAppManagedWakePlaybackFallback(
         applicationState: UIApplication.State
@@ -20,6 +28,30 @@ extension PTTViewModel {
 }
 
 extension PTTViewModel {
+    func startCurrentMediaSessionSendingAudio(
+        contactID: UUID,
+        channelID: String,
+        channelUUID: UUID,
+        trigger: String,
+        metadata extraMetadata: [String: String] = [:]
+    ) async throws {
+        guard let session = mediaServices.session() else {
+            var metadata = extraMetadata
+            metadata["contactId"] = contactID.uuidString
+            metadata["channelId"] = channelID
+            metadata["channelUUID"] = channelUUID.uuidString
+            metadata["trigger"] = trigger
+            diagnostics.record(
+                .media,
+                level: .error,
+                message: "Transmit audio capture start failed because media session is missing",
+                metadata: metadata
+            )
+            throw TransmitAudioCaptureStartError.missingMediaSession
+        }
+        try await session.startSendingAudio()
+    }
+
     func shouldSuspendForegroundMediaForBackgroundTransition(
         applicationState: UIApplication.State
     ) -> Bool {
@@ -2942,7 +2974,13 @@ extension PTTViewModel {
                 "early-audio-capture-start-requested",
                 metadata: ["trigger": "fast-relay-\(trigger)"]
             )
-            try await mediaServices.session()?.startSendingAudio()
+            try await startCurrentMediaSessionSendingAudio(
+                contactID: request.contactID,
+                channelID: request.backendChannelID,
+                channelUUID: channelUUID,
+                trigger: trigger,
+                metadata: ["bridge": "fast-relay"]
+            )
             guard shouldContinueSystemTransmitActivation(
                 channelUUID: channelUUID,
                 target: target,
@@ -3327,7 +3365,13 @@ extension PTTViewModel {
                 "early-audio-capture-start-requested",
                 metadata: ["trigger": trigger, "bridge": "prewarmed-direct"]
             )
-            try await mediaServices.session()?.startSendingAudio()
+            try await startCurrentMediaSessionSendingAudio(
+                contactID: request.contactID,
+                channelID: request.backendChannelID,
+                channelUUID: channelUUID,
+                trigger: trigger,
+                metadata: ["bridge": "prewarmed-direct"]
+            )
             guard shouldContinuePrewarmedDirectSystemTransmitBridge(
                 request: request,
                 target: authorizedTarget,
@@ -3791,7 +3835,13 @@ extension PTTViewModel {
             return false
         }
         do {
-            try await mediaServices.session()?.startSendingAudio()
+            try await startCurrentMediaSessionSendingAudio(
+                contactID: target.contactID,
+                channelID: target.channelID,
+                channelUUID: channelUUID,
+                trigger: trigger,
+                metadata: extraMetadata
+            )
             return true
         } catch {
             guard currentApplicationState() == .active,
@@ -3848,7 +3898,13 @@ extension PTTViewModel {
             }
 
             do {
-                try await mediaServices.session()?.startSendingAudio()
+                try await startCurrentMediaSessionSendingAudio(
+                    contactID: target.contactID,
+                    channelID: target.channelID,
+                    channelUUID: channelUUID,
+                    trigger: trigger,
+                    metadata: extraMetadata
+                )
             } catch {
                 var failureMetadata = metadata
                 failureMetadata["retryError"] = error.localizedDescription
