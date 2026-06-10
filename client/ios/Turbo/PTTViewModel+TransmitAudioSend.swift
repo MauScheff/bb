@@ -1109,6 +1109,16 @@ extension PTTViewModel {
             : nil
         let mediaRelayAudioSendOverride = self.mediaRelayAudioSendOverride
         let directQuicAudioSendOverride = self.directQuicAudioSendOverride
+        let forcedMediaRelayAudioClientTask: Task<TurboMediaRelayClient?, Never>? =
+            routeIsMediaRelayForced
+            ? Task { [weak self] in
+                guard let self else { return nil }
+                return await self.mediaRelayClientForAudioSend(
+                    target: target,
+                    preferredTransport: configuredMediaLaneOverride.forcedMediaRelayTransport
+                )
+            }
+            : nil
         let directAudioInitiallyVerified = directAudioPlaybackVerifiedKeys.contains(directAudioAckKey)
         let directAckPrearmGate = MediaHotPathOneShotGate(consumed: directAudioInitiallyVerified)
         let firstPlaybackAckExpectationGate = MediaHotPathOneShotGate(
@@ -1339,7 +1349,13 @@ extension PTTViewModel {
                 }
 
                 if routeIsMediaRelayForced {
-                    if let relayClient = await self.mediaRelayClientForAudioSend(target: target) {
+                    let relayClient: TurboMediaRelayClient?
+                    if let forcedMediaRelayAudioClientTask {
+                        relayClient = await forcedMediaRelayAudioClientTask.value
+                    } else {
+                        relayClient = await self.mediaRelayClientForAudioSend(target: target)
+                    }
+                    if let relayClient {
                         let bypassMediaRelayPacket = shouldBypassMediaRelayPacketForLegacyPCM(relayClient)
                         if bypassMediaRelayPacket {
                             recordLegacyPCMMediaRelayPacketBypass("forced-media-relay-packet-legacy-pcm")
@@ -1782,7 +1798,9 @@ extension PTTViewModel {
                 "selection": "dynamic",
             ].merging(opusPolicy.diagnosticsMetadata, uniquingKeysWith: { current, _ in current })
         )
-        preconnectMediaRelayForAudioSendIfNeeded(target: target)
+        if forcedMediaRelayAudioClientTask == nil {
+            preconnectMediaRelayForAudioSendIfNeeded(target: target)
+        }
     }
 
     func preconnectMediaRelayForAudioSendIfNeeded(target: TransmitTarget) {

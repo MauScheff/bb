@@ -1348,6 +1348,12 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     private var sequenceNumber: UInt64 = 0
     private var peerUnavailableSince: Date?
     private let peerUnavailableFreshnessWindow: TimeInterval = 1.0
+    private let outboundPacketAudioReportLimiter = MediaHotPathEventLimiter(
+        minimumIntervalNanoseconds: 1_000_000_000
+    )
+    private let incomingPacketAudioReportLimiter = MediaHotPathEventLimiter(
+        minimumIntervalNanoseconds: 1_000_000_000
+    )
 
     init(
         config: TurboMediaRelayClientConfig,
@@ -1454,6 +1460,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         let sequenceNumber = nextSequenceNumber()
         let sentAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
         let packetFrame: TurboMediaRelayFrame
+        let packetFrameKind: String
         if Self.binaryPacketAudioDatagramsEnabled,
            let binaryPacketPayload = VoiceAudioFramePayloadCodec.singleBinaryOpusPacketData(payload) {
             packetFrame = .binaryPacketAudio(
@@ -1463,6 +1470,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                 sentAtMs: sentAtMs,
                 payload: binaryPacketPayload
             )
+            packetFrameKind = "binary-packet-audio"
         } else {
             packetFrame = .packetAudio(
                 sessionId: sessionId,
@@ -1471,6 +1479,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                 sentAtMs: sentAtMs,
                 payload: payload
             )
+            packetFrameKind = "packet-audio"
         }
         let tcpFrame = TurboMediaRelayFrame.tcpAudio(
             sessionId: sessionId,
@@ -1521,6 +1530,19 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                     on: datagramConnection,
                     waitsForProcessing: Self.livePacketAudioWaitsForProcessing
                 )
+                if outboundPacketAudioReportLimiter.take() {
+                    await report(
+                        "Media relay packet audio submitted",
+                        metadata: baseMetadata().merging(
+                            [
+                                "sequenceNumber": String(sequenceNumber),
+                                "frameKind": packetFrameKind,
+                                "payloadLength": String(payload.count),
+                            ],
+                            uniquingKeysWith: { _, new in new }
+                        )
+                    )
+                }
                 return .quicDatagram
             } catch {
                 await report(
@@ -2301,6 +2323,21 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                             break
                         }
                         self.clearPeerUnavailable()
+                        if self.incomingPacketAudioReportLimiter.take() {
+                            Task {
+                                await self.report(
+                                    "Media relay packet audio received",
+                                    metadata: self.baseMetadata().merging(
+                                        [
+                                            "sequenceNumber": String(sequenceNumber),
+                                            "frameKind": "packet-audio",
+                                            "payloadLength": String(payload.count),
+                                        ],
+                                        uniquingKeysWith: { _, new in new }
+                                    )
+                                )
+                            }
+                        }
                         self.enqueueIncomingAudioPayload(
                             TurboMediaRelayIncomingAudioPayload(
                                 payload: payload,
@@ -2327,6 +2364,21 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                             break
                         }
                         self.clearPeerUnavailable()
+                        if self.incomingPacketAudioReportLimiter.take() {
+                            Task {
+                                await self.report(
+                                    "Media relay packet audio received",
+                                    metadata: self.baseMetadata().merging(
+                                        [
+                                            "sequenceNumber": String(sequenceNumber),
+                                            "frameKind": "binary-packet-audio",
+                                            "payloadLength": String(payload.count),
+                                        ],
+                                        uniquingKeysWith: { _, new in new }
+                                    )
+                                )
+                            }
+                        }
                         self.enqueueIncomingAudioPayload(
                             TurboMediaRelayIncomingAudioPayload(
                                 payload: VoiceAudioFramePayloadCodec.encodeBinaryOpusData(payload),

@@ -58,6 +58,7 @@ struct RelayDatagramPeer {
     connection_id: u64,
     endpoint: RelayDatagramEndpoint,
     last_seen: Instant,
+    forwarded_audio_count: u64,
 }
 
 #[derive(Clone)]
@@ -1009,6 +1010,7 @@ async fn handle_datagram_join(
         connection_id: joined.connection_id,
         endpoint,
         last_seen: now,
+        forwarded_audio_count: 0,
     });
     info!(
         session_id = %joined.session_id,
@@ -1027,21 +1029,31 @@ async fn handle_datagram_frame(
     state: &RelayState,
     joined: &JoinedPeer,
 ) -> Result<()> {
-    let (session_id, sender_device_id) = match &frame {
+    let (session_id, sender_device_id, sequence_number, frame_kind) = match &frame {
         RelayFrame::PacketAudio {
             session_id,
             sender_device_id,
-            sequence_number: _,
+            sequence_number,
             sent_at_ms: _,
             payload: _,
-        }
-        | RelayFrame::BinaryPacketAudio {
+        } => (
             session_id,
             sender_device_id,
-            sequence_number: _,
+            *sequence_number,
+            "packet-audio",
+        ),
+        RelayFrame::BinaryPacketAudio {
+            session_id,
+            sender_device_id,
+            sequence_number,
             sent_at_ms: _,
             payload: _,
-        } => (session_id, sender_device_id),
+        } => (
+            session_id,
+            sender_device_id,
+            *sequence_number,
+            "binary-packet-audio",
+        ),
         _ => return Ok(()),
     };
 
@@ -1051,7 +1063,7 @@ async fn handle_datagram_frame(
         ));
     }
 
-    let (peer_endpoint, local_endpoint) = {
+    let (peer_endpoint, local_endpoint, forwarded_audio_count) = {
         let mut sessions = state.sessions.lock().await;
         let Some(session) = sessions.get_mut(&joined.session_id) else {
             return Ok(());
@@ -1061,9 +1073,13 @@ async fn handle_datagram_frame(
         };
         let now = Instant::now();
         local_peer.last_seen = now;
-        if let Some(datagram) = local_peer.datagram.as_mut() {
+        let forwarded_audio_count = if let Some(datagram) = local_peer.datagram.as_mut() {
             datagram.last_seen = now;
-        }
+            datagram.forwarded_audio_count = datagram.forwarded_audio_count.saturating_add(1);
+            datagram.forwarded_audio_count
+        } else {
+            0
+        };
         let peer_device_id = local_peer.peer_device_id.clone();
         let local_endpoint = local_peer
             .datagram
@@ -1074,12 +1090,13 @@ async fn handle_datagram_frame(
             .get(&peer_device_id)
             .and_then(|peer| peer.datagram.as_ref())
             .map(|datagram| datagram.endpoint.clone());
-        (peer_endpoint, local_endpoint)
+        (peer_endpoint, local_endpoint, forwarded_audio_count)
     };
 
     match peer_endpoint {
         Some(endpoint) => {
-            if let Some(max_size) = endpoint.max_datagram_size() {
+            let peer_max_datagram_size = endpoint.max_datagram_size();
+            if let Some(max_size) = peer_max_datagram_size {
                 if datagram.len() > max_size {
                     warn!(
                         session_id = %joined.session_id,
@@ -1097,6 +1114,20 @@ async fn handle_datagram_frame(
                     device_id = %joined.device_id,
                     error = %error,
                     "dropped relay datagram because peer send failed"
+                );
+            } else if forwarded_audio_count <= 3 || forwarded_audio_count % 50 == 0 {
+                info!(
+                    session_id = %joined.session_id,
+                    device_id = %joined.device_id,
+                    peer_device_id = %joined.peer_device_id,
+                    sequence_number,
+                    frame_kind,
+                    forwarded_audio_count,
+                    datagram_size = datagram.len(),
+                    peer_max_datagram_size = peer_max_datagram_size
+                        .map(|size| size.to_string())
+                        .unwrap_or_else(|| "unsupported".to_string()),
+                    "forwarded relay audio datagram"
                 );
             }
         }
