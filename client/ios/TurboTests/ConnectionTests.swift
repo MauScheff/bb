@@ -17037,7 +17037,7 @@ struct ConnectionTests {
             connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
             return .quicDatagram
         }
-        var sentMediaRelayPayloads: [String] = []
+        let sentMediaRelayPayloads = LockedStringEvents()
         viewModel.mediaRelayAudioSendOverride = { _, payload in
             sentMediaRelayPayloads.append(payload)
             return .quicDatagram
@@ -17065,7 +17065,7 @@ struct ConnectionTests {
 
         let sent = client.sentSignalsForTesting().filter { $0.type == .audioChunk }
         #expect(sent.isEmpty)
-        #expect(sentMediaRelayPayloads == ["payload-1"])
+        #expect(sentMediaRelayPayloads.snapshot() == ["payload-1"])
         #expect(connectRequests.count == 1)
         #expect(connectRequests.first?.contactID == target.contactID)
         #expect(connectRequests.first?.channelID == target.channelID)
@@ -17081,6 +17081,16 @@ struct ConnectionTests {
             )
         )
         #expect(!viewModel.diagnosticsTranscript.contains("No legal live media lane available"))
+
+        let secondSend = Task.detached {
+            try await sendAudioChunk("payload-2")
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        Self.blockCurrentThreadForTesting(milliseconds: 120)
+
+        #expect(sentMediaRelayPayloads.snapshot().contains("payload-2"))
+        try await secondSend.value
+        #expect(sentMediaRelayPayloads.snapshot() == ["payload-1", "payload-2"])
     }
 
     @MainActor
@@ -17171,7 +17181,7 @@ struct ConnectionTests {
 
         #expect(sentMediaRelayPayloads.snapshot().contains("payload-2"))
         try await secondSend.value
-        #expect(client.sentSignalsForTesting().filter { $0.type == .audioChunk }.count == 2)
+        #expect(sentMediaRelayPayloads.snapshot() == ["payload-1", "payload-2"])
     }
 
     @MainActor

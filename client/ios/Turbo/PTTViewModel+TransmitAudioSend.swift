@@ -1138,6 +1138,16 @@ extension PTTViewModel {
             : nil
         let mediaRelayAudioSendOverride = self.mediaRelayAudioSendOverride
         let directQuicAudioSendOverride = self.directQuicAudioSendOverride
+        let usesWakeBackgroundContinuityForOutgoingAudio =
+            shouldUseWakeBackgroundContinuityForOutgoingAudio(for: target.contactID)
+        let wakeContinuityMediaRelayAudioClientTask: Task<TurboMediaRelayClient?, Never>? =
+            usesWakeBackgroundContinuityForOutgoingAudio
+            && canAttemptMediaRelayForWakeContinuityAudioSend()
+            ? Task { [weak self] in
+                guard let self else { return nil }
+                return await self.mediaRelayClientForAudioSend(target: target)
+            }
+            : nil
         let forcedMediaRelayAudioClientTask: Task<TurboMediaRelayClient?, Never>? =
             routeIsMediaRelayForced
             ? Task { [weak self] in
@@ -1160,8 +1170,6 @@ extension PTTViewModel {
         let outboundDeliveryDiagnosticsLimiter = MediaHotPathEventLimiter(
             minimumIntervalNanoseconds: 1_000_000_000
         )
-        let usesWakeBackgroundContinuityForOutgoingAudio =
-            shouldUseWakeBackgroundContinuityForOutgoingAudio(for: target.contactID)
         let initialOutboundAudioSendGate = MediaHotPathOneShotGate(
             consumed: !takeShouldAwaitInitialOutboundAudioSendGate()
         )
@@ -1325,11 +1333,14 @@ extension PTTViewModel {
                 }
 
                 if usesWakeBackgroundContinuityForOutgoingAudio {
-                    let shouldRecoverWithMediaRelay = await MainActor.run {
-                        self.canAttemptMediaRelayForWakeContinuityAudioSend()
+                    let routeScopedRelayClient = await wakeContinuityMediaRelayAudioClientTask?.value
+                    let relayClient: TurboMediaRelayClient?
+                    if let routeScopedRelayClient {
+                        relayClient = routeScopedRelayClient
+                    } else {
+                        relayClient = await self.mediaRelayClientForAudioSend(target: target)
                     }
-                    if shouldRecoverWithMediaRelay,
-                       let relayClient = await self.mediaRelayClientForAudioSend(target: target) {
+                    if let relayClient {
                         do {
                             let mediaMode = try await mediaRelaySend(relayClient)
                             let deliveredTransport = IncomingAudioPayloadTransport(
