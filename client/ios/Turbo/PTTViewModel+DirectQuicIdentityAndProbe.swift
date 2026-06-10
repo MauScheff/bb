@@ -1082,34 +1082,42 @@ extension PTTViewModel {
         guard mediaTransportPathState == .relay || mediaTransportPathState.isFastRelay else {
             return
         }
+        guard !attempt.isDirectActive else {
+            return
+        }
         if let activeTarget = transmitProjection.activeTarget,
            activeTarget.contactID == contactID {
             return
         }
 
         let staleAgeMilliseconds = Int(now.timeIntervalSince(attempt.lastUpdatedAt) * 1_000)
-        guard staleAgeMilliseconds >= 5_000 else {
-            return
-        }
-
         let hadProbeController = mediaRuntime.directQuicProbeController != nil
         mediaRuntime.directQuicProbeController?.cancel(reason: "stale-attempt-blocking-reprobe")
         mediaRuntime.directQuicProbeController = nil
-        diagnostics.recordInvariantViolation(
-            invariantID: "direct-quic.stale_attempt_blocks_reprobe",
-            scope: .local,
-            message: "Direct QUIC attempt remained active after fallback, blocking reprobe",
-            metadata: [
-                "contactId": contactID.uuidString,
-                "channelId": attempt.channelID,
-                "attemptId": attempt.attemptId,
-                "isDirectActive": String(attempt.isDirectActive),
-                "transportPath": mediaTransportPathState.rawValue,
-                "probeControllerActive": String(hadProbeController),
-                "staleAgeMilliseconds": "\(staleAgeMilliseconds)",
-                "trigger": trigger,
-            ]
-        )
+        let metadata = [
+            "contactId": contactID.uuidString,
+            "channelId": attempt.channelID,
+            "attemptId": attempt.attemptId,
+            "isDirectActive": String(attempt.isDirectActive),
+            "transportPath": mediaTransportPathState.rawValue,
+            "probeControllerActive": String(hadProbeController),
+            "staleAgeMilliseconds": "\(staleAgeMilliseconds)",
+            "trigger": trigger,
+        ]
+        if staleAgeMilliseconds >= 5_000 {
+            diagnostics.recordInvariantViolation(
+                invariantID: "direct-quic.stale_attempt_blocks_reprobe",
+                scope: .local,
+                message: "Direct QUIC attempt remained active after fallback, blocking reprobe",
+                metadata: metadata
+            )
+        } else {
+            diagnostics.record(
+                .media,
+                message: "Cleared non-active Direct QUIC attempt after relay fallback",
+                metadata: metadata
+            )
+        }
         let fallback = mediaRuntime.directQuicUpgrade.clearAttempt(
             for: contactID,
             fallbackReason: "stale-attempt-blocking-reprobe",
