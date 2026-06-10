@@ -108,6 +108,7 @@ actor AudioChunkSender {
     private var sendTimeoutNanoseconds: UInt64?
     private var slowSendDropThresholdNanoseconds: UInt64?
     private var dropsPendingPayloadsAfterSlowSend: Bool
+    private var dropsPendingPayloadsWhenTransportBecomesAvailable: Bool
     private var retainedNewestPayloadsAfterSlowSend: Int
     private var stopDrainTimeoutNanoseconds: UInt64?
     private let payloadBatchCollectionPollNanoseconds: UInt64 = 10_000_000
@@ -175,6 +176,7 @@ actor AudioChunkSender {
         self.sendTimeoutNanoseconds = nil
         self.slowSendDropThresholdNanoseconds = nil
         self.dropsPendingPayloadsAfterSlowSend = false
+        self.dropsPendingPayloadsWhenTransportBecomesAvailable = false
         self.retainedNewestPayloadsAfterSlowSend = 0
         self.stopDrainTimeoutNanoseconds = nil
         self.transportAvailabilityPollNanoseconds = transportAvailabilityPollNanoseconds
@@ -198,12 +200,18 @@ actor AudioChunkSender {
         self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
         self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
         self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
+        self.dropsPendingPayloadsWhenTransportBecomesAvailable =
+            resolvedConfiguration.dropsPendingPayloadsWhenTransportBecomesAvailable
         self.retainedNewestPayloadsAfterSlowSend = resolvedConfiguration.retainedNewestPayloadsAfterSlowSend
         self.stopDrainTimeoutNanoseconds = resolvedConfiguration.stopDrainTimeoutNanoseconds
     }
 
     func updateSendChunk(_ handler: (@Sendable (String) async throws -> Void)?) {
+        let transportBecameAvailable = sendChunk == nil && handler != nil
         sendChunk = handler
+        if transportBecameAvailable {
+            dropPendingPayloadsWhenTransportBecomesAvailableIfPolicyAllows()
+        }
     }
 
     func updateConfiguration(_ configuration: MediaTransportSenderConfiguration) {
@@ -285,6 +293,8 @@ actor AudioChunkSender {
         self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
         self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
         self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
+        self.dropsPendingPayloadsWhenTransportBecomesAvailable =
+            resolvedConfiguration.dropsPendingPayloadsWhenTransportBecomesAvailable
         self.retainedNewestPayloadsAfterSlowSend = resolvedConfiguration.retainedNewestPayloadsAfterSlowSend
         self.stopDrainTimeoutNanoseconds = resolvedConfiguration.stopDrainTimeoutNanoseconds
         trimPendingPayloadsToCurrentConfigurationIfNeeded()
@@ -324,6 +334,8 @@ actor AudioChunkSender {
                         ? Self.slowTransportSendThresholdNanoseconds
                         : nil),
             dropsPendingPayloadsAfterSlowSend: effectiveDropsPendingPayloadsAfterSlowSend,
+            dropsPendingPayloadsWhenTransportBecomesAvailable:
+                configuration.dropsPendingPayloadsWhenTransportBecomesAvailable,
             retainedNewestPayloadsAfterSlowSend: max(
                 0,
                 configuration.retainedNewestPayloadsAfterSlowSend
@@ -377,8 +389,6 @@ actor AudioChunkSender {
             await waitForInFlightSendCapacity()
             dropPendingPayloadsForCancelledGenerationIfNeeded()
             guard !pendingPayloads.isEmpty else { continue }
-            let transportPayload = await nextTransportPayload()
-            guard allowsSendGeneration(transportPayload.generation) else { continue }
             guard let sendChunk = await waitForTransportIfNeeded() else {
                 if dropPendingPayloadAfterUnavailableTransportIfPolicyAllows() {
                     break
@@ -389,6 +399,10 @@ actor AudioChunkSender {
                     break
                 }
             }
+            dropPendingPayloadsForCancelledGenerationIfNeeded()
+            guard !pendingPayloads.isEmpty else { continue }
+            let transportPayload = await nextTransportPayload()
+            guard allowsSendGeneration(transportPayload.generation) else { continue }
             let pendingPayloadCount = pendingPayloads.count
             await waitForPayloadDispatchSpacingIfNeeded(
                 pendingPayloadCount: pendingPayloadCount
@@ -767,9 +781,27 @@ actor AudioChunkSender {
         )
     }
 
+    private func dropPendingPayloadsWhenTransportBecomesAvailableIfPolicyAllows() {
+        guard dropsPendingPayloadsWhenTransportBecomesAvailable else { return }
+        let droppedPayloadCount = pendingPayloads.count
+        guard droppedPayloadCount > 0 else { return }
+        pendingPayloads.removeAll(keepingCapacity: false)
+        flushPendingImmediately = false
+        reportTransportDropIfNeeded(
+            droppedPayloadCount: droppedPayloadCount,
+            pendingPayloadCount: pendingPayloads.count,
+            invariantID: "media.outbound_audio_transport_unavailable_drop",
+            reason: "outbound-transport-became-available-after-pending-audio",
+            additionalMetadata: [
+                "transportState": "became-available",
+            ]
+        )
+    }
+
     private func dropPendingPayloadAfterUnavailableTransportIfPolicyAllows() -> Bool {
         guard dropsPendingPayloadsAfterSlowSend else { return false }
-        let droppedPayloadCount = 1 + pendingPayloads.count
+        let droppedPayloadCount = pendingPayloads.count
+        guard droppedPayloadCount > 0 else { return true }
         pendingPayloads.removeAll(keepingCapacity: false)
         reportTransportDropIfNeeded(
             droppedPayloadCount: droppedPayloadCount,

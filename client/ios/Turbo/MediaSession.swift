@@ -68,6 +68,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
     let sendTimeoutNanoseconds: UInt64?
     let slowSendDropThresholdNanoseconds: UInt64?
     let dropsPendingPayloadsAfterSlowSend: Bool
+    let dropsPendingPayloadsWhenTransportBecomesAvailable: Bool
     let retainedNewestPayloadsAfterSlowSend: Int
     let stopDrainTimeoutNanoseconds: UInt64?
 
@@ -80,6 +81,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         sendTimeoutNanoseconds: 250_000_000,
         slowSendDropThresholdNanoseconds: 250_000_000,
         dropsPendingPayloadsAfterSlowSend: true,
+        dropsPendingPayloadsWhenTransportBecomesAvailable: true,
         retainedNewestPayloadsAfterSlowSend: 1,
         stopDrainTimeoutNanoseconds: 180_000_000
     )
@@ -93,6 +95,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         sendTimeoutNanoseconds: 750_000_000,
         slowSendDropThresholdNanoseconds: 750_000_000,
         dropsPendingPayloadsAfterSlowSend: true,
+        dropsPendingPayloadsWhenTransportBecomesAvailable: true,
         retainedNewestPayloadsAfterSlowSend: 0,
         stopDrainTimeoutNanoseconds: 220_000_000
     )
@@ -106,6 +109,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         sendTimeoutNanoseconds: nil,
         slowSendDropThresholdNanoseconds: nil,
         dropsPendingPayloadsAfterSlowSend: false,
+        dropsPendingPayloadsWhenTransportBecomesAvailable: false,
         retainedNewestPayloadsAfterSlowSend: 0,
         stopDrainTimeoutNanoseconds: 2_000_000_000
     )
@@ -119,6 +123,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         sendTimeoutNanoseconds: nil,
         slowSendDropThresholdNanoseconds: nil,
         dropsPendingPayloadsAfterSlowSend: false,
+        dropsPendingPayloadsWhenTransportBecomesAvailable: false,
         retainedNewestPayloadsAfterSlowSend: 0,
         stopDrainTimeoutNanoseconds: 1_500_000_000
     )

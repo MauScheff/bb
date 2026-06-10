@@ -20109,6 +20109,63 @@ struct ConnectionTests {
         #expect(deliveredPayloads == ["chunk-1", "chunk-2"])
     }
 
+    @Test func fastRelayAudioSenderDropsQueuedPayloadsWhenTransportBecomesAvailable() async {
+        actor Recorder {
+            var payloads: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func appendPayload(_ payload: String) {
+                payloads.append(payload)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: nil,
+            reportFailure: { _ in },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            configuration: .fastRelayBalanced,
+            maximumPendingPayloads: 16,
+            maximumPayloadsPerMessage: 1,
+            transportAvailabilityPollNanoseconds: 10_000_000,
+            transportAvailabilityMaxAttempts: 80
+        )
+
+        let preReadyEnqueue = Task {
+            await sender.enqueue(["stale-0", "stale-1", "stale-2"])
+        }
+        try? await Task.sleep(nanoseconds: 40_000_000)
+
+        await sender.updateSendChunk { payload in
+            await recorder.appendPayload(payload)
+        }
+        await preReadyEnqueue.value
+        await sender.enqueue("fresh-0")
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+
+        let deliveredPayloads = await recorder.payloads.flatMap(AudioChunkPayloadCodec.decode)
+        #expect(deliveredPayloads == ["fresh-0"])
+
+        let dropMetadata = await recorder.firstMetadata(
+            for: "Dropped stale outbound audio transport payload"
+        )
+        #expect(dropMetadata?["invariantID"] == "media.outbound_audio_transport_unavailable_drop")
+        #expect(dropMetadata?["droppedPayloadCount"] == "3")
+        #expect(dropMetadata?["pendingPayloadCount"] == "0")
+        #expect(dropMetadata?["reason"] == "outbound-transport-became-available-after-pending-audio")
+        #expect(dropMetadata?["transportState"] == "became-available")
+    }
+
     @Test func audioChunkSenderAppliesUpdatedPacketSenderConfiguration() async {
         actor Recorder {
             var payloads: [String] = []
