@@ -1279,9 +1279,7 @@ mod tests {
             "TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED",
             "off"
         )?);
-        assert!(
-            parse_bool_value("TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED", "maybe").is_err()
-        );
+        assert!(parse_bool_value("TURBO_RELAY_QUIC_ACTIVE_MIGRATION_ENABLED", "maybe").is_err());
         Ok(())
     }
 

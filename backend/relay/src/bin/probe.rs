@@ -4,6 +4,9 @@ use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use quinn::{ClientConfig, Endpoint, TransportConfig};
+use relay_protocol::protocol::{
+    RelayFrame, encode_binary_packet_audio_datagram, parse_relay_datagram_frame,
+};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use serde_json::json;
 use tokio::{io::AsyncWriteExt, net::lookup_host, time};
@@ -30,13 +33,14 @@ async fn main() -> Result<()> {
         "stream" => probe_stream_join(&host, port).await?,
         "datagram" => probe_datagram_join(&host, port).await?,
         "datagram-pair" => probe_datagram_pair(&host, port).await?,
+        "binary-datagram-pair" => probe_binary_datagram_pair(&host, port).await?,
         "both" => {
             probe_stream_join(&host, port).await?;
             probe_datagram_join(&host, port).await?;
         }
         other => {
             return Err(anyhow!(
-                "unknown mode `{other}`; use stream, datagram, datagram-pair, or both"
+                "unknown mode `{other}`; use stream, datagram, datagram-pair, binary-datagram-pair, or both"
             ));
         }
     }
@@ -123,6 +127,49 @@ async fn probe_datagram_pair(host: &str, port: u16) -> Result<()> {
         "packet_audio_forwarded={}",
         std::str::from_utf8(forwarded.as_ref()).unwrap_or("<non-utf8>")
     );
+    a.close(0u32.into(), b"probe done");
+    b.close(0u32.into(), b"probe done");
+    Ok(())
+}
+
+async fn probe_binary_datagram_pair(host: &str, port: u16) -> Result<()> {
+    let session_id = "probe-binary-pair-session";
+    let a = connect(host, port).await?;
+    let b = connect(host, port).await?;
+    datagram_join(&a, session_id, "probe-device-a", "probe-device-b").await?;
+    datagram_join(&b, session_id, "probe-device-b", "probe-device-a").await?;
+
+    let audio = encode_binary_packet_audio_datagram(
+        session_id,
+        "probe-device-a",
+        1,
+        123456,
+        b"probe-binary-audio",
+    )
+    .map_err(|error| anyhow!(error))?;
+    a.send_datagram(Bytes::from(audio))
+        .context("failed to send binary packet audio datagram")?;
+    let forwarded = time::timeout(Duration::from_secs(3), b.read_datagram())
+        .await
+        .context("binary packet audio datagram timed out")?
+        .context("failed to read binary packet audio datagram")?;
+    match parse_relay_datagram_frame(forwarded.as_ref()).map_err(|error| anyhow!(error))? {
+        RelayFrame::BinaryPacketAudio {
+            session_id,
+            sender_device_id,
+            sequence_number,
+            sent_at_ms,
+            payload,
+        } => println!(
+            "binary_packet_audio_forwarded=session_id={session_id} sender_device_id={sender_device_id} sequence_number={sequence_number} sent_at_ms={sent_at_ms} payload={}",
+            String::from_utf8_lossy(&payload)
+        ),
+        frame => {
+            return Err(anyhow!(
+                "unexpected forwarded binary datagram frame: {frame:?}"
+            ));
+        }
+    }
     a.close(0u32.into(), b"probe done");
     b.close(0u32.into(), b"probe done");
     Ok(())
