@@ -61,69 +61,39 @@ def main() -> int:
 
     started_at = utc_now()
     run_dir = Path(args.output_dir) / f"{timestamp_for_path()}-{sanitize_name(args.name)}"
-    synthetic_dir = run_dir / "synthetic-conversation"
-    slo_dir = run_dir / "slo-dashboard"
+    simulator_artifact = run_dir / "simulator-self-hosted-suite.json"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     steps: list[StepResult] = []
-    synthetic_artifact = synthetic_dir / "synthetic-conversation-probe.json"
-    slo_artifact = slo_dir / "slo-dashboard.json"
 
-    synthetic_command = [
+    simulator_command = [
         sys.executable,
-        "tools/scripts/synthetic_conversation_probe.py",
+        "backend/scripts/simulator_self_hosted_suite_proof.py",
         "--base-url",
-        args.base_url,
-        "--caller",
-        args.caller,
-        "--callee",
-        args.callee,
-        "--iterations",
-        str(args.iterations),
-        "--artifact-dir",
-        str(synthetic_dir),
-        "--command-timeout",
-        str(args.command_timeout),
-        "--label",
-        args.name,
+        args.base_url.rstrip("/") + "/s/turbo",
+        "--scenario",
+        "beep_accept_ready",
+        "--output",
+        str(simulator_artifact),
     ]
     if args.insecure:
-        synthetic_command.append("--insecure")
+        simulator_command.append("--insecure")
 
-    synthetic_result = run_step(
-        name="synthetic-conversation-probe",
-        command=synthetic_command,
-        output_path=run_dir / "synthetic-conversation-probe.output.txt",
-        artifact_path=synthetic_artifact,
+    simulator_result = run_step(
+        name="hosted-simulator-postdeploy",
+        command=simulator_command,
+        output_path=run_dir / "hosted-simulator-postdeploy.output.txt",
+        artifact_path=simulator_artifact,
     )
-    steps.append(synthetic_result)
-
-    if synthetic_artifact.exists():
-        slo_command = [
-            sys.executable,
-            "tools/scripts/slo_dashboard.py",
-            "--synthetic-conversation",
-            str(synthetic_artifact),
-            "--output-dir",
-            str(slo_dir),
-            "--name",
-            args.name,
-            "--fail-on-breach",
-        ]
-        slo_result = run_step(
-            name="slo-dashboard",
-            command=slo_command,
-            output_path=run_dir / "slo-dashboard.output.txt",
-            artifact_path=slo_artifact,
-        )
-        steps.append(slo_result)
+    steps.append(simulator_result)
 
     ended_at = utc_now()
+    ok = all(step.ok for step in steps)
     summary = {
         "schemaVersion": 1,
         "name": args.name,
-        "ok": all(step.ok for step in steps) and len(steps) == 2,
-        "status": "pass" if all(step.ok for step in steps) and len(steps) == 2 else "fail",
+        "ok": ok,
+        "status": "pass" if ok else "fail",
         "baseUrl": args.base_url,
         "caller": args.caller,
         "callee": args.callee,
@@ -131,8 +101,7 @@ def main() -> int:
         "startedAt": started_at,
         "endedAt": ended_at,
         "runDir": str(run_dir),
-        "syntheticConversation": str(synthetic_artifact) if synthetic_artifact.exists() else None,
-        "sloDashboard": str(slo_artifact) if slo_artifact.exists() else None,
+        "hostedSimulatorSuite": str(simulator_artifact) if simulator_artifact.exists() else None,
         "steps": [step.to_json() for step in steps],
         "reproduceCommand": str(run_dir / "reproduce.sh"),
     }
@@ -141,10 +110,8 @@ def main() -> int:
 
     print(f"postdeploy check status: {summary['status']}")
     print(f"postdeploy check artifacts: {run_dir}")
-    if synthetic_artifact.exists():
-        print(f"synthetic conversation: {synthetic_artifact}")
-    if slo_artifact.exists():
-        print(f"SLO dashboard: {slo_artifact}")
+    if simulator_artifact.exists():
+        print(f"hosted simulator suite: {simulator_artifact}")
     return 0 if summary["ok"] else 1
 
 

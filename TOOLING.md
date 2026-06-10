@@ -91,9 +91,8 @@ The active deployed target is `https://api.beepbeep.to`.
 | VM deploy | `just gce-self-hosted-deploy <gcp-project>` |
 | Relay VM deploy package/proof, dry run | `just gce-relay-deploy-dry-run <gcp-project>` |
 | Relay VM deploy | `just gce-relay-deploy <gcp-project>` |
-| Hosted synthetic canary | `just postdeploy-check https://api.beepbeep.to` |
+| Hosted simulator postdeploy canary | `just postdeploy-check https://api.beepbeep.to` |
 | Hosted backend stability | `just backend-stability-probe https://api.beepbeep.to` |
-| Hosted runtime-control compatibility stability | `just websocket-stability-probe https://api.beepbeep.to` |
 | Hosted simulator smoke | `just simulator-scenario-suite-hosted-smoke` |
 
 API VM deploys are registry-backed. The runtime image is

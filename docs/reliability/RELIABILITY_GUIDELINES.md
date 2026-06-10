@@ -66,7 +66,7 @@ Use the thinnest tool that proves the claim. `TOOLING.md` owns command details.
 | Field/TestFlight/device report | `just reliability-intake` or `just reliability-intake-shake` |
 | Retry/drop/reorder/reconnect families | `just simulator-fuzz-local <seed> <count>` |
 | Protocol interleavings | `just protocol-model-checks` |
-| Hosted route/control-plane confidence | `just synthetic-conversation-probe`, `just slo-dashboard`, or `just postdeploy-check` |
+| Hosted route/control-plane confidence | `just postdeploy-check`; use `just backend-stability-probe` for lower-level route availability |
 | Verified production backend | `just beepbeep-backend-production-gate` and `just postdeploy-check` |
 | Apple/PTT/audio boundary | Physical device check after lower layers are proven |
 

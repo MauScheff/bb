@@ -32,7 +32,7 @@ Use [`WORKFLOW.md`](/Users/mau/Development/Turbo/WORKFLOW.md) for the higher-lev
 | Legacy Cloud backend | Unison MCP/UCM, `turbo.serveLocal`, `turbo.deploy` | Unison codebase `turbo/main`; reference/maintenance only |
 | Simulator scenarios/fuzz | `just simulator-scenario*`, `just simulator-fuzz-local*`, `just reliability-fuzz-local-overnight` | `scenarios/`, `/tmp/turbo-scenario-fuzz/`, merged diagnostics and engine trace artifacts |
 | Diagnostics | `just reliability-intake*`, `scripts/merged_diagnostics.py` | `/tmp/turbo-reliability-intake/`, `/tmp/turbo-debug/` |
-| Probes | route/backend/websocket/client probes | JSON artifacts printed by commands |
+| Probes | route/backend/simulator/client probes | JSON artifacts printed by commands |
 | APNs/PTT wake helpers | `ptt-push-target`, `ptt-apns-worker`, `ptt-apns-bridge` | debug/interim wake paths |
 
 ## Common entrypoints
@@ -43,8 +43,8 @@ For deploys, the distinction is:
 - for deployed production verification of the active backend, use `just beepbeep-backend-production-gate`; it targets `https://api.beepbeep.to`
 - for a machine-readable release decision, use `just beepbeep-backend-cutover-readiness`
 - for the production release path, use `just deploy-production`; it runs
-  `just production-preflight`, then deploys, then runs the hosted synthetic
-  conversation canary and SLO dashboard
+  `just production-preflight`, then deploys, then runs the hosted simulator
+  postdeploy canary
 - if a deploy already happened and you only need live verification, use
   `just postdeploy-check`
 - if no interactive `ucm` process is already occupying the local codebase and
@@ -63,7 +63,7 @@ In either case, if you changed backend behavior in the local Unison codebase, th
 - `just reliability-gate-regressions`
 - `just reliability-gate-full`
 
-`just deploy-production` runs preflight, deploys, then verifies hosted SLOs. If verification fails after deploy, inspect the printed `postdeploy-check.json`, `synthetic-conversation-probe.json`, and `slo-dashboard.json` artifacts before deciding to roll forward, roll back, or convert the failure into a regression.
+`just deploy-production` runs preflight, deploys, then verifies the hosted simulator canary through `postdeploy-check`. If verification fails after deploy, inspect the printed `postdeploy-check.json` and `simulator-self-hosted-suite.json` artifacts before deciding to roll forward, roll back, or convert the failure into a regression.
 
 For APNs credentials, keep the `.p8` file outside the repo and expose either `TURBO_APNS_PRIVATE_KEY_PATH` or `TURBO_APNS_PRIVATE_KEY` in the local deploy environment. `turbo.deploy` resolves the path locally when present and stores the PEM text in cloud config as `TURBO_APNS_PRIVATE_KEY`, so deployed backend code should never depend on filesystem access.
 
@@ -184,17 +184,17 @@ Use [`fuzz.md`](/Users/mau/Development/Turbo/fuzz.md) for the operator loop and 
 | Local overnight fuzz | `just reliability-fuzz-local-overnight <seed> <count>` | Primary | Broad local reliability sweep: headless engine fuzz first, then simulator fuzz with strict diagnostics and engine trace replay. |
 | Hosted smoke gate | `just reliability-gate-smoke` | Primary | Proving simulator-backed hosted control-plane behavior before a risky release. |
 | Production preflight | `just production-preflight` | Primary | Run the expensive local proof gate before a production deploy. |
-| Production deploy | `just deploy-production` | Primary | Run the strict preflight, deploy, then prove the live hosted canary and SLOs. |
-| Postdeploy verification | `just postdeploy-check` | Primary | A deploy already happened, or production feels flaky and needs a fresh canary. |
+| Production deploy | `just deploy-production` | Primary | Run the strict preflight, deploy, then prove the live hosted simulator canary. |
+| Postdeploy verification | `just postdeploy-check` | Primary | A deploy already happened, or production feels flaky and needs a fresh hosted simulator canary. |
 | Reliability intake | `just reliability-intake`, `just reliability-intake-shake` | Primary | Starting from a physical-device, debug, TestFlight, production-like, or shake-to-report issue. Writes human/JSON diagnostics and a replay draft when possible. |
 | Lower-level diagnostics merge | `just diagnostics-merge-pair` or `scripts/merged_diagnostics.py --json` | Building block | Reading merged diagnostics directly when you do not need the full intake artifact. |
 | Production replay | `just production-replay` | Primary when diagnostics JSON exists | Turning field evidence into a local replay or scenario draft. |
 | Protocol model check | `just protocol-model-checks` | Primary for protocol changes | Checking distributed interleavings and the matching Swift property tests. |
 | Full hosted/local gates | `just reliability-gate-full`, `just reliability-gate-local` | Primary but expensive | Broad confidence after shared state-machine or backend contract changes. |
-| Synthetic probe and SLO dashboard | `just synthetic-conversation-probe`, `just slo-dashboard` | Building blocks | Running only one half of `postdeploy-check` or combining extra SLO sources. |
-| Route probe | `just route-probe`, `just route-probe-local` | Diagnostic/building block | Debugging route contract details or local websocket behavior. The synthetic conversation probe wraps this for the release canary. |
+| Synthetic probe and SLO dashboard | `just synthetic-conversation-probe`, `just slo-dashboard` | Historical/building blocks | Legacy route/SLO tooling. Do not use them as the release canary while runtime WebSocket is retired. |
+| Route probe | `just route-probe`, `just route-probe-local` | Diagnostic/building block | Debugging route contract details or local compatibility behavior. It is not the hosted release canary. |
 | Backend stability probe | `just backend-stability-probe` | Diagnostic | Separating hosted route availability from app/device behavior, especially for Unison Cloud escalation. It covers bootstrap, Beep list reads, and lightweight authenticated writes (`auth`, `device-register`, `beeps-incoming`, `beeps-outgoing`, `presence-heartbeat`, `telemetry-events`). |
-| WebSocket stability probe | `just websocket-stability-probe` | Diagnostic | Measuring long-lived hosted websocket continuity separately from the full simulator scenario lane. Opens two authenticated sockets, keeps app-like websocket pings enabled, and can layer periodic heartbeats / telemetry writes while recording unexpected closes. |
+| WebSocket stability probe | `just websocket-stability-probe` | Compatibility-only | Legacy/local WebSocket continuity debugging. Hosted production returns `405` while runtime WebSocket is retired. |
 | Hosted backend client probe | `just hosted-backend-client-probe` | Diagnostic | Exercising the real iOS `TurboBackendClient` / `URLSessionWebSocketTask` path against hosted backend infrastructure, with periodic heartbeats and telemetry writes plus a JSON artifact. |
 | Retired production probes | older overlapping hosted probe recipes | Removed | Replaced by `postdeploy-check`; use `route-probe` for lower-level route-contract debugging. |
 | Legacy APNs bridge helpers | `just ptt-apns-bridge`, `just ptt-apns-worker` | Diagnostic/legacy | Debugging old interim wake paths. Prefer the current deployed wake path and diagnostics surface when available. |
@@ -207,19 +207,14 @@ Agent workflow rules for these lanes:
 - Do not use `reliability-gate-full` or physical devices as a substitute for choosing ownership; broad gates confirm, they do not localize.
 - If local backend commands fail before scenario assertions run, fix or restart `just serve-local` before changing app logic.
 
-Use `just synthetic-conversation-probe` when you want a production-shaped
-two-device control-plane canary without launching the app. It runs the semantic
-route probe with synthetic caller/callee identities, requires the websocket,
-receiver-ready, begin-transmit, push-target, and end-transmit checks to be
-present, and writes per-iteration artifacts plus
-`synthetic-conversation-probe.json` for comparison across runs.
+Use `just postdeploy-check` for the hosted release canary. It runs the hosted
+simulator proof against `https://api.beepbeep.to/s/turbo` and writes
+`postdeploy-check.json` plus `simulator-self-hosted-suite.json`.
 
-Use `just slo-dashboard <synthetic-conversation-probe.json>` to turn probe
-evidence into a static SLO report. The dashboard writes `slo-dashboard.json`,
-`slo-dashboard.md`, and `reproduce.sh`, then fails when product-facing
-conversation objectives breach their thresholds. The script can also read
-backend stability probe JSON and merged diagnostics JSON directly when a report
-needs to combine route health with invariant health.
+`just synthetic-conversation-probe` and `just slo-dashboard` are historical
+route/SLO tools. They remain useful for comparing old artifacts or composing
+diagnostic reports, but they are not the hosted release canary while runtime
+WebSocket is retired.
 
 Use `just protocol-model-checks` when a change touches core conversation
 protocol rules. It validates the TLA+ communication model, runs TLC with the
@@ -416,21 +411,21 @@ just backend-stability-probe https://api.beepbeep.to @mau 30 8
 
 The probe repeatedly checks `/v1/health`, `/v1/config`, `/v1/auth/session`, `/v1/devices/register`, `/v1/beeps/incoming`, `/v1/beeps/outgoing`, `/v1/presence/heartbeat`, and `/v1/telemetry/events`, reports per-request latency/timeouts, and exits non-zero if any request fails. Use it when simulator-hosted scenarios are timing out on Beep refreshes, not just bootstrap or write paths. This is the preferred artifact for Unison Cloud escalation because it separates route availability from app/device behavior while still exercising the lightweight authenticated reads/writes that simulator-hosted runs depend on.
 
-When the suspected problem is websocket continuity rather than plain route availability, use:
+When the suspected problem is legacy/local WebSocket continuity rather than plain route availability, use:
 
 ```bash
-just websocket-stability-probe https://api.beepbeep.to @quinn @sasha 90 20 0
+just websocket-stability-probe http://localhost:8090/s/turbo @quinn @sasha 90 20 0
 ```
 
-That probe opens two authenticated websocket sessions with unique simulator-style device IDs, holds them open for the requested duration, uses the same 20s websocket ping cadence as the app by default, and optionally layers periodic `presence/heartbeat` and `telemetry/events` writes. It should be the first lower-level proof when the app reports websocket `idle` / reconnect churn but `route-probe` and `backend-stability-probe` are green.
+That probe opens two authenticated websocket sessions with unique simulator-style device IDs, holds them open for the requested duration, uses the same 20s websocket ping cadence as the app by default, and optionally layers periodic `presence/heartbeat` and `telemetry/events` writes. It is compatibility tooling for local or legacy paths. Hosted production currently returns `405` for runtime WebSocket because live runtime control is TLS/HTTP while QUIC control remains disabled pending the demux fix.
 
-When the lower-level Python websocket probe is green but the app still looks suspicious, use the client-native probe:
+When the lower-level Python compatibility probe is green but the app still looks suspicious, use the client-native compatibility probe:
 
 ```bash
 just hosted-backend-client-probe https://api.beepbeep.to 60 20 20
 ```
 
-That runs a single opt-in Swift `@Test` through the actual `TurboBackendClient` / `URLSessionWebSocketTask` path, bootstraps auth + device registration + initial presence heartbeat, keeps the socket open for the requested duration, layers periodic `presence/heartbeat` and `telemetry/events` writes, and writes a JSON artifact to `/tmp/turbo-debug/hosted_backend_client_probe_latest.json` by default. The wrapper uses a dedicated `iPhone 17 Pro` simulator and removes its temporary runtime-control file on exit so other automated tests do not inherit the probe-only backend-bootstrap suppression. Use it when you need to distinguish Python-lower-level websocket stability from app-client websocket stability.
+That runs a single opt-in Swift `@Test` through the actual `TurboBackendClient` / `URLSessionWebSocketTask` path, bootstraps auth + device registration + initial presence heartbeat, keeps the socket open for the requested duration, layers periodic `presence/heartbeat` and `telemetry/events` writes, and writes a JSON artifact to `/tmp/turbo-debug/hosted_backend_client_probe_latest.json` by default. The wrapper uses a dedicated `iPhone 17 Pro` simulator and removes its temporary runtime-control file on exit so other automated tests do not inherit the probe-only backend-bootstrap suppression. Use it only when intentionally debugging the compatibility WebSocket path.
 
 When hosted simulator scenarios report `NSURLErrorDomain -1001` or `-1005`, use `just backend-stability-probe` or `just route-probe` before blaming schema drift or rotating the environment. If the raw probes pass, keep debugging the simulator/app transport lane instead of treating the backend environment as corrupt.
 
