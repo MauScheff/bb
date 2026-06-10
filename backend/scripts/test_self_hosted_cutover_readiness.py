@@ -1182,6 +1182,18 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
         self.assertIn("preflightFailures", result["detail"])
         self.assertIn("/v1/config", result["detail"])
 
+    def test_hosted_simulator_count_excludes_local_only_scenarios(self) -> None:
+        local_count = self_hosted_cutover_readiness.checked_in_simulator_scenario_count(
+            "http://127.0.0.1:8091/s/turbo"
+        )
+        hosted_count = self_hosted_cutover_readiness.checked_in_simulator_scenario_count(
+            "https://api.beepbeep.to/s/turbo"
+        )
+
+        self.assertGreater(local_count, hosted_count)
+        self.assertEqual(38, local_count)
+        self.assertEqual(26, hosted_count)
+
     def test_rust_postgres_integration_requires_named_live_proofs(self) -> None:
         proof_names = [
             "postgres-schema-application",

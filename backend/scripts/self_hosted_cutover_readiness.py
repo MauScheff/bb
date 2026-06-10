@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_ARTIFACTS = {
@@ -1766,7 +1767,7 @@ def check_simulator_self_hosted_suite(path: str) -> dict[str, Any]:
         command = scenario.get("command") if isinstance(scenario.get("command"), list) else []
         if not simulator_command_has(command, ["tools/scripts/run_simulator_scenarios.py", "--base-url", str(base_url)]):
             failures.append("simulator-scenario-command=invalid")
-        failures.extend(simulator_scenario_stdout_failures(scenario.get("stdout")))
+        failures.extend(simulator_scenario_stdout_failures(scenario.get("stdout"), str(base_url)))
     diagnostics = find_step(payload, "simulator-self-hosted-merged-diagnostics-strict")
     if not isinstance(diagnostics, dict):
         failures.append("simulator-self-hosted-merged-diagnostics-strict=missing")
@@ -1787,7 +1788,7 @@ def check_simulator_self_hosted_suite(path: str) -> dict[str, Any]:
             failures.append("strict-diagnostics-command=invalid")
     detail = status_artifact_detail(payload)
     if isinstance(scenario, dict) and not failures:
-        detail += f" simulatorScenarioCount={checked_in_simulator_scenario_count()}"
+        detail += f" simulatorScenarioCount={checked_in_simulator_scenario_count(str(base_url))}"
     if preflight:
         failed_checks = [
             {
@@ -1811,10 +1812,10 @@ def check_simulator_self_hosted_suite(path: str) -> dict[str, Any]:
     )
 
 
-def simulator_scenario_stdout_failures(stdout: Any) -> list[str]:
+def simulator_scenario_stdout_failures(stdout: Any, base_url: str) -> list[str]:
     if not isinstance(stdout, str) or not stdout:
         return ["simulator-scenario-stdout=missing"]
-    expected_count = checked_in_simulator_scenario_count()
+    expected_count = checked_in_simulator_scenario_count(base_url)
     if expected_count <= 0:
         return ["checkedInScenarioCount=missing"]
     failures: list[str] = []
@@ -1838,8 +1839,22 @@ def simulator_scenario_stdout_failures(stdout: Any) -> list[str]:
     return failures
 
 
-def checked_in_simulator_scenario_count() -> int:
-    return len(list(Path("shared/scenarios").glob("*.json")))
+def checked_in_simulator_scenario_count(base_url: str = "http://127.0.0.1:8091/s/turbo") -> int:
+    local = base_url_is_local(base_url)
+    count = 0
+    for path in Path("shared/scenarios").glob("*.json"):
+        payload = read_json(str(path))
+        if payload is None:
+            continue
+        if payload.get("requiresLocalBackend") is True and not local:
+            continue
+        count += 1
+    return count
+
+
+def base_url_is_local(value: str) -> bool:
+    host = (urlparse(value).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 def simulator_command_has(command: list[Any], required_parts: list[str]) -> bool:
