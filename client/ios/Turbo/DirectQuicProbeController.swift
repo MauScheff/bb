@@ -1320,6 +1320,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
     static let datagramJoinWaitsForProcessing = true
     static let datagramJoinArmsReceiveBeforeSend = true
     static let livePacketAudioWaitsForProcessing = false
+    static let livePacketAudioReportsOffHotPath = true
     static let binaryPacketAudioDatagramsEnabled = true
     static let liveAudioMaxConcurrentIncomingHandlers = 16
     static let liveAudioMaxPendingIncomingHandlers = 96
@@ -1531,7 +1532,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                     waitsForProcessing: Self.livePacketAudioWaitsForProcessing
                 )
                 if outboundPacketAudioReportLimiter.take() {
-                    await report(
+                    reportOffHotPath(
                         "Media relay packet audio submitted",
                         metadata: baseMetadata().merging(
                             [
@@ -2579,6 +2580,13 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
 
     private func report(_ message: String, metadata: [String: String]) async {
         await reportEvent?(message, metadata)
+    }
+
+    private func reportOffHotPath(_ message: String, metadata: [String: String]) {
+        guard Self.livePacketAudioReportsOffHotPath else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            await self?.report(message, metadata: metadata)
+        }
     }
 }
 
