@@ -12,8 +12,9 @@ media relay:       relay.beepbeep.to:443
 ```
 
 The API VM and relay VM are separate on purpose. The API endpoint owns HTTPS
-through nginx on TCP `443`. The relay endpoint owns QUIC packet media on UDP
-`443` plus TCP/TLS fallback on TCP `443`.
+through nginx on TCP `443` and runtime QUIC control on UDP `443`. The relay
+endpoint owns QUIC packet media on UDP `443` plus TCP/TLS fallback on TCP
+`443`.
 
 Transport model:
 

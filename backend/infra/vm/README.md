@@ -120,23 +120,26 @@ Runtime QUIC/TLS control is enabled from the private remote `.env`:
 ```bash
 BEEP_RUNTIME_CONTROL_CERT_PEM=/etc/letsencrypt/live/api.beepbeep.to/fullchain.pem
 BEEP_RUNTIME_CONTROL_KEY_PEM=/etc/letsencrypt/live/api.beepbeep.to/privkey.pem
-BEEP_RUNTIME_QUIC_CONTROL_BIND=
+BEEP_RUNTIME_QUIC_CONTROL_BIND=0.0.0.0:8443
 BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT=api.beepbeep.to:443
-BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=false
+BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true
 BEEP_RUNTIME_TLS_CONTROL_BIND=0.0.0.0:8443
 BEEP_RUNTIME_TLS_CONTROL_ENDPOINT=api.beepbeep.to:8443
 BEEP_RUNTIME_SUPPORTS_TLS_CONTROL=true
-BEEP_RUNTIME_CONTROL_PREFERENCE=runtime-tls,runtime-http
+BEEP_RUNTIME_CONTROL_PREFERENCE=runtime-quic,runtime-tls,runtime-http
 ```
 
 Runtime QUIC control is implemented and Compose maps public `443/udp` to
 container `8443/udp`, matching the firewall-friendly QUIC shape. Production
-currently leaves `BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=false` until runtime QUIC
-response-framing/demux is proven under the hosted simulator gate. Runtime TLS
-control uses `8443/tcp` because nginx owns public `443/tcp` for HTTPS. HTTP
-remains behind nginx on `443/tcp`; runtime control must not carry live media.
-The runtime service mounts host `/etc/letsencrypt` read-only so the same
-certificate chain used by nginx can be used by runtime QUIC/TLS control.
+advertises runtime QUIC first after the hosted runtime QUIC probe, hosted
+simulator scenario, and production gate pass. Runtime TLS control uses
+`8443/tcp` because nginx owns public `443/tcp` for HTTPS. HTTP remains behind
+nginx on `443/tcp`; moving persistent runtime TLS control to TCP `443` requires
+a stream router, ALPN demux, or a separate endpoint/IP. Runtime control must not
+carry live media. QUIC does not fall back to TCP on the server side; the client
+selects runtime TLS or HTTP recovery when UDP is blocked. The runtime service
+mounts host `/etc/letsencrypt` read-only so the same certificate chain used by
+nginx can be used by runtime QUIC/TLS control.
 
 The nginx API TLS server block must allow bounded debug/scenario diagnostics
 uploads:
@@ -154,7 +157,7 @@ The deploy script creates a private remote `.env` file on first install, includi
 
 | Role | Instance | Static IP | Endpoint | Ports |
 | --- | --- | --- | --- | --- |
-| API/control plane | `turbo-self-hosted-1` | `34.158.24.229` | `https://api.beepbeep.to` | nginx TCP `443`, runtime TLS control TCP `8443`, runtime QUIC control UDP `443` when enabled, runtime `8091` private/local |
+| API/control plane | `turbo-self-hosted-1` | `34.158.24.229` | `https://api.beepbeep.to` | nginx TCP `443`, runtime QUIC control UDP `443`, runtime TLS control TCP `8443`, runtime `8091` private/local |
 | Media relay | `turbo-relay-1` | `34.65.146.215` | `relay.beepbeep.to` | UDP `443`, TCP `443` |
 
 Both VMs are in project `beep-beep-495919`, zone `europe-west6-a`.

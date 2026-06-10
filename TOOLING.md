@@ -151,6 +151,9 @@ connections. Enable it by setting `BEEP_RUNTIME_QUIC_CONTROL_BIND`,
 `BEEP_RUNTIME_CONTROL_CERT_PEM`, `BEEP_RUNTIME_CONTROL_KEY_PEM`,
 `BEEP_RUNTIME_SUPPORTS_QUIC_CONTROL=true`, and
 `BEEP_RUNTIME_QUIC_CONTROL_ENDPOINT`.
+Production exposes runtime QUIC control on UDP `443`; if UDP is blocked, the
+client chooses runtime TLS or HTTP recovery. QUIC does not provide a server-side
+TCP fallback.
 
 | Policy | Launch argument / env value | Effect |
 | --- | --- | --- |
