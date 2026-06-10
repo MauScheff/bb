@@ -734,6 +734,20 @@
       "status": "active"
     },
     {
+      "id": "media.incoming_audio_handler_drain_exceeded",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+BackendSyncReceive.swift",
+      "predicate": "A remote-audio silence timeout deferred while live packet handler work was in flight, but that work remained pending or running beyond the bounded deferral budget.",
+      "evidenceFields": ["contactId", "phase", "elapsedMilliseconds", "maxMilliseconds", "mediaRelayPending", "mediaRelayRunning", "directQuicPending", "directQuicRunning"],
+      "detectors": ["Turbo/PTTViewModel+BackendSyncReceive.swift"],
+      "regressions": ["TurboTests/TalkTurnTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Defer receive teardown while transport packet handlers are in flight, then fail closed if the handler remains stuck past the bounded budget.",
+      "alertPolicy": "diagnostics",
+      "status": "active"
+    },
+    {
       "id": "media.playout_repeated_underrun",
       "scope": "local",
       "owner": "app",

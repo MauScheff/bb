@@ -2508,6 +2508,12 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         }
     }
 
+    func incomingAudioPayloadQueueLoad() -> DirectQuicAudioPayloadQueueLoad {
+        incomingAudioPayloadQueue
+            .load()
+            .combined(with: incomingOrderedAudioPayloadQueue.load())
+    }
+
     func clearPeerUnavailable() {
         lock.withLock {
             peerUnavailableSince = nil
@@ -2702,6 +2708,22 @@ nonisolated enum DirectQuicAudioPayloadDropPolicy: Sendable, Equatable {
     case aggregateByKey(String)
 }
 
+nonisolated struct DirectQuicAudioPayloadQueueLoad: Equatable, Sendable {
+    var pendingCount: Int
+    var runningCount: Int
+
+    var hasInFlightWork: Bool {
+        pendingCount > 0 || runningCount > 0
+    }
+
+    func combined(with other: DirectQuicAudioPayloadQueueLoad) -> DirectQuicAudioPayloadQueueLoad {
+        DirectQuicAudioPayloadQueueLoad(
+            pendingCount: pendingCount + other.pendingCount,
+            runningCount: runningCount + other.runningCount
+        )
+    }
+}
+
 nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
     // The default is serial for explicit ordering tests and ordered fallback-style
     // use. Direct/Fast packet media controllers opt into bounded concurrency
@@ -2754,6 +2776,15 @@ nonisolated final class DirectQuicAudioPayloadAsyncQueue: @unchecked Sendable {
             return tasks
         }
         tasks.forEach { $0.cancel() }
+    }
+
+    func load() -> DirectQuicAudioPayloadQueueLoad {
+        lock.withLock {
+            DirectQuicAudioPayloadQueueLoad(
+                pendingCount: pendingCountLocked(),
+                runningCount: running.count
+            )
+        }
     }
 
     func enqueue(
@@ -3772,6 +3803,10 @@ nonisolated final class DirectQuicProbeController: @unchecked Sendable {
                 metadata: ["reason": reason]
             )
         }
+    }
+
+    func incomingAudioPayloadQueueLoad() -> DirectQuicAudioPayloadQueueLoad {
+        incomingAudioPayloadQueue.load()
     }
 
     private func suppressPathLostForIntentionalClose() {

@@ -1305,6 +1305,8 @@ extension PTTViewModel {
     ) {
         if source != .audioChunk {
             receiveExecutionRuntime.clearRemoteTransmitStopProjectionGrace(for: contactID)
+        } else {
+            receiveExecutionRuntime.clearIncomingAudioHandlerDrainDeferral(for: contactID)
         }
         receiveExecutionCoordinator.send(.remoteActivityDetected(contactID: contactID, source: source))
         if selectedContactId == contactID {

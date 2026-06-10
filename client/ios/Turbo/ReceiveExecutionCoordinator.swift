@@ -260,6 +260,7 @@ final class ReceiveExecutionRuntimeState {
     var remoteAudioSilenceTasks: [UUID: Task<Void, Never>] = [:]
     private var remoteTransmitLeaseExpiryTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingPlaybackDrainStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
+    private var incomingAudioHandlerDrainStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
     private var remoteTransmitStopProjectionGraceStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
 
     func pendingPlaybackDrainDeferralElapsedNanoseconds(
@@ -275,6 +276,21 @@ final class ReceiveExecutionRuntimeState {
 
     func clearPendingPlaybackDrainDeferral(for contactID: UUID) {
         pendingPlaybackDrainStartedAtNanosecondsByContactID[contactID] = nil
+    }
+
+    func incomingAudioHandlerDrainElapsedNanoseconds(
+        for contactID: UUID,
+        nowNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> UInt64 {
+        if let startedAt = incomingAudioHandlerDrainStartedAtNanosecondsByContactID[contactID] {
+            return nowNanoseconds >= startedAt ? nowNanoseconds - startedAt : 0
+        }
+        incomingAudioHandlerDrainStartedAtNanosecondsByContactID[contactID] = nowNanoseconds
+        return 0
+    }
+
+    func clearIncomingAudioHandlerDrainDeferral(for contactID: UUID) {
+        incomingAudioHandlerDrainStartedAtNanosecondsByContactID[contactID] = nil
     }
 
     func markRemoteTransmitStopProjectionGrace(
@@ -309,6 +325,7 @@ final class ReceiveExecutionRuntimeState {
         remoteAudioSilenceTasks[contactID] = task
         if task == nil {
             clearPendingPlaybackDrainDeferral(for: contactID)
+            clearIncomingAudioHandlerDrainDeferral(for: contactID)
         }
     }
 
@@ -337,6 +354,7 @@ final class ReceiveExecutionRuntimeState {
         remoteAudioSilenceTasks = [:]
         remoteTransmitLeaseExpiryTasks = [:]
         pendingPlaybackDrainStartedAtNanosecondsByContactID = [:]
+        incomingAudioHandlerDrainStartedAtNanosecondsByContactID = [:]
         remoteTransmitStopProjectionGraceStartedAtNanosecondsByContactID = [:]
     }
 }

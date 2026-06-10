@@ -11915,6 +11915,112 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func remoteAudioSilenceTimeoutDefersWhileRelayAudioHandlerIsInFlight() async throws {
+        actor HandlerGate {
+            var started = false
+            var continuations: [CheckedContinuation<Void, Never>] = []
+
+            func wait() async {
+                started = true
+                await withCheckedContinuation { continuation in
+                    continuations.append(continuation)
+                }
+            }
+
+            func open() {
+                let waiting = continuations
+                continuations.removeAll(keepingCapacity: false)
+                for continuation in waiting {
+                    continuation.resume()
+                }
+            }
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let mediaSession = RecordingMediaSession()
+        let gate = HandlerGate()
+        let relayClient = TurboMediaRelayClient(
+            config: TurboMediaRelayClientConfig(
+                host: "relay.beepbeep.to",
+                quicPort: 443,
+                tcpPort: 443,
+                token: "test-token"
+            ),
+            sessionId: "channel",
+            localDeviceId: "local-device",
+            peerDeviceId: "peer-device",
+            onIncomingAudioPayload: { _ in
+                await gate.wait()
+            }
+        )
+        defer {
+            Task { await gate.open() }
+            relayClient.close()
+        }
+
+        viewModel.remoteAudioIncomingHandlerDrainMaxNanoseconds = 1_000_000_000
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
+        viewModel.mediaRuntime.connectionState = .connected
+        viewModel.mediaRuntime.mediaRelayClient = relayClient
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+
+        relayClient.injectIncomingAudioPayloadForTesting(
+            TurboMediaRelayIncomingAudioPayload(
+                payload: "queued-audio",
+                mediaMode: .quicDatagram,
+                sequenceNumber: 1,
+                sentAtMilliseconds: nil,
+                receivedAtNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        )
+        try await waitForCondition(
+            "relay handler started",
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            await gate.started
+        }
+
+        viewModel.handleRemoteAudioSilenceTimeout(for: contactID, phase: .drainingAudio)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(viewModel.remoteTransmittingContactIDs.contains(contactID))
+        #expect(viewModel.mediaSessionContactID == contactID)
+        #expect(viewModel.mediaConnectionState == .connected)
+        #expect(mediaSession.closedDeactivateAudioSessionFlags.isEmpty)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Deferred remote audio silence timeout while incoming audio handler is still processing"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Remote audio activity timed out"
+            )
+        )
+
+        await gate.open()
+    }
+
+    @MainActor
     @Test func remoteAudioSilenceTimeoutSynthesizesMissingStopBeforePlaybackDrain() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()

@@ -791,7 +791,11 @@ extension PTTViewModel {
     }
 
     func hasActiveOrPreparedRemoteReceiveEpoch(channelID: String) -> Bool {
-        engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: false) != nil
+        hasRemoteReceiveEpoch(channelID: channelID, includeDraining: false)
+    }
+
+    func hasRemoteReceiveEpoch(channelID: String, includeDraining: Bool) -> Bool {
+        engineCurrentRemoteTransmitID(channelID: channelID, includeDraining: includeDraining) != nil
     }
 
     private func engineCurrentRemoteTransmitID(

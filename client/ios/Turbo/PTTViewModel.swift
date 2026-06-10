@@ -245,6 +245,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var remoteAudioForegroundInitialChunkTimeoutNanoseconds: UInt64 = 2_000_000_000
     var remoteAudioSilenceTimeoutNanoseconds: UInt64 = 1_500_000_000
     var remoteAudioPendingPlaybackDrainMaxNanoseconds: UInt64 = 5_000_000_000
+    var remoteAudioIncomingHandlerDrainMaxNanoseconds: UInt64 = 3_000_000_000
     var remoteAudioNonAuthoritativePlaybackDrainMaxNanoseconds: UInt64 = 750_000_000
     var remoteAudioNonAuthoritativePlaybackDrainPollNanoseconds: UInt64 = 150_000_000
     var remoteAudioChunkContinuityGapNanoseconds: UInt64 = 350_000_000

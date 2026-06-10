@@ -94,10 +94,49 @@ extension PTTViewModel {
         if repairExpiredRemoteTransmitLeaseIfNeeded(contactID: contactID) {
             return
         }
-        synthesizeMissingRemoteTransmitStopFromAudioSilenceTimeoutIfNeeded(
+        if shouldDeferRemoteAudioSilenceTimeoutForIncomingAudioHandler(
             for: contactID,
             phase: resolvedPhase
-        )
+        ) {
+            let relayLoad = mediaRuntime.mediaRelayClient?.incomingAudioPayloadQueueLoad()
+            let directLoad = mediaRuntime.directQuicProbeController?.incomingAudioPayloadQueueLoad()
+            let elapsedNanoseconds = receiveExecutionRuntime
+                .incomingAudioHandlerDrainElapsedNanoseconds(for: contactID)
+            diagnostics.record(
+                .media,
+                message: "Deferred remote audio silence timeout while incoming audio handler is still processing",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "phase": resolvedPhase.rawValue,
+                    "elapsedMilliseconds": String(elapsedNanoseconds / 1_000_000),
+                    "maxMilliseconds": String(remoteAudioIncomingHandlerDrainMaxNanoseconds / 1_000_000),
+                    "mediaRelayPending": relayLoad.map { String($0.pendingCount) } ?? "none",
+                    "mediaRelayRunning": relayLoad.map { String($0.runningCount) } ?? "none",
+                    "directQuicPending": directLoad.map { String($0.pendingCount) } ?? "none",
+                    "directQuicRunning": directLoad.map { String($0.runningCount) } ?? "none",
+                ]
+            )
+            runReceiveExecutionEffect(
+                .scheduleRemoteSilenceTimeout(
+                    contactID: contactID,
+                    phase: resolvedPhase,
+                    generation: receiveExecutionCoordinator
+                        .state
+                        .remoteActivityByContactID[contactID]?
+                        .activityGeneration ?? 0
+                )
+            )
+            return
+        }
+        if shouldSynthesizeMissingRemoteTransmitStopFromAudioSilenceTimeout(
+            for: contactID,
+            phase: resolvedPhase
+        ) {
+            synthesizeMissingRemoteTransmitStopFromAudioSilenceTimeoutIfNeeded(
+                for: contactID,
+                phase: resolvedPhase
+            )
+        }
         switch pendingPlaybackDrainDecision(for: contactID, phase: resolvedPhase) {
         case .deferTimeout(let elapsedNanoseconds, let maxNanoseconds):
             diagnostics.record(
@@ -164,6 +203,10 @@ extension PTTViewModel {
             )
             return
         }
+        synthesizeMissingRemoteTransmitStopFromAudioSilenceTimeoutIfNeeded(
+            for: contactID,
+            phase: resolvedPhase
+        )
         finishRemoteAudioActivity(
             for: contactID,
             phase: resolvedPhase,
@@ -215,6 +258,7 @@ extension PTTViewModel {
         receiveExecutionRuntime.replaceRemoteAudioSilenceTask(for: contactID, with: nil)
         receiveExecutionRuntime.replaceRemoteTransmitLeaseExpiryTask(for: contactID, with: nil)
         receiveExecutionRuntime.clearPendingPlaybackDrainDeferral(for: contactID)
+        receiveExecutionRuntime.clearIncomingAudioHandlerDrainDeferral(for: contactID)
         syncEngineRemotePlaybackDrained(contactID: contactID, source: engineSource)
         receiveExecutionCoordinator.send(.silenceTimeoutElapsed(contactID: contactID))
         diagnostics.record(
@@ -287,6 +331,9 @@ extension PTTViewModel {
         else {
             return
         }
+        guard hasRemoteReceiveEpoch(channelID: channelID, includeDraining: true) else {
+            return
+        }
 
         syncEngineRemoteTransmitStopped(
             contactID: contactID,
@@ -351,6 +398,74 @@ extension PTTViewModel {
             elapsedNanoseconds: elapsedNanoseconds,
             maxNanoseconds: maximumDrainNanoseconds
         )
+    }
+
+    private func shouldSynthesizeMissingRemoteTransmitStopFromAudioSilenceTimeout(
+        for contactID: UUID,
+        phase: RemoteReceiveTimeoutPhase
+    ) -> Bool {
+        guard
+            let activityState = receiveExecutionCoordinator
+                .state
+                .remoteActivityByContactID[contactID]
+        else {
+            return false
+        }
+        guard activityState.timeoutPhase == phase else { return false }
+        guard
+            !receiveExecutionCoordinator
+                .state
+                .remoteTransmitStoppedContactIDs
+                .contains(contactID)
+        else {
+            return false
+        }
+        guard !shouldDeferRemoteAudioSilenceTimeout(for: contactID, phase: phase) else {
+            return false
+        }
+        guard let channelID =
+            contacts.first(where: { $0.id == contactID })?.backendChannelId
+            ?? channelStateByContactID[contactID]?.channelId
+        else {
+            return false
+        }
+        return hasRemoteReceiveEpoch(channelID: channelID, includeDraining: true)
+    }
+
+    private func shouldDeferRemoteAudioSilenceTimeoutForIncomingAudioHandler(
+        for contactID: UUID,
+        phase: RemoteReceiveTimeoutPhase
+    ) -> Bool {
+        guard phase == .drainingAudio else { return false }
+        guard mediaSessionContactID == contactID else { return false }
+        let relayLoad = mediaRuntime.mediaRelayClient?.incomingAudioPayloadQueueLoad()
+        let directLoad = mediaRuntime.directQuicProbeController?.incomingAudioPayloadQueueLoad()
+        guard relayLoad?.hasInFlightWork == true || directLoad?.hasInFlightWork == true else {
+            receiveExecutionRuntime.clearIncomingAudioHandlerDrainDeferral(for: contactID)
+            return false
+        }
+        let elapsedNanoseconds = receiveExecutionRuntime
+            .incomingAudioHandlerDrainElapsedNanoseconds(for: contactID)
+        guard elapsedNanoseconds < remoteAudioIncomingHandlerDrainMaxNanoseconds else {
+            receiveExecutionRuntime.clearIncomingAudioHandlerDrainDeferral(for: contactID)
+            diagnostics.recordInvariantViolation(
+                invariantID: "media.incoming_audio_handler_drain_exceeded",
+                scope: .local,
+                message: "incoming audio handler remained in flight past remote receive timeout deferral budget",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "phase": phase.rawValue,
+                    "elapsedMilliseconds": String(elapsedNanoseconds / 1_000_000),
+                    "maxMilliseconds": String(remoteAudioIncomingHandlerDrainMaxNanoseconds / 1_000_000),
+                    "mediaRelayPending": relayLoad.map { String($0.pendingCount) } ?? "none",
+                    "mediaRelayRunning": relayLoad.map { String($0.runningCount) } ?? "none",
+                    "directQuicPending": directLoad.map { String($0.pendingCount) } ?? "none",
+                    "directQuicRunning": directLoad.map { String($0.runningCount) } ?? "none",
+                ]
+            )
+            return false
+        }
+        return true
     }
 
     private func shouldDeferRemoteAudioSilenceTimeout(
