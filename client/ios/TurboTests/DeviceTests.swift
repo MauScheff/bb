@@ -6214,6 +6214,7 @@ struct DeviceTests {
             remoteReceiveActivityState: nil,
             receiverAudioReadinessState: nil,
             pendingAction: "none",
+            pendingConnectAcceptedIncomingBeep: false,
             localJoinAttempt: nil,
             localJoinAttemptIssuedCount: 0,
             reconciliationAction: "none",

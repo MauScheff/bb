@@ -639,6 +639,10 @@ extension PTTViewModel {
                 contactID: staleSystemRejoinSuppression.contactID,
                 reason: "stale-join-after-recent-system-leave"
             )
+            conversationActionCoordinator.clearRejectedLocalJoin(
+                for: staleSystemRejoinSuppression.contactID
+            )
+            cancelSelectedConnectionAttemptTimeout()
             try? pttSystemClient.leaveChannel(channelUUID: channelUUID)
             statusMessage = "Disconnecting..."
             captureDiagnosticsState("ptt-callback:joined-blocked-by-recent-system-leave")
@@ -680,6 +684,8 @@ extension PTTViewModel {
                 contactID: contactID,
                 reason: "stale-join-after-backend-membership-loss"
             )
+            conversationActionCoordinator.clearRejectedLocalJoin(for: contactID)
+            cancelSelectedConnectionAttemptTimeout()
             try? pttSystemClient.leaveChannel(channelUUID: channelUUID)
             statusMessage = "Disconnecting..."
             captureDiagnosticsState("ptt-callback:joined-blocked-by-membership-loss")

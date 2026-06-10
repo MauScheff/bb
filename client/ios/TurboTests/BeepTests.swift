@@ -2391,6 +2391,39 @@ struct BeepTests {
     }
 
     @MainActor
+    @Test func supersededBackendJoinClearsUnownedPendingBackendConnect() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: UUID(),
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.conversationActionCoordinator.queueConnect(contactID: contactID)
+        let request = viewModel.backendJoinRequest(for: contact, intent: .requestConnection)
+
+        let discarded = await viewModel.discardSupersededBackendJoinIfNeeded(
+            request,
+            stage: "test"
+        )
+
+        #expect(discarded)
+        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Cleared unowned pending backend connect after superseded join"
+                    && $0.metadata["invariantID"] == "selected.pending_backend_connect_requires_owner"
+            }
+        )
+    }
+
+    @MainActor
     @Test func offlineIncomingBeepBackProjectsOutgoingBeepAndCooldownBeforeBackendBeepReturns() {
         let viewModel = PTTViewModel()
         viewModel.selectedContactPrewarmPipelineEnabled = false

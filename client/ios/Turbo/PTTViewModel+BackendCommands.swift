@@ -536,7 +536,7 @@ extension PTTViewModel {
     }
 
     @discardableResult
-    private func discardSupersededBackendJoinIfNeeded(
+    func discardSupersededBackendJoinIfNeeded(
         _ request: BackendJoinRequest,
         stage: String,
         contact: Contact? = nil,
@@ -560,6 +560,8 @@ extension PTTViewModel {
             ]
         )
 
+        clearSupersededBackendConnectIfUnowned(request, reason: reason, stage: stage)
+
         if activeBackendJoinMatches(request) {
             backendCommandCoordinator.send(.reset)
         }
@@ -576,6 +578,44 @@ extension PTTViewModel {
         }
 
         return true
+    }
+
+    private func backendCommandHasReplacementJoin(for contactID: UUID) -> Bool {
+        if case .join(let activeRequest) = backendCommandCoordinator.state.activeOperation,
+           activeRequest.contactID == contactID {
+            return true
+        }
+        return backendCommandCoordinator.state.queuedJoinRequest?.contactID == contactID
+    }
+
+    private func clearSupersededBackendConnectIfUnowned(
+        _ request: BackendJoinRequest,
+        reason: String,
+        stage: String
+    ) {
+        guard reason == "backend-operation-superseded" else { return }
+        guard conversationActionCoordinator.pendingAction.pendingConnectContactID == request.contactID else {
+            return
+        }
+        guard !backendCommandHasReplacementJoin(for: request.contactID) else { return }
+
+        conversationActionCoordinator.clearSupersededBackendConnect(for: request.contactID)
+        cancelSelectedConnectionAttemptTimeout()
+        updateStatusForSelectedContact()
+        diagnostics.record(
+            .backend,
+            message: "Cleared unowned pending backend connect after superseded join",
+            metadata: [
+                "contactId": request.contactID.uuidString,
+                "handle": request.handle,
+                "stage": stage,
+                "reason": reason,
+                "invariantID": "selected.pending_backend_connect_requires_owner",
+                "activeBackendOperation": String(describing: backendCommandCoordinator.state.activeOperation),
+                "queuedJoinRequest": String(describing: backendCommandCoordinator.state.queuedJoinRequest),
+            ]
+        )
+        captureDiagnosticsState("backend-join:superseded-connect-cleared")
     }
 
     private func compensateBackendLeaveAfterSupersededJoin(

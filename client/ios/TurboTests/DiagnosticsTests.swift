@@ -3230,6 +3230,7 @@ struct DiagnosticsTests {
             remoteReceiveActivityState: nil,
             receiverAudioReadinessState: nil,
             pendingAction: "none",
+            pendingConnectAcceptedIncomingBeep: false,
             localJoinAttempt: nil,
             localJoinAttemptIssuedCount: 0,
             reconciliationAction: "none",
@@ -3855,6 +3856,77 @@ struct DiagnosticsTests {
         #expect(
             !store.invariantViolations.contains {
                 $0.invariantID == "selected.backend_absent_pending_local_action_without_device_ptt_evidence"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func diagnosticsFlagsIncomingBeepHiddenByNeutralBackendRequest() {
+        let store = DiagnosticsStore()
+        store.clear()
+
+        captureDevicePTTDiagnosticsState(store,
+            reason: "backend-sync:contact-summaries",
+            fields: [
+                "selectedContact": "@blake",
+                "selectedConversationPhase": "waitingForPeer",
+                "selectedConversationPhaseDetail": "waitingForPeer(reason: BeepBeep.SelectedConversationWaitingReason.backendConversationTransition)",
+                "selectedConversationRelationship": "incomingBeep(requestCount: 3)",
+                "pendingAction": "connect(BeepBeep.PendingConnectAction.requestingBackend(contactID: 123))",
+                "pendingConnectAcceptedIncomingBeep": "false",
+                "isJoined": "false",
+                "isTransmitting": "false",
+                "systemSession": "none",
+                "backendJoinSettling": "false",
+                "backendChannelStatus": "incoming-beep",
+                "backendReadiness": "none",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "false",
+                "backendPeerDeviceConnected": "false",
+                "selectedConversationStatus": "Connecting..."
+            ]
+        )
+
+        let exported = store.exportText(snapshot: "selectedConversationPhase=waitingForPeer")
+
+        #expect(exported.contains("[selected.pending_beep_dominates_live_projection]"))
+        #expect(
+            store.invariantViolations.contains {
+                $0.invariantID == "selected.pending_beep_dominates_live_projection"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func diagnosticsAllowsIncomingBeepHiddenByExplicitAcceptRequest() {
+        let store = DiagnosticsStore()
+        store.clear()
+
+        captureDevicePTTDiagnosticsState(store,
+            reason: "selected-conversation-connect:queued",
+            fields: [
+                "selectedContact": "@blake",
+                "selectedConversationPhase": "waitingForPeer",
+                "selectedConversationPhaseDetail": "waitingForPeer(reason: BeepBeep.SelectedConversationWaitingReason.pendingJoin)",
+                "selectedConversationRelationship": "incomingBeep(requestCount: 1)",
+                "pendingAction": "connect(BeepBeep.PendingConnectAction.requestingBackend(contactID: 123))",
+                "pendingConnectAcceptedIncomingBeep": "true",
+                "isJoined": "false",
+                "isTransmitting": "false",
+                "systemSession": "none",
+                "backendJoinSettling": "false",
+                "backendChannelStatus": "incoming-beep",
+                "backendReadiness": "none",
+                "backendSelfJoined": "false",
+                "backendPeerJoined": "false",
+                "backendPeerDeviceConnected": "false",
+                "selectedConversationStatus": "Connecting..."
+            ]
+        )
+
+        #expect(
+            !store.invariantViolations.contains {
+                $0.invariantID == "selected.pending_beep_dominates_live_projection"
             }
         )
     }

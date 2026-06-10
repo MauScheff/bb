@@ -1375,6 +1375,20 @@
       "status": "active"
     },
     {
+      "id": "selected.pending_backend_connect_requires_owner",
+      "scope": "convergence",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/PTTViewModel+BackendCommands.swift",
+      "predicate": "A selected Conversation has a pending backend-connect action, but no active or queued backend join, accepted backend membership, or local Device PTT evidence owns that expectation.",
+      "evidenceFields": ["selectedConversationPhase", "selectedConversationPhaseDetail", "selectedConversationRelationship", "pendingAction", "activeBackendOperation", "queuedJoinRequest", "isJoined", "systemSession", "backendChannelStatus", "backendReadiness", "backendSelfJoined", "backendPeerJoined"],
+      "detectors": ["Turbo/PTTViewModel+BackendCommands.swift"],
+      "regressions": ["TurboTests/ConversationTests.swift", "TurboTests/DiagnosticsTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "ConversationActionCoordinatorState.clearSupersededBackendConnect clears unowned backend-connect expectations when a superseded backend join has no replacement owner.",
+      "alertPolicy": "strict diagnostics",
+      "status": "active"
+    },
+    {
       "id": "selected.backend_ready_missing_local_device_ptt_evidence",
       "scope": "convergence",
       "owner": "app",

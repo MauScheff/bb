@@ -1514,6 +1514,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             remoteReceiveActivityState: selectedRemoteReceiveActivity.map { String(describing: $0) },
             receiverAudioReadinessState: selectedReceiverAudioReadiness.map { String(describing: $0) },
             pendingAction: selectedConversation.pendingAction,
+            pendingConnectAcceptedIncomingBeep: selectedContactID.map {
+                conversationActionCoordinator.pendingConnectAcceptedIncomingBeepContactID == $0
+            } ?? false,
             localJoinAttempt: localJoinAttempt.map {
                 "contactID:\($0.contactID.uuidString),channelUUID:\($0.channelUUID.uuidString)"
             },
@@ -1621,6 +1624,11 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             "selectedConversationCanTransmit": String(selectedConversation.canTransmitNow),
             "selectedConversationAllowsHoldToTalk": String(selectedConversation.allowsHoldToTalk),
             "pendingAction": selectedConversation.pendingAction,
+            "pendingConnectAcceptedIncomingBeep": String(
+                selectedContactId.map {
+                    conversationActionCoordinator.pendingConnectAcceptedIncomingBeepContactID == $0
+                } ?? false
+            ),
             "localJoinAttempt": localJoinAttemptDescription,
             "localJoinAttemptIssuedCount": localJoinAttemptIssuedCount,
             "selectedConversationReconciliationAction": selectedConversation.reconciliationAction,

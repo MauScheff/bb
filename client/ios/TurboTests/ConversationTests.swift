@@ -4312,6 +4312,47 @@ struct ConversationTests {
     }
 
     @MainActor
+    @Test func staleDidJoinAfterRecentSystemLeaveClearsPendingLocalJoin() async {
+        let client = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: client)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Avery",
+                handle: "@avery",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.conversationActionCoordinator.queueJoin(
+            contactID: contactID,
+            channelUUID: channelUUID
+        )
+        viewModel.markStaleSystemRejoinSuppression(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "recent-system-leave"
+        )
+
+        viewModel.handleDidJoinChannel(channelUUID, reason: "stale-rejoin")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(client.leaveRequests == [channelUUID])
+        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
+        #expect(viewModel.conversationActionCoordinator.localJoinAttempt == nil)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Ignoring stale PTT join after recent system leave"
+            }
+        )
+    }
+
+    @MainActor
     @Test func restoreDevicePTTSessionEffectIsIgnoredAfterRecentSystemLeave() async {
         let client = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: client)

@@ -181,6 +181,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
     let remoteReceiveActivityState: String?
     let receiverAudioReadinessState: String?
     let pendingAction: String
+    let pendingConnectAcceptedIncomingBeep: Bool
     let localJoinAttempt: String?
     let localJoinAttemptIssuedCount: Int
     let reconciliationAction: String
@@ -229,6 +230,7 @@ struct DevicePTTDiagnosticsProjection: Codable, Equatable {
                     || selectedConversationRelationship.hasPrefix("mutualBeep")
             )
             && pendingAction.contains("requestingBackend")
+            && pendingConnectAcceptedIncomingBeep
 
         var violations: [DiagnosticsInvariantViolationCandidate] = []
 

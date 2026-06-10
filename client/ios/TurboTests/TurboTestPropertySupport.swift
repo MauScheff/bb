@@ -971,6 +971,7 @@ struct PTTReadinessAdapterPropertySample {
             remoteReceiveActivityState: model.remoteParticipantSignalIsTransmitting ? "stale-remote-participant-signal" : nil,
             receiverAudioReadinessState: nil,
             pendingAction: String(describing: model.pendingAction),
+            pendingConnectAcceptedIncomingBeep: false,
             localJoinAttempt: nil,
             localJoinAttemptIssuedCount: 0,
             reconciliationAction: String(describing: projection.reconciliationAction),

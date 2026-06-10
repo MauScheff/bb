@@ -539,6 +539,8 @@ func makeDevicePTTDiagnosticsProjection(
         remoteReceiveActivityState: optionalDiagnosticsString(fields["remoteReceiveActivityState"]),
         receiverAudioReadinessState: optionalDiagnosticsString(fields["receiverAudioReadinessState"]),
         pendingAction: fields["pendingAction"] ?? "none",
+        pendingConnectAcceptedIncomingBeep:
+            diagnosticsBool(fields["pendingConnectAcceptedIncomingBeep"]) ?? false,
         localJoinAttempt: optionalDiagnosticsString(fields["localJoinAttempt"]),
         localJoinAttemptIssuedCount: fields["localJoinAttemptIssuedCount"].flatMap(Int.init) ?? 0,
         reconciliationAction: fields["selectedConversationReconciliationAction"] ?? "none",

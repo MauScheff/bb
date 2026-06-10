@@ -319,6 +319,14 @@ struct ConversationActionCoordinatorState: Equatable {
         }
     }
 
+    mutating func clearRejectedLocalJoin(for contactID: UUID) {
+        clearPendingJoin(for: contactID)
+    }
+
+    mutating func clearSupersededBackendConnect(for contactID: UUID) {
+        clearPendingConnect(for: contactID)
+    }
+
     mutating func clearExplicitLeave(for contactID: UUID?) {
         guard case .leave(.explicit(let pendingContactID)) = pendingAction else { return }
         if pendingContactID == nil || pendingContactID == contactID {
