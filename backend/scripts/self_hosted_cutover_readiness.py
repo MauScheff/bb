@@ -15,7 +15,7 @@ DEFAULT_ARTIFACTS = {
     "rustRuntimeFuzz": "/tmp/turbo-rust-runtime-fuzz/report.json",
     "selfHostedPreflight": "/tmp/turbo-self-hosted-preflight.json",
     "selfHostedHttpProbe": "/tmp/turbo-self-hosted-http-probe.json",
-    "selfHostedWebSocketProbe": "/tmp/turbo-self-hosted-websocket-probe.json",
+    "runtimeControlProbe": "/tmp/turbo-runtime-control-probe.json",
     "selfHostedScenarioFuzz": "/tmp/turbo-self-hosted-fuzz/report.json",
     "selfHostedReliabilityFuzz": "/tmp/turbo-self-hosted-fuzz/overnight-report.json",
     "shadowBackendFuzz": "/tmp/turbo-shadow-backend-fuzz/report.json",
@@ -48,7 +48,7 @@ def main() -> int:
         check_rust_runtime_fuzz(DEFAULT_ARTIFACTS["rustRuntimeFuzz"]),
         check_self_hosted_preflight(DEFAULT_ARTIFACTS["selfHostedPreflight"]),
         check_http_probe(DEFAULT_ARTIFACTS["selfHostedHttpProbe"]),
-        check_websocket_probe(DEFAULT_ARTIFACTS["selfHostedWebSocketProbe"]),
+        check_runtime_control_probe(DEFAULT_ARTIFACTS["runtimeControlProbe"]),
         check_self_hosted_scenario_fuzz(DEFAULT_ARTIFACTS["selfHostedScenarioFuzz"]),
         check_reliability_fuzz_self_hosted_overnight(
             DEFAULT_ARTIFACTS["selfHostedReliabilityFuzz"]
@@ -920,7 +920,7 @@ def check_http_probe(path: str) -> dict[str, Any]:
         ("app-compatible-beeps-incoming", "GET", "/s/turbo/v1/beeps/incoming", 200),
         ("app-compatible-beeps-outgoing", "GET", "/s/turbo/v1/beeps/outgoing", 200),
         ("native-request-talk-turn", "POST", "/v1/conversations/conversation-1/talk-turns/request", 200),
-        ("prefixed-native-request-talk-turn", "POST", "/s/turbo/v1/conversations/conversation-1/talk-turns/request", 200),
+        ("prefixed-native-request-talk-turn", "POST", "/s/turbo/v1/conversations/conversation-prefixed/talk-turns/request", 200),
         ("native-renew-talk-turn", "POST", "/v1/conversations/conversation-1/talk-turns/renew", 200),
         ("native-release-talk-turn", "POST", "/v1/conversations/conversation-1/talk-turns/release", 200),
         ("legacy-begin-transmit", "POST", "/v1/channels/conversation-1/begin-transmit", 200),
@@ -1040,6 +1040,70 @@ def check_websocket_probe(path: str) -> dict[str, Any]:
     return evidence(
         "self-hosted-websocket-probe",
         "Self-hosted websocket signaling probe",
+        "fail" if failures else "pass",
+        path,
+        detail,
+    )
+
+
+def check_runtime_control_probe(path: str) -> dict[str, Any]:
+    payload = read_json(path)
+    if payload is None:
+        return missing_required(
+            "runtime-control-probe",
+            "Runtime QUIC/TLS/HTTP control probe",
+            f"Run `just runtime-control-probe {path}`.",
+            path,
+        )
+    required_checks = {
+        "runtime-quic-control",
+        "runtime-tls-control",
+        "persistent-control-stream",
+        "runtime-http-bootstrap-recovery",
+        "runtime-websocket-retired-by-default",
+    }
+    failures: list[str] = []
+    if payload.get("status") != "ok":
+        failures.append(f"status={payload.get('status')!r}")
+    if payload.get("ok") is not True:
+        failures.append(f"ok={payload.get('ok')!r}")
+    checks = payload.get("checks")
+    observed: set[str] = set()
+    if not isinstance(checks, list):
+        failures.append("checks=missing")
+    else:
+        for check in checks:
+            if not isinstance(check, dict):
+                failures.append(f"malformedCheck={check!r}")
+                continue
+            name = check.get("name")
+            if not isinstance(name, str):
+                failures.append(f"check.name={name!r}")
+                continue
+            if name in observed:
+                failures.append(f"duplicateCheck={name!r}")
+            observed.add(name)
+            if check.get("ok") is not True:
+                failures.append(f"{name}.ok={check.get('ok')!r}")
+            if check.get("exitCode") != 0:
+                failures.append(f"{name}.exitCode={check.get('exitCode')!r}")
+            command = check.get("command")
+            if not isinstance(command, list) or not command:
+                failures.append(f"{name}.command=missing")
+    missing_checks = sorted(required_checks - observed)
+    if missing_checks:
+        failures.append(f"missingChecks={missing_checks!r}")
+    detail = (
+        "runtime QUIC, runtime TLS, persistent control stream, HTTP "
+        "bootstrap/recovery, and WebSocket retired-by-default config checked"
+    )
+    if isinstance(checks, list):
+        detail += f"; checks={len(checks)}"
+    if failures:
+        detail += f"; failures={failures!r}"
+    return evidence(
+        "runtime-control-probe",
+        "Runtime QUIC/TLS/HTTP control probe",
         "fail" if failures else "pass",
         path,
         detail,
@@ -1674,7 +1738,7 @@ def check_simulator_self_hosted_suite(path: str) -> dict[str, Any]:
         if (
             health.get("ok") is not True
             or health_body.get("runtime") != "self-hosted"
-            or health_body.get("supportsWebSocket") is not True
+            or health_body.get("supportsWebSocket") is not False
         ):
             failures.append(
                 f"health-preflight=invalid runtime={health_body.get('runtime')!r} "
@@ -1687,7 +1751,7 @@ def check_simulator_self_hosted_suite(path: str) -> dict[str, Any]:
         if (
             config.get("ok") is not True
             or config_body.get("mode") != "self-hosted"
-            or config_body.get("supportsWebSocket") is not True
+            or config_body.get("supportsWebSocket") is not False
         ):
             failures.append(
                 f"config-preflight=invalid mode={config_body.get('mode')!r} "

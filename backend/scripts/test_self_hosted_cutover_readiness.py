@@ -342,6 +342,44 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
         self.assertIn("app_compatible_cluster_owner_routed_payload", result["detail"])
         self.assertIn("app_compatible_authorization_facts_recorded", result["detail"])
 
+    def test_runtime_control_probe_passes_with_current_transport_evidence(self) -> None:
+        result = self._check_runtime_control_probe(self._runtime_control_probe_payload())
+
+        self.assertEqual(result["name"], "runtime-control-probe")
+        self.assertEqual(result["status"], "pass")
+        self.assertIn("checks=5", result["detail"])
+
+    def test_runtime_control_probe_rejects_top_level_pass_without_required_checks(self) -> None:
+        payload = {
+            "status": "ok",
+            "ok": True,
+            "checks": [
+                {
+                    "name": "runtime-quic-control",
+                    "ok": True,
+                    "exitCode": 0,
+                    "command": ["cargo", "test"],
+                }
+            ],
+        }
+
+        result = self._check_runtime_control_probe(payload)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("runtime-tls-control", result["detail"])
+        self.assertIn("runtime-websocket-retired-by-default", result["detail"])
+
+    def test_runtime_control_probe_rejects_failed_lane_check(self) -> None:
+        payload = self._runtime_control_probe_payload()
+        payload["checks"][1]["ok"] = False
+        payload["checks"][1]["exitCode"] = 101
+
+        result = self._check_runtime_control_probe(payload)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("runtime-tls-control.ok=False", result["detail"])
+        self.assertIn("runtime-tls-control.exitCode=101", result["detail"])
+
     def test_fuzz_artifact_passes_with_expected_gate_and_iteration_checks(self) -> None:
         payload = {
             "status": "ok",
@@ -978,7 +1016,7 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
                             "ok": True,
                             "body": {
                                 "runtime": "self-hosted",
-                                "supportsWebSocket": True,
+                                "supportsWebSocket": False,
                             },
                         },
                         {
@@ -986,7 +1024,7 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
                             "ok": True,
                             "body": {
                                 "mode": "self-hosted",
-                                "supportsWebSocket": True,
+                                "supportsWebSocket": False,
                             },
                         },
                     ],
@@ -1046,7 +1084,7 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
                             "ok": True,
                             "body": {
                                 "runtime": "self-hosted",
-                                "supportsWebSocket": True,
+                                "supportsWebSocket": False,
                             },
                         },
                         {
@@ -1054,7 +1092,7 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
                             "ok": True,
                             "body": {
                                 "mode": "self-hosted",
-                                "supportsWebSocket": True,
+                                "supportsWebSocket": False,
                             },
                         },
                     ],
@@ -1288,7 +1326,7 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
             (
                 "prefixed-native-request-talk-turn",
                 "POST",
-                "/s/turbo/v1/conversations/conversation-1/talk-turns/request",
+                "/s/turbo/v1/conversations/conversation-prefixed/talk-turns/request",
                 200,
             ),
             ("native-renew-talk-turn", "POST", "/v1/conversations/conversation-1/talk-turns/renew", 200),
@@ -1362,6 +1400,33 @@ class SelfHostedCutoverReadinessTests(unittest.TestCase):
             path = Path(temp_dir) / "self-hosted-websocket-probe.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             return self_hosted_cutover_readiness.check_websocket_probe(str(path))
+
+    def _check_runtime_control_probe(self, payload: dict[str, object]) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "runtime-control-probe.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return self_hosted_cutover_readiness.check_runtime_control_probe(str(path))
+
+    def _runtime_control_probe_payload(self) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "ok": True,
+            "checks": [
+                self._runtime_control_check("runtime-quic-control"),
+                self._runtime_control_check("runtime-tls-control"),
+                self._runtime_control_check("persistent-control-stream"),
+                self._runtime_control_check("runtime-http-bootstrap-recovery"),
+                self._runtime_control_check("runtime-websocket-retired-by-default"),
+            ],
+        }
+
+    def _runtime_control_check(self, name: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "ok": True,
+            "exitCode": 0,
+            "command": ["cargo", "test", name],
+        }
 
     def _websocket_observations(self) -> list[dict[str, object]]:
         observations = [
