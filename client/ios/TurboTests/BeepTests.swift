@@ -2243,6 +2243,12 @@ struct BeepTests {
         #expect(viewModel.transportPathBadgeState == nil)
     }
 
+    @Test func mediaTransportPathStateUsesCanonicalLaneLabels() {
+        #expect(MediaTransportPathState.direct.label == "Direct QUIC")
+        #expect(MediaTransportPathState.fastRelay.label == "Fast Relay QUIC")
+        #expect(MediaTransportPathState.fastRelayTcp.label == "Fast Relay TLS")
+    }
+
     @MainActor
     @Test func transportPathBadgeStateSurfacesOnlyForLivePeerSession() {
         let viewModel = PTTViewModel()
@@ -2319,6 +2325,14 @@ struct BeepTests {
         viewModel.mediaRuntime.updateTransportPathState(.recovering)
 
         #expect(viewModel.transportPathBadgeState == .relay)
+
+        let previousOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        TurboMediaLaneDebugOverride.setMediaLaneOverride(.forceFastRelayTls)
+        defer { TurboMediaLaneDebugOverride.setMediaLaneOverride(previousOverride) }
+
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+
+        #expect(viewModel.transportPathBadgeState == .fastRelayTcp)
     }
 
     @MainActor

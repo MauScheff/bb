@@ -1503,7 +1503,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
         }
         if forcedMediaMode == .tcpOrdered {
             guard connections.transport == .tcpTls else {
-                throw DirectQuicProbeError.connectionFailed("media relay TCP/TLS path is unavailable")
+                throw DirectQuicProbeError.connectionFailed("Fast Relay TLS path is unavailable")
             }
             do {
                 try await send(tcpFrame, on: stream)
@@ -2207,7 +2207,7 @@ nonisolated final class TurboMediaRelayClient: @unchecked Sendable {
                             guard senderDeviceId == self.peerDeviceId else {
                                 Task {
                                     await self.report(
-                                        "Ignored media relay TCP audio from unexpected peer",
+                                        "Ignored Fast Relay TLS audio from unexpected peer",
                                         metadata: self.baseMetadata().merging(
                                             [
                                                 "senderDeviceId": senderDeviceId,

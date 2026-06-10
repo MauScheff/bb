@@ -12,7 +12,7 @@ Required diagrams:
 
 - Control plane is authoritative: requests, joins, readiness, wake targeting, runtime signaling authorization, and active-transmit ownership are backend-owned.
 - Fast paths are optimizations: Direct QUIC, Fast Relay, receiver prewarm hints, and warm pings reduce latency but never replace backend Conversation truth.
-- Audio transport is dynamic: prefer Direct QUIC when proven active, fall back to Fast Relay QUIC, then Fast Relay TCP/TLS ordered continuity.
+- Audio transport is dynamic: prefer Direct QUIC when proven active, fall back to Fast Relay QUIC, then Fast Relay TLS ordered continuity.
 - Media is end-to-end encrypted before entering Direct QUIC or Fast Relay.
 
 ## Legend
@@ -120,7 +120,7 @@ Selected contact prewarm
 - Wake-ready path: Friend is not foreground-audio-ready, but backend `wakeReadiness.peer.kind == wake-capable`; sender can talk to wake-capable Friend.
 - Direct path warmed: Direct QUIC active or warming; first talk can use direct media and receiver prewarm.
 - Fast Relay warmed: relay is connected or prejoined; first talk can use relay media/control frames.
-- Relay fallback: Fast Relay QUIC/TCP remains available for live media; runtime control remains available for authoritative signaling.
+- Relay fallback: Fast Relay QUIC/TLS remains available for live media; runtime control remains available for authoritative signaling.
 
 ## Diagram 2: Hold-To-Talk Audio + Wake + Fallback
 
@@ -167,7 +167,7 @@ Press HOLD
   |        sendAudioPayload(sealedPayload) ----------------------------------------------------->|
   |        on Friend-unavailable/send failure: clear stale relay client, fall back              |
   |                                                                                             |
-  | 3. [MEDIA] Fast Relay TCP/TLS ordered continuity                                            |
+  | 3. [MEDIA] Fast Relay TLS ordered continuity                                            |
   |        bounded ordered fallback; stale backlog is dropped, not replayed                     |
   |        sendAudioPayload(sealedPayload) ----------------------------------------------------->|
   +=============================================================================================+
@@ -309,7 +309,7 @@ Panel 1 content:
 - Friend A finishes join.
 - Readiness projection includes audioReadiness, wakeReadiness, peerTargetDeviceId, peerDirectQuicIdentity, peerMediaEncryptionIdentity.
 - Final states: ready, waitingForPeer, wakeReady.
-- Fast Media lane shows selected-friend-prewarm; Direct QUIC signaling (`direct-quic-upgrade-request`, offer, answer, ice-candidate, hangup); Direct QUIC probing `promoting -> direct` with certificate fingerprint verification; receiver-prewarm request/ack and warm ping/pong; Fast Relay prejoin through `relay.beepbeep.to` on QUIC 443 or TCP/TLS 443.
+- Fast Media lane shows selected-friend-prewarm; Direct QUIC signaling (`direct-quic-upgrade-request`, offer, answer, ice-candidate, hangup); Direct QUIC probing `promoting -> direct` with certificate fingerprint verification; receiver-prewarm request/ack and warm ping/pong; Fast Relay prejoin through `relay.beepbeep.to` on QUIC 443 or TLS 443.
 - Make explicit that Direct QUIC and Fast Relay do not establish the Conversation; they only warm or carry media/control hints after backend truth exists.
 
 Panel 2 content:
@@ -321,14 +321,14 @@ Panel 2 content:
 - Backend wake side effect unless target is already audio-ready with current runtime control presence: backend -> APNs -> Apple PushToTalk -> Friend B.
 - Friend A PushToTalk handoff: request system transmit, Apple start beep, PTT audio session activated, rebind capture to live PlayAndRecord route, capture microphone, encode chunks.
 - E2EE: media identities establish X25519-derived key, payload is sealed with ChaCha20-Poly1305 before transport and opened on Friend B.
-- Dynamic media priority: Direct QUIC datagrams if active/proven; Fast Relay QUIC datagrams if enabled/forced/configured; Fast Relay TCP/TLS ordered continuity when UDP/QUIC datagrams are unavailable.
-- Red dotted fallback arrows from Direct QUIC to Fast Relay QUIC and from Fast Relay QUIC to Fast Relay TCP/TLS.
+- Dynamic media priority: Direct QUIC datagrams if active/proven; Fast Relay QUIC datagrams if enabled/forced/configured; Fast Relay TLS ordered continuity when UDP/QUIC datagrams are unavailable.
+- Red dotted fallback arrows from Direct QUIC to Fast Relay QUIC and from Fast Relay QUIC to Fast Relay TLS.
 - Friend B foreground path: receive transmit-start/prewarm/audio, set active remote participant, ensure playback session, open E2EE, schedule playback, show receiving.
 - Friend B background/locked path: PushToTalk push, pending wake candidate, awaitingSystemActivation/signalBuffered, buffer early encrypted audio, Apple activates PTT audio session, drain buffered audio, open E2EE, play during same transmit window.
 - Release: Friend A releases HOLD, stops capture, sends runtime-control transmit-stop `ptt-end`, calls backend `end-transmit(transmitId)`, backend clears active lease, Friends converge to ready/wakeReady/waitingForPeer.
 - Callout: warm Direct QUIC fast-start can send receiver transmit-prepare, start prewarmed direct capture, send transmit-start `ptt-begin` over runtime control, and carry sealed audio over Direct QUIC when Direct QUIC is active and startup policy allows. Draw as optimization, not authority.
 
-Do not draw UDP/TCP as Conversation setup paths. UDP/QUIC and relay TCP/TLS belong only in media transport. Runtime control is authoritative signaling. Direct QUIC and Fast Relay are media/hint fast paths.
+Do not draw UDP/TCP as Conversation setup paths. UDP/QUIC and relay TLS belong only in media transport. Runtime control is authoritative signaling. Direct QUIC and Fast Relay are media/hint fast paths.
 ```
 
 ## Source Pointers

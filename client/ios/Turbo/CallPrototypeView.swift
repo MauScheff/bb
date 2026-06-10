@@ -1122,11 +1122,11 @@ struct TurboCallPrototypeView: View {
     private var transportPathLabel: String? {
         switch transportPathState {
         case .direct:
-            return "Direct"
+            return "Direct QUIC"
         case .fastRelay:
-            return "Fast Relay"
+            return "Fast Relay QUIC"
         case .fastRelayTcp:
-            return "Fast Relay TCP"
+            return "Fast Relay TLS"
         case .relay:
             return "Waiting"
         case .promoting, .recovering, .none:
@@ -1137,11 +1137,11 @@ struct TurboCallPrototypeView: View {
     private var transportPathAccessibilityLabel: String? {
         switch transportPathState {
         case .direct:
-            return "direct"
+            return "direct quic"
         case .fastRelay:
-            return "fast relay"
+            return "fast relay quic"
         case .fastRelayTcp:
-            return "fast relay tcp"
+            return "fast relay tls"
         case .relay:
             return "waiting for media path"
         case .promoting, .recovering, .none:

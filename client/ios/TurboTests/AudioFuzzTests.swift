@@ -3082,7 +3082,7 @@ private extension AudioFuzzTests {
                   sequenceNumber == delivery.sequenceNumber,
                   sentAtMs == sentAtMilliseconds,
                   payload == encryptedPayload else {
-                throw PropertyFailure(message: "media relay TCP loopback envelope mismatch")
+                throw PropertyFailure(message: "Fast Relay TLS loopback envelope mismatch")
             }
             return payload
 

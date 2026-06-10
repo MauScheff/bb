@@ -5169,13 +5169,13 @@ enum MediaTransportPathState: String, Codable, Equatable {
         case .relay:
             return "Waiting"
         case .fastRelay:
-            return "Fast Relay"
+            return "Fast Relay QUIC"
         case .fastRelayTcp:
-            return "Fast Relay TCP"
+            return "Fast Relay TLS"
         case .promoting:
             return "Promoting"
         case .direct:
-            return "Direct"
+            return "Direct QUIC"
         case .recovering:
             return "Recovering"
         }

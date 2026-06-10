@@ -102,8 +102,8 @@ control lane, fallback reason, and whether the effective lane is persistent.
 
 | Mode | Purpose | Toggles | Pass evidence |
 | --- | --- | --- | --- |
-| T1 Fast Relay TCP/TLS | ordered continuity when UDP/QUIC is unavailable | `force-fast-relay-tls` | requested override is local; effective lane `Fast Relay TCP`; foreground audio works both directions with bounded backlog and no stuck talking |
-| T2 Fast Relay QUIC | low-latency relay media without Direct QUIC | `force-fast-relay-quic`; relay `relay.beepbeep.to` UDP 443 | media relay configured; effective/proven lane `Fast Relay`; Direct QUIC inactive |
+| T1 Fast Relay TLS | ordered continuity when UDP/QUIC is unavailable | `force-fast-relay-tls` | requested override is local; effective lane `Fast Relay TLS`; foreground audio works both directions with bounded backlog and no stuck talking |
+| T2 Fast Relay QUIC | low-latency relay media without Direct QUIC | `force-fast-relay-quic`; relay `relay.beepbeep.to` UDP 443 | media relay configured; effective/proven lane `Fast Relay QUIC`; Direct QUIC inactive |
 | T3 Direct QUIC | device-to-device promotion and first-talk behavior | `automatic` or `force-direct-quic`; Local Network allowed | backend advertised/effective upgrade yes; production identity ready; peer device known; proven lane `Direct` while live |
 
 T2 old ports `9443`/`9444` are debug fallback only. T3 `Promoting`, `Recovering`, or relay-only delivery is not a Direct pass; use `Force probe` once only if asked. Later retry-only audio success is a T3 failure.

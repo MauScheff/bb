@@ -115,17 +115,17 @@ Every failure and recovery path should carry a typed reason. Every stale callbac
 
 Friend receive addressability is explicit evidence, not a boolean. `ReceiverAddressability` is the existing engine type name; its cases are `foreground`, `wakeCapable`, and `unavailable(reason)`. Local transmit cannot begin, recover, or remain active without foreground or wake-capable receiver evidence; membership loss, wake-token revocation, and backend active-transmit clears must move active transmit into stop/idle instead of preserving a stale talking state.
 
-Media capability is explicit evidence, not a transport label. `EngineMediaTransportCapability` distinguishes unordered packet media, ordered reliable media, reliable control, unavailable, and degraded states. Control traffic stays ordered/reliable; live audio uses sequence, timestamp, epoch, jitter, late-drop, duplicate-drop, and missing-frame skip semantics. Ordered media is limited to Fast Relay TCP/TLS fallback and must report backlog degradation instead of draining stale catch-up audio.
+Media capability is explicit evidence, not a transport label. `EngineMediaTransportCapability` distinguishes unordered packet media, ordered reliable media, reliable control, unavailable, and degraded states. Control traffic stays ordered/reliable; live audio uses sequence, timestamp, epoch, jitter, late-drop, duplicate-drop, and missing-frame skip semantics. Ordered media is limited to Fast Relay TLS fallback and must report backlog degradation instead of draining stale catch-up audio.
 
 Current app lane mapping:
 
 | Lane | Control semantics | Media semantics | Engine capability |
 | --- | --- | --- | --- |
-| Fast Relay packet | ordered reliable control stream | QUIC datagram packet media | `unorderedPacketMedia(.fastRelayPacketRelay)` |
-| Fast Relay TCP | ordered reliable TCP/TLS stream | ordered reliable fallback | `orderedReliableMedia(.fastRelayTcpFallback)` |
+| Fast Relay QUIC | ordered reliable control stream | QUIC datagram packet media | `unorderedPacketMedia(.fastRelayPacketRelay)` |
+| Fast Relay TLS | ordered reliable TLS-over-TCP stream | ordered reliable fallback | `orderedReliableMedia(.fastRelayTcpFallback)` |
 | Direct QUIC packet | ordered reliable control stream | QUIC datagram packet media | `unorderedPacketMedia(.directQuicDatagram)` |
 
-Direct QUIC does not send live audio over ordered reliable streams. Fast Relay packet media does not fall back to QUIC stream audio; when QUIC datagram media is unavailable, lane selection may use the explicitly named Fast Relay TCP/TLS fallback (`media-relay-tcp`). Runtime/backend transports must not be selected as live media. No ordered stream path may masquerade as packet media.
+Direct QUIC does not send live audio over ordered reliable streams. Fast Relay QUIC media does not fall back to QUIC stream audio; when QUIC datagram media is unavailable, lane selection may use the explicitly named Fast Relay TLS fallback (`media-relay-tcp`). Runtime/backend transports must not be selected as live media. No ordered stream path may masquerade as packet media.
 
 Voice codec capability is also explicit app-side evidence. The current app advertises `VoiceMediaCapabilities` in receiver-ready and Direct QUIC receiver-prewarm payloads, then sends `turbo-audio-frame-v2` Opus only after fresh Friend/Participant evidence proves Opus v2 support. Legacy PCM remains the fallback for older receivers, stale evidence, codec unavailability, and debugging. The engine owns media lane semantics; the iOS media adapter owns AVAudio conversion, Opus encode/decode, and adaptive playout execution.
 
@@ -222,11 +222,11 @@ Scenarios should cover the engine-level versions of:
 - membership loss clearing active transmit
 - idle network migration followed by transmit
 - QUIC unavailable to Fast Relay fallback
-- Fast Relay packet unavailable to explicit Fast Relay TCP/TLS fallback
+- Fast Relay QUIC unavailable to explicit Fast Relay TLS fallback
 - Direct QUIC send failure to relay fallback
 - duplicate/reordered chunks without duplicate playback
 - Direct datagram-style loss/reorder/duplicate with jitter deadline skip
-- Fast Relay packet-style loss/reorder/duplicate with jitter deadline skip
+- Fast Relay QUIC-style loss/reorder/duplicate with jitter deadline skip
 - ordered fallback lanes dropping stale catch-up frames
   (`fast_relay_tcp_ordered_burst_drop`)
 - stale stop rejected behind a newer transmit epoch

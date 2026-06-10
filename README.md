@@ -13,14 +13,14 @@ media relay:       relay.beepbeep.to:443
 
 The API VM and relay VM are separate on purpose. The API endpoint owns HTTPS
 through nginx on TCP `443` and runtime QUIC control on UDP `443`. The relay
-endpoint owns QUIC packet media on UDP `443` plus TCP/TLS fallback on TCP
+endpoint owns QUIC packet media on UDP `443` plus TLS fallback on TCP
 `443`.
 
 Transport model:
 
 | Class | Legal lanes |
 | --- | --- |
-| Live media | Direct QUIC datagrams, Fast Relay QUIC datagrams, Fast Relay TCP/TLS ordered fallback |
+| Live media | Direct QUIC datagrams, Fast Relay QUIC datagrams, Fast Relay TLS ordered fallback |
 | Hints | Direct QUIC control, Fast Relay QUIC control, runtime control when available |
 | Authoritative control | Rust runtime control selected as runtime QUIC, runtime TLS, or HTTP bootstrap/recovery |
 

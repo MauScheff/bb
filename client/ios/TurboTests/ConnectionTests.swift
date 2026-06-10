@@ -5852,7 +5852,7 @@ struct ConnectionTests {
 
         #expect(decoded.count == 1)
         guard case .tcpAudio(let sessionID, let senderDeviceID, let sequenceNumber, let sentAtMs, let payload) = decoded[0] else {
-            Issue.record("Expected media relay TCP audio frame")
+            Issue.record("Expected Fast Relay TLS audio frame")
             return
         }
         #expect(sessionID == "channel-1")
@@ -23047,7 +23047,7 @@ struct ConnectionTests {
         try await Task.sleep(nanoseconds: 100_000_000)
         #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
         try await waitForCondition(
-            "dropped delayed Fast Relay packet queue invariant",
+            "dropped delayed Fast Relay QUIC queue invariant",
             timeoutNanoseconds: 1_000_000_000,
             pollNanoseconds: 10_000_000
         ) {
@@ -23059,7 +23059,7 @@ struct ConnectionTests {
             }
         }
         try await waitForCondition(
-            "dropped delayed Fast Relay packet ingress summary",
+            "dropped delayed Fast Relay QUIC ingress summary",
             timeoutNanoseconds: 1_000_000_000,
             pollNanoseconds: 10_000_000
         ) {
@@ -27308,7 +27308,7 @@ struct ConnectionTests {
         )
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Preserved Fast Relay packet receive epoch after incoming audio continuity gap"
+                "Preserved Fast Relay QUIC receive epoch after incoming audio continuity gap"
             )
         )
         #expect(

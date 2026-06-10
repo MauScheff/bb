@@ -55,7 +55,7 @@ Rules:
 - during live transmit/receive, show the proven active lane for that epoch
 - `available` or `warming` lane facts do not change the live label
 - Direct QUIC becomes live only after current-epoch delivery proof
-- Fast Relay QUIC/TCP becomes live only after accepted receive/playback proof or sender-side ACK proof for that epoch
+- Fast Relay QUIC/TLS becomes live only after accepted receive/playback proof or sender-side ACK proof for that epoch
 - outside live media, the label may show the best ready lane
 - the label describes network path only; it is not an encryption claim
 
@@ -125,7 +125,7 @@ For v1 Direct QUIC, `transport` is always `udp`.
 Use backend/runtime signaling for authoritative authorization and routing. The
 signal payloads are opaque to the transport. Runtime control is authoritative
 command/signaling only; live media remains Direct QUIC datagram, Fast Relay QUIC
-datagram, or Fast Relay TCP/TLS ordered fallback.
+datagram, or Fast Relay TLS ordered fallback.
 
 | Signal | Payload |
 | --- | --- |
@@ -215,7 +215,7 @@ Live audio payloads:
 - Direct QUIC should send one Opus v2 frame per packet-media datagram and should not batch voice frames on the sender side.
 - If peer capability evidence is missing, stale, or unsupported, Direct QUIC sends legacy PCM payloads through the same media boundary.
 - Receiver-side playout uses the Direct QUIC low-latency cushion profile: 4 Opus frames initially, with bounded adaptive growth after underruns.
-- Fast Relay fallback is packet-first: QUIC control-stream join must be followed by QUIC datagram media join. If datagram join fails, audio uses explicit Fast Relay TCP/TLS (`media-relay-tcp`); runtime/backend transports must not carry live media. QUIC stream audio must not masquerade as packet media.
+- Fast Relay fallback is packet-first: QUIC control-stream join must be followed by QUIC datagram media join. If datagram join fails, audio uses explicit Fast Relay TLS (`media-relay-tcp`); runtime/backend transports must not carry live media. QUIC stream audio must not masquerade as packet media.
 
 Likely factory evolution:
 

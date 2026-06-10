@@ -55,7 +55,7 @@ Sender flow:
 1. Capture is converted to canonical 48 kHz mono signed 16-bit PCM.
 2. `VoiceFrameAccumulator` emits exact 20 ms frames: 960 samples, 1 channel, 1,920 bytes.
 3. `VoiceMediaNegotiator` selects `opus-v2` whenever the local build has the Opus codec. Peer capability evidence is still recorded for diagnostics, but outbound audio does not downgrade because stale readiness evidence says nothing useful about a current Turbo client.
-4. Opus sends use one `turbo-audio-frame-v2` envelope per 20 ms frame. Packet media lanes send one encoded frame per datagram and use a lane-derived `OpusVoiceEncodingPolicy`; ordered Fast Relay TCP/TLS fallback batches short frame bursts into one ordered transport payload so fallback is bounded and stale backlog can be dropped.
+4. Opus sends use one `turbo-audio-frame-v2` envelope per 20 ms frame. Packet media lanes send one encoded frame per datagram and use a lane-derived `OpusVoiceEncodingPolicy`; ordered Fast Relay TLS fallback batches short frame bursts into one ordered transport payload so fallback is bounded and stale backlog can be dropped.
 5. Legacy PCM remains decodable for old diagnostics, replay corpora, and defensive inbound compatibility while that plumbing is unwound. Current clients should not produce outbound legacy PCM when Opus is available.
 
 Audio transport and codec matrix:
@@ -64,9 +64,9 @@ Audio transport and codec matrix:
 | --- | --- | --- | --- | --- |
 | `direct-quic` | Direct device-to-device QUIC datagram packet media | Opus v2 when local codec support exists | `directLowLatency` | Control stays on the ordered QUIC message/control path. Live audio uses datagrams. Best packet lanes use 40 kbps Opus and enable FEC only from observed loss. |
 | `media-relay-packet` | Fast Relay QUIC datagram packet media over UDP | Opus v2 when local codec support exists | `fastRelayBalanced` | Preferred relay fallback when Direct QUIC is unavailable. QUIC stream audio is not used. Best packet lanes use 40 kbps Opus and enable FEC only from observed loss. |
-| `media-relay-tcp` | Fast Relay TCP/TLS ordered stream media | Opus v2 when local codec support exists | `orderedContinuity` | Explicit degraded fallback when relay QUIC/datagrams cannot connect. Stale ordered backlog must be dropped. Reliable fallback Opus uses 32 kbps with FEC off. |
+| `media-relay-tcp` | Fast Relay TLS ordered stream media | Opus v2 when local codec support exists | `orderedContinuity` | Explicit degraded fallback when relay QUIC/datagrams cannot connect. Stale ordered backlog must be dropped. Reliable fallback Opus uses 32 kbps with FEC off. The `media-relay-tcp` value is the wire/debug identifier for the TLS-over-TCP stream. |
 
-Fast Relay QUIC is considered selected only after both the ordered QUIC control stream joins and the separate QUIC datagram media join receives a `datagram-join-ack`. If datagram join times out or fails, the app falls back to explicit Fast Relay TCP/TLS (`media-relay-tcp`) rather than sending hidden QUIC-stream audio or runtime media.
+Fast Relay QUIC is considered selected only after both the ordered QUIC control stream joins and the separate QUIC datagram media join receives a `datagram-join-ack`. If datagram join times out or fails, the app falls back to explicit Fast Relay TLS (`media-relay-tcp`) rather than sending hidden QUIC-stream audio or runtime media.
 
 Opus v2 payload shape:
 
@@ -86,7 +86,7 @@ Receiver flow:
 - `VoiceAudioFramePayloadCodec.decodeTransportFrames` accepts both Opus v2 envelopes and legacy base64 PCM payloads.
 - Legacy PCM is resampled from the older 16 kHz shape into the current 48 kHz playback format.
 - Opus frames enter `AdaptiveVoicePlayoutBuffer`, keyed by `frameIndex`, and decode in scheduled playout order.
-- Startup cushions are lane-specific: Direct QUIC targets 4 frames, Fast Relay packet targets 5, ordered Fast Relay TCP/TLS fallback targets 7, and wake/background continuity targets 8. Opus startup can begin after the lane timeout with a partial cushion so sparse or reordered live packets do not block playback indefinitely.
+- Startup cushions are lane-specific: Direct QUIC targets 4 frames, Fast Relay QUIC targets 5, ordered Fast Relay TLS fallback targets 7, and wake/background continuity targets 8. Opus startup can begin after the lane timeout with a partial cushion so sparse or reordered live packets do not block playback indefinitely.
 - Duplicate and late frames are dropped. Missing frames use next-packet FEC for the immediately previous frame when available, otherwise native PLC. Repeated gaps increase adaptive cushion up to 3 extra frames for the current transmit.
 - Each remote transmit prepare starts a fresh receive playout epoch. Warm receive media sessions must reset Opus frame-index state and pending playback for the new transmit so frame indexes from an earlier press cannot delay or drop the next press.
 - Opus decoded frames are packet/jitter-gated by the active playout engine. After Apple/system audio activation, AVAudio may apply a startup-only scheduler cushion before the player node starts so the first audible buffers are not starved; once the node is playing, Opus frames schedule without an extra transport cushion. Legacy PCM uses the lane-specific transport cushion.
@@ -99,8 +99,8 @@ Current codec implementation:
 - The current implementation uses the vendored `Vendor/Opus/TurboOpus.xcframework`, built from upstream Xiph `libopus` by `scripts/build_libopus_xcframework.sh`.
 - `OpusVoiceEncodingPolicy` is a pure value derived from the selected Connection lane and observed packet loss.
 - Encoder configuration is mono 48 kHz PCM, 20 ms frames, `OPUS_APPLICATION_VOIP`, complexity 10, voice signal, constrained VBR, DTX off, fullband bandwidth, 16-bit LSB depth, native PLC, and lane-specific bitrate/FEC/loss hints.
-- Direct QUIC and Fast Relay packet lanes use 40 kbps Opus, packet-loss hints from the rolling incoming sequence-gap estimate, and in-band FEC only when observed loss is at least 3%.
-- Ordered Fast Relay TCP/TLS fallback uses 32 kbps Opus with packet-loss hint 0 and in-band FEC off; ordered backlog policy handles stale speech instead.
+- Direct QUIC and Fast Relay QUIC lanes use 40 kbps Opus, packet-loss hints from the rolling incoming sequence-gap estimate, and in-band FEC only when observed loss is at least 3%.
+- Ordered Fast Relay TLS fallback uses 32 kbps Opus with packet-loss hint 0 and in-band FEC off; ordered backlog policy handles stale speech instead.
 - Local capabilities advertise Opus v2, PLC, and `in-band-fec`. Outbound audio uses Opus v2 whenever the local codec is available; legacy PCM remains only as an inbound/replay compatibility decoder while older diagnostics and corpora exist.
 
 ## Swift ADT Patterns

@@ -85,7 +85,7 @@ The diagnostics sheet exposes one media lane selector:
 | `automatic` | Use Direct QUIC when proven/current, otherwise Fast Relay. |
 | `force-direct-quic` | Local sender policy tries Direct QUIC and disables relay rescue for the test cell. |
 | `force-fast-relay-quic` | Local sender policy selects Fast Relay QUIC packet media. |
-| `force-fast-relay-tls` | Local sender policy selects Fast Relay TCP/TLS ordered fallback. |
+| `force-fast-relay-tls` | Local sender policy selects Fast Relay TLS ordered fallback. |
 
 Reports include requested override, effective path, active proven lane, and
 fallback/rescue reason. Requested override is local policy only; it must not
@@ -144,11 +144,11 @@ Media lane interpretation:
 | --- | --- | --- |
 | `direct-quic` | Direct QUIC datagram packet media | Control remains ordered; live audio must arrive through datagrams. Opus is expected when both sides advertise fresh Opus v2 support; otherwise legacy PCM is expected. |
 | `media-relay-packet` | Fast Relay QUIC datagram packet media | Loss/reorder/duplicate should be handled by sequence/jitter policy without ordered backlog drops. Opus uses the same peer capability gate as Direct QUIC. |
-| `media-relay-tcp` | Fast Relay TCP/TLS ordered stream | Explicit degraded fallback after relay QUIC/datagram failure; inspect ordered backlog/catch-up drops before device retest. Opus may still be used, but the lane is ordered and higher-latency. |
+| `media-relay-tcp` | Fast Relay TLS ordered stream | Explicit degraded fallback after relay QUIC/datagram failure; inspect ordered backlog/catch-up drops before device retest. Opus may still be used, but the lane is ordered and higher-latency. |
 
 Live packet media sends are best-effort at the transport boundary. Direct QUIC and Fast Relay QUIC datagram audio must not await ordered/reliable send completion such as Network.framework `.contentProcessed`; waiting there can recreate sender-side head-of-line stalls. Keep ordered/reliable completion for control and ordered fallback lanes.
 
-Fast Relay selection has two QUIC steps: ordered control-stream join, then separate QUIC datagram media join. A log pair like `Media relay QUIC datagram unavailable ... datagram handshake timed out` followed by `Media relay TCP ordered fallback connected` means UDP/datagram Fast Relay failed and the app intentionally selected the degraded TCP lane. That is not expected for a Fast Relay packet-media test cell; inspect relay UDP reachability, server datagram ack behavior, or local network UDP blocking.
+Fast Relay selection has two QUIC steps: ordered control-stream join, then separate QUIC datagram media join. A log pair like `Media relay QUIC datagram unavailable ... datagram handshake timed out` followed by `Media relay TCP ordered fallback connected` means UDP/datagram Fast Relay failed and the app intentionally selected the degraded TCP lane. That is not expected for a Fast Relay QUIC-media test cell; inspect relay UDP reachability, server datagram ack behavior, or local network UDP blocking.
 
 First-playback ACKs for packet media prove that the receiver played a current-or-newer packet on the expected transport, not necessarily the first packet digest. Accept encrypted ACK sequence `>=` the armed expectation for the same channel/sender/receiver/transport; reject older sequence ACKs. Direct packet media must return after Direct send succeeds; sequential rescue is used when Direct send fails or when Fast Relay is selected as the explicit degraded lane.
 

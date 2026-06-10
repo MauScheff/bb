@@ -1148,6 +1148,9 @@ extension PTTViewModel {
         case .direct:
             return .direct
         case .fastRelay:
+            if TurboMediaLaneDebugOverride.mediaLaneOverride() == .forceFastRelayTls {
+                return .fastRelayTcp
+            }
             return .fastRelay
         case .fastRelayTcp:
             return .fastRelayTcp

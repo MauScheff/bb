@@ -634,7 +634,7 @@ extension PTTViewModel {
             diagnostics.record(
                 .media,
                 level: .notice,
-                message: "Preserved Fast Relay packet receive epoch after incoming audio continuity gap",
+                message: "Preserved Fast Relay QUIC receive epoch after incoming audio continuity gap",
                 metadata: [
                     "contactId": contactID.uuidString,
                     "channelId": channelID,
