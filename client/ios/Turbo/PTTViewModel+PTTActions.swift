@@ -213,7 +213,7 @@ extension PTTViewModel {
         }
     }
 
-    func syncPTTServiceStatus(reason: String) {
+    func syncPTTServiceStatus(reason: String, force: Bool = false) {
         guard let channelUUID = pttCoordinator.state.systemChannelUUID else {
             lastReportedPTTServiceStatus = nil
             lastReportedPTTServiceStatusChannelUUID = nil
@@ -226,7 +226,8 @@ extension PTTViewModel {
             return
         }
 
-        guard lastReportedPTTServiceStatus != status
+        guard force
+            || lastReportedPTTServiceStatus != status
             || lastReportedPTTServiceStatusChannelUUID != channelUUID else {
             return
         }
@@ -269,7 +270,7 @@ extension PTTViewModel {
         }
     }
 
-    func syncPTTTransmissionMode(reason: String) {
+    func syncPTTTransmissionMode(reason: String, force: Bool = false) {
         guard let channelUUID = pttCoordinator.state.systemChannelUUID else {
             lastReportedPTTTransmissionMode = nil
             lastReportedPTTTransmissionModeChannelUUID = nil
@@ -278,7 +279,8 @@ extension PTTViewModel {
         }
 
         let mode = PTTransmissionMode.halfDuplex
-        guard lastReportedPTTTransmissionMode != mode
+        guard force
+            || lastReportedPTTTransmissionMode != mode
             || lastReportedPTTTransmissionModeChannelUUID != channelUUID else {
             return
         }
@@ -322,14 +324,14 @@ extension PTTViewModel {
         }
     }
 
-    func syncPTTAccessoryButtonEvents(reason: String) {
+    func syncPTTAccessoryButtonEvents(reason: String, force: Bool = false) {
         guard let channelUUID = pttCoordinator.state.systemChannelUUID else {
             lastReportedPTTAccessoryButtonEventsChannelUUID = nil
             lastReportedPTTAccessoryButtonEventsReason = nil
             return
         }
 
-        guard lastReportedPTTAccessoryButtonEventsChannelUUID != channelUUID else {
+        guard force || lastReportedPTTAccessoryButtonEventsChannelUUID != channelUUID else {
             return
         }
 
@@ -365,6 +367,29 @@ extension PTTViewModel {
                 )
             }
         }
+    }
+
+    func reassertPTTTalkReadinessIfNeeded(for contactID: UUID, reason: String) {
+        guard isJoined, activeChannelId == contactID else { return }
+        guard systemSessionMatches(contactID) else { return }
+        guard !isTransmitting else { return }
+        guard let channelUUID = pttCoordinator.state.systemChannelUUID else { return }
+
+        syncPTTSystemChannelDescriptor(channelUUID, reason: reason)
+        syncPTTTransmissionMode(reason: reason, force: true)
+        syncPTTServiceStatus(reason: reason, force: true)
+        syncPTTAccessoryButtonEvents(reason: reason, force: true)
+        diagnostics.record(
+            .pushToTalk,
+            message: "Reasserted PTT talk readiness",
+            metadata: [
+                "channelUUID": channelUUID.uuidString,
+                "contactId": contactID.uuidString,
+                "reason": reason,
+                "serviceStatus": desiredPTTServiceStatus().map(String.init(describing:)) ?? "none",
+                "applicationState": String(describing: currentApplicationState()),
+            ]
+        )
     }
 
     @discardableResult
@@ -627,7 +652,10 @@ extension PTTViewModel {
 
     func performReconciledTeardown(for contactID: UUID) {
         let backendChannelID = contacts.first { $0.id == contactID }?.backendChannelId
-        let shouldPropagateBackendLeave = reconciledTeardownRequiresBackendLeave(for: contactID)
+        let backendLeaveAlreadyActive = isBackendLeaveCommandActive(for: contactID)
+        let shouldPropagateBackendLeave =
+            reconciledTeardownRequiresBackendLeave(for: contactID)
+            && !backendLeaveAlreadyActive
         let backendLeaveRequest: BackendLeaveRequest? = {
             guard shouldPropagateBackendLeave,
                   let backendChannelID else {
@@ -651,6 +679,20 @@ extension PTTViewModel {
             metadata: ["contactId": contactID.uuidString]
         )
         captureDiagnosticsState("device-ptt-teardown:start")
+
+        if backendLeaveAlreadyActive {
+            diagnostics.record(
+                .backend,
+                message: "Suppressed duplicate backend leave for reconciled Device PTT teardown",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": backendChannelID ?? "none",
+                    "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
+                    "backendMembership": selectedChannelSnapshot(for: contactID)
+                        .map { String(describing: $0.membership) } ?? "none",
+                ]
+            )
+        }
 
         if let backendLeaveRequest {
             diagnostics.record(
@@ -710,9 +752,6 @@ extension PTTViewModel {
 
     func reconciledTeardownRequiresBackendLeave(for contactID: UUID) -> Bool {
         if conversationActionCoordinator.pendingAction.isExplicitLeaveInFlight(for: contactID) {
-            return true
-        }
-        if isBackendLeaveCommandActive(for: contactID) {
             return true
         }
         return selectedChannelSnapshot(for: contactID)?.membership.hasLocalMembership == true

@@ -705,6 +705,75 @@ struct ConversationTests {
         )
     }
 
+    @Test func backendJoinedRefreshClearsRecentSystemLeaveWhenBackendMembershipIsAuthoritative() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(
+            contactID: contactID,
+            backendChannelID: "channel-1"
+        )
+        viewModel.markStaleSystemRejoinSuppression(
+            channelUUID: channelUUID,
+            contactID: contactID,
+            reason: "background-system-leave"
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    channelId: "channel-1",
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    peerTargetDeviceId: "peer-device"
+                )
+            )
+        )
+
+        viewModel.syncEngineJoinedConversation(contactID: contactID, reason: "authoritative-channel-refresh")
+
+        #expect(viewModel.isJoined)
+        #expect(
+            !viewModel.hasStaleSystemRejoinSuppression(
+                channelUUID: channelUUID,
+                contactID: contactID
+            )
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Cleared recent system leave barrier after authoritative backend joined Conversation"
+            }
+        )
+        #expect(
+            !viewModel.diagnostics.entries.contains {
+                $0.message == "Ignored backend joined Conversation after recent system leave"
+            }
+        )
+    }
+
     @Test func queueJoinDoesNotOverrideExplicitLeave() {
         var coordinator = ConversationActionCoordinatorState()
         let contactID = UUID()
@@ -3745,6 +3814,71 @@ struct ConversationTests {
         #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
         #expect(viewModel.isJoined == false)
         #expect(viewModel.systemSessionState == .none)
+    }
+
+    @MainActor
+    @Test func reconciledTeardownSuppressesDuplicateBackendLeaveWhileLeaveCommandIsActive() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: true)
+        )
+
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "user-self", mode: "cloud")
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID, backendChannelID: "channel-1")
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    channelId: "channel-1",
+                    selfJoined: true,
+                    peerJoined: true,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+
+        var capturedEffects: [BackendCommandEffect] = []
+        viewModel.backendCommandCoordinator.effectHandler = { effect in
+            capturedEffects.append(effect)
+        }
+        let request = BackendLeaveRequest(contactID: contactID, backendChannelID: "channel-1")
+        await viewModel.ingestBackendCommandEvent(
+            .leaveRequested(request),
+            contactID: contactID,
+            channelID: "channel-1"
+        )
+        await Task.yield()
+        capturedEffects.removeAll()
+
+        viewModel.performReconciledTeardown(for: contactID)
+        await Task.yield()
+        await Task.yield()
+
+        #expect(capturedEffects.isEmpty)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Suppressed duplicate backend leave for reconciled Device PTT teardown"
+            )
+        )
     }
 
     @MainActor

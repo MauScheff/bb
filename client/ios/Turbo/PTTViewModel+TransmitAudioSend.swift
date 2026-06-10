@@ -3103,6 +3103,7 @@ extension PTTViewModel {
         let startedAt = Date()
         var releaseLogged = false
         var postReleaseGraceLogged = false
+        var backgroundWakeHoldLogged = false
         while true {
             if selectedChannelSnapshot(for: target.contactID)?.remoteAudioReadyForLiveTransmit == true {
                 diagnostics.record(
@@ -3150,6 +3151,24 @@ extension PTTViewModel {
 
             if wakeCapableReceiver && waitedNanoseconds >= wakeRecoveryGraceNanoseconds {
                 if transmitRuntime.isPressingTalk {
+                    guard currentApplicationState() == .active else {
+                        if !backgroundWakeHoldLogged {
+                            backgroundWakeHoldLogged = true
+                            diagnostics.record(
+                                .media,
+                                message: "Holding wake-capable receiver send gate until receiver readiness while sender is backgrounded",
+                                metadata: [
+                                    "contactId": target.contactID.uuidString,
+                                    "channelId": target.channelID,
+                                    "waitedMilliseconds": String(Int(Date().timeIntervalSince(startedAt) * 1000)),
+                                    "wakeRecoveryGraceMilliseconds": String(wakeRecoveryGraceNanoseconds / 1_000_000),
+                                    "applicationState": String(describing: currentApplicationState()),
+                                ]
+                            )
+                        }
+                        try? await Task.sleep(nanoseconds: pollNanoseconds)
+                        continue
+                    }
                     diagnostics.record(
                         .media,
                         message: "Wake-capable receiver grace elapsed; releasing outbound audio send gate",

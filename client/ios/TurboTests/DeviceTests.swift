@@ -1510,8 +1510,9 @@ struct DeviceTests {
     }
 
     @MainActor
-    @Test func deferredInteractiveAudioPrewarmDoesNotResumeOnPTTDeactivationWhileBackgrounded() async {
-        let viewModel = PTTViewModel()
+    @Test func backgroundPTTAudioDeactivationReassertsTalkReadinessWithoutPrewarm() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
         let contact = Contact(
@@ -1524,6 +1525,8 @@ struct DeviceTests {
             remoteUserId: "user-avery"
         )
 
+        viewModel.applicationStateOverride = .background
+        viewModel.backendRuntime.isReady = true
         viewModel.contacts = [contact]
         viewModel.trackContact(contactID)
         viewModel.selectedContactId = contactID
@@ -1535,6 +1538,10 @@ struct DeviceTests {
             )
         )
         viewModel.syncPTTState()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let transmissionModeUpdateCount = pttClient.transmissionModeUpdates.count
+        let serviceStatusUpdateCount = pttClient.serviceStatusUpdates.count
+        let accessoryUpdateCount = pttClient.accessoryButtonEventUpdates.count
 
         viewModel.deferInteractivePrewarmUntilPTTAudioDeactivation(for: contactID)
 
@@ -1542,10 +1549,18 @@ struct DeviceTests {
             AVAudioSession.sharedInstance(),
             applicationState: .background
         )
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(viewModel.mediaRuntime.pendingInteractivePrewarmAfterAudioDeactivationContactID == contactID)
         #expect(viewModel.mediaSessionContactID == nil)
         #expect(viewModel.localMediaWarmupState(for: contactID) == .cold)
+        #expect(pttClient.transmissionModeUpdates.count == transmissionModeUpdateCount + 1)
+        #expect(pttClient.transmissionModeUpdates.last?.mode == .halfDuplex)
+        #expect(pttClient.serviceStatusUpdates.count == serviceStatusUpdateCount + 1)
+        #expect(pttClient.serviceStatusUpdates.last?.status == .ready)
+        #expect(pttClient.accessoryButtonEventUpdates.count == accessoryUpdateCount + 1)
+        #expect(pttClient.accessoryButtonEventUpdates.last?.enabled == true)
+        #expect(viewModel.diagnosticsTranscript.contains("Reasserted PTT talk readiness"))
     }
 
     @MainActor

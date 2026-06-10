@@ -2957,6 +2957,12 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         }
 
         let _ = shouldPreserveJoinedSession
+        if let contactID = activeChannelId {
+            reassertPTTTalkReadinessIfNeeded(
+                for: contactID,
+                reason: "application-did-enter-background"
+            )
+        }
         await publishLifecyclePresenceTransitionIfNeeded(reason: "application-did-enter-background")
     }
 

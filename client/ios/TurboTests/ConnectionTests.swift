@@ -29684,6 +29684,46 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func backgroundTransitionReassertsPTTServiceReadyForJoinedSystemChannel() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+
+        viewModel.applicationStateOverride = .active
+        viewModel.backendRuntime.isReady = true
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.syncPTTServiceStatus(reason: "test-active")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(pttClient.serviceStatusUpdates.last?.status == .connecting)
+
+        viewModel.applicationStateOverride = .background
+        await viewModel.handleApplicationDidEnterBackground()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(pttClient.transmissionModeUpdates.last?.mode == .halfDuplex)
+        #expect(pttClient.serviceStatusUpdates.last?.status == .ready)
+        #expect(pttClient.accessoryButtonEventUpdates.last?.enabled == true)
+        #expect(viewModel.diagnosticsTranscript.contains("reason=application-did-enter-background"))
+    }
+
+    @MainActor
     @Test func foregroundJoinedSessionStillReportsConnectingWhileWebSocketReconnects() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()

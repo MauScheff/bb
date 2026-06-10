@@ -225,6 +225,10 @@ extension PTTViewModel {
                         "applicationState": String(describing: applicationState)
                     ]
                 )
+                reassertPTTTalkReadinessIfNeeded(
+                    for: contactID,
+                    reason: "ptt-audio-deactivated-background-ready"
+                )
                 return
             }
             guard !hasLocalTransmitStartupOrActiveIntent(for: contactID) else {

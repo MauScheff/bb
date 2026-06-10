@@ -16093,6 +16093,7 @@ struct TalkTurnTests {
 
         viewModel.contacts = [contact]
         viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .active
         viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
         viewModel.transmitRuntime.markPressBegan()
         viewModel.backendSyncCoordinator.send(
@@ -16417,6 +16418,7 @@ struct TalkTurnTests {
 
         viewModel.contacts = [contact]
         viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .active
         viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
         viewModel.transmitRuntime.markPressBegan()
         viewModel.backendSyncCoordinator.send(
@@ -16494,6 +16496,95 @@ struct TalkTurnTests {
         #expect(
             !viewModel.diagnosticsTranscript.contains(
                 "Timed out waiting for remote receiver audio readiness; not sending outbound audio"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func outgoingAudioSendGateDoesNotReleaseWakeGraceWhileSenderIsBackgrounded() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .background
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .idle,
+                    canTransmit: false,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .waitingForPeer,
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: false,
+                    remoteAudioReadiness: .wakeCapable,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device")
+                )
+            )
+        )
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            viewModel.backendSyncCoordinator.send(
+                .channelReadinessUpdated(
+                    contactID: contactID,
+                    readiness: makeChannelReadiness(
+                        status: .ready,
+                        selfHasActiveDevice: true,
+                        peerHasActiveDevice: true,
+                        remoteAudioReadiness: .ready,
+                        remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device")
+                    )
+                )
+            )
+        }
+
+        let didBecomeReady = await viewModel.waitForRemoteReceiverAudioReadinessBeforeSendingIfNeeded(
+            target: TransmitTarget(
+                contactID: contactID,
+                userID: "peer-user",
+                deviceID: "peer-device",
+                channelID: "channel"
+            ),
+            timeoutNanoseconds: 250_000_000,
+            pollNanoseconds: 10_000_000,
+            wakeRecoveryGraceNanoseconds: 50_000_000
+        )
+
+        #expect(didBecomeReady)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Holding wake-capable receiver send gate until receiver readiness while sender is backgrounded"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Remote receiver audio became ready; releasing outbound audio send gate"
+            )
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Wake-capable receiver grace elapsed; releasing outbound audio send gate"
             )
         )
     }

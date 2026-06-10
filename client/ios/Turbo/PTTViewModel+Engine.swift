@@ -165,6 +165,28 @@ extension PTTViewModel {
         }
         if let channelUUID = channelUUID(for: contactID),
            hasStaleSystemRejoinSuppression(channelUUID: channelUUID, contactID: contactID) {
+            if let joined = engineJoinedConversationEvidence(for: contactID) {
+                let suppression = consumeStaleSystemRejoinSuppression(
+                    channelUUID: channelUUID,
+                    contactID: contactID
+                )
+                diagnostics.record(
+                    .backend,
+                    message: "Cleared recent system leave barrier after authoritative backend joined Conversation",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "channelUUID": channelUUID.uuidString,
+                        "reason": reason,
+                        "suppressionReason": suppression?.reason ?? "none",
+                        "engineConversation": String(describing: engine.snapshot.conversation),
+                    ]
+                )
+                receiveEngineEvent(
+                    .backend(.joined(joined)),
+                    source: "backend-conversation:authoritative-rejoin:\(reason)"
+                )
+                return
+            }
             diagnostics.record(
                 .backend,
                 message: "Ignored backend joined Conversation after recent system leave",
