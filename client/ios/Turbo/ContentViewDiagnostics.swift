@@ -580,12 +580,14 @@ struct TurboDiagnosticsSheet: View {
     let uploadStatus: String?
     let automaticPublishStatusText: String?
     let isUploading: Bool
+    let isReportingProblem: Bool
     let isRequestingMicrophonePermission: Bool
     let isRequestingLocalNetworkPermission: Bool
     let isRequestingNotificationPermission: Bool
     let isRunningDirectQuicDebugAction: Bool
     let onClose: () -> Void
     let onUpload: () -> Void
+    let onReportProblem: () -> Void
     let onClear: () -> Void
     let onRequestMicrophonePermission: () -> Void
     let onRequestLocalNetworkPermission: () -> Void
@@ -658,13 +660,21 @@ struct TurboDiagnosticsSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", action: onClose)
                 }
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button(action: onReportProblem) {
+                        Label(
+                            isReportingProblem ? "Reporting…" : "Report",
+                            systemImage: "exclamationmark.bubble"
+                        )
+                    }
+                    .disabled(isReportingProblem || isUploading)
+
                     Button(isUploading ? "Uploading…" : "Upload", action: onUpload)
-                        .disabled(isUploading)
+                        .disabled(isUploading || isReportingProblem)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Clear", action: onClear)
-                        .disabled(isUploading)
+                        .disabled(isUploading || isReportingProblem)
                 }
             }
         }

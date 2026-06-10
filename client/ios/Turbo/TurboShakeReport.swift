@@ -8,6 +8,38 @@ struct ShakeReportResult: Equatable {
     let diagnosticsLatestURL: String?
 }
 
+enum ProblemReportSource: String, Equatable {
+    case shake
+    case diagnosticsButton = "diagnostics-button"
+
+    var diagnosticsTrigger: String {
+        switch self {
+        case .shake:
+            return "shake-report"
+        case .diagnosticsButton:
+            return "diagnostics-button-report"
+        }
+    }
+
+    var telemetryEventName: String {
+        switch self {
+        case .shake:
+            return "ios.problem_report.shake"
+        case .diagnosticsButton:
+            return "ios.problem_report.diagnostics_button"
+        }
+    }
+
+    var telemetryFailureEventName: String {
+        switch self {
+        case .shake:
+            return "ios.problem_report.shake_upload_failed"
+        case .diagnosticsButton:
+            return "ios.problem_report.diagnostics_button_upload_failed"
+        }
+    }
+}
+
 struct ShakeReportPresentation: Equatable {
     enum State: Equatable {
         case composing

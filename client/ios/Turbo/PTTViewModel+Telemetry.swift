@@ -5,7 +5,8 @@ extension PTTViewModel {
     func submitShakeReport(
         incidentID: String,
         requestedAt: Date = .now,
-        userReport: String = ""
+        userReport: String = "",
+        source: ProblemReportSource = .shake
     ) async throws -> ShakeReportResult {
         let selected = selectedContact
         let channelID = selected?.backendChannelId
@@ -14,20 +15,21 @@ extension PTTViewModel {
             requestedAt: requestedAt,
             selected: selected,
             channelID: channelID,
-            userReport: userReport
+            userReport: userReport,
+            source: source
         )
 
         diagnostics.record(
             .app,
             level: .notice,
-            message: "Shake report requested",
+            message: "Problem report requested",
             metadata: metadata
         )
-        captureDiagnosticsState("shake-report")
+        captureDiagnosticsState(source.diagnosticsTrigger)
 
         do {
             let result = try await publishDiagnosticsIfPossible(
-                trigger: "shake-report:\(incidentID)",
+                trigger: "\(source.diagnosticsTrigger):\(incidentID)",
                 recordSuccess: true,
                 preferredUploadMode: .compact
             )
@@ -48,9 +50,9 @@ extension PTTViewModel {
             }
 
             sendTelemetryEvent(
-                eventName: "ios.problem_report.shake",
+                eventName: source.telemetryEventName,
                 severity: .notice,
-                reason: "shake-report",
+                reason: source.diagnosticsTrigger,
                 message: shakeReportTelemetryMessage(diagnosticsLatestURL: diagnosticsLatestURL),
                 metadata: reportMetadata,
                 alert: true,
@@ -68,17 +70,17 @@ extension PTTViewModel {
             diagnostics.record(
                 .app,
                 level: .error,
-                message: "Shake report upload failed",
+                message: "Problem report upload failed",
                 metadata: metadata.merging(
                     ["error": error.localizedDescription],
                     uniquingKeysWith: { _, new in new }
                 )
             )
             sendTelemetryEvent(
-                eventName: "ios.problem_report.shake_upload_failed",
+                eventName: source.telemetryFailureEventName,
                 severity: .error,
-                reason: "shake-report",
-                message: "Shake report upload failed",
+                reason: source.diagnosticsTrigger,
+                message: "Problem report upload failed",
                 metadata: metadata.merging(
                     ["error": error.localizedDescription],
                     uniquingKeysWith: { _, new in new }
@@ -252,11 +254,13 @@ extension PTTViewModel {
         requestedAt: Date,
         selected: Contact?,
         channelID: String?,
-        userReport: String
+        userReport: String,
+        source: ProblemReportSource
     ) -> [String: String] {
         let traceWindowStart = requestedAt.addingTimeInterval(-300)
         var metadata = [
             "incidentId": incidentID,
+            "source": source.rawValue,
             "requestedAt": iso8601String(requestedAt),
             "traceWindowStart": iso8601String(traceWindowStart),
             "traceWindowEnd": iso8601String(requestedAt),

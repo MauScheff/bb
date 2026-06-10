@@ -104,6 +104,7 @@ struct ContentView: View {
     @State private var isDeletingContact: Bool = false
     @State private var isResettingDevState: Bool = false
     @State private var isUploadingDiagnostics: Bool = false
+    @State private var isReportingProblemFromDiagnostics: Bool = false
     @State private var isRequestingMicrophonePermission: Bool = false
     @State private var isRequestingLocalNetworkPermission: Bool = false
     @State private var isRequestingNotificationPermission: Bool = false
@@ -331,12 +332,14 @@ struct ContentView: View {
                 uploadStatus: diagnosticsUploadStatus,
                 automaticPublishStatusText: viewModel.automaticDiagnosticsPublishStatusText,
                 isUploading: isUploadingDiagnostics,
+                isReportingProblem: isReportingProblemFromDiagnostics,
                 isRequestingMicrophonePermission: isRequestingMicrophonePermission,
                 isRequestingLocalNetworkPermission: isRequestingLocalNetworkPermission,
                 isRequestingNotificationPermission: isRequestingNotificationPermission,
                 isRunningDirectQuicDebugAction: isRunningDirectQuicDebugAction,
                 onClose: { isShowingDiagnostics = false },
                 onUpload: uploadDiagnostics,
+                onReportProblem: reportProblemFromDiagnostics,
                 onClear: { viewModel.diagnostics.clear() },
                 onRequestMicrophonePermission: requestMicrophonePermission,
                 onRequestLocalNetworkPermission: requestLocalNetworkPermission,
@@ -1307,6 +1310,30 @@ struct ContentView: View {
                     diagnosticsUploadStatus = "Upload failed: \(error.localizedDescription)"
                     isUploadingDiagnostics = false
                 }
+            }
+        }
+    }
+
+    private func reportProblemFromDiagnostics() {
+        guard !isReportingProblemFromDiagnostics else { return }
+        isReportingProblemFromDiagnostics = true
+        diagnosticsUploadStatus = "Sending problem report..."
+        let incidentID = "inc_\(UUID().uuidString.lowercased())"
+        let requestedAt = Date()
+        Task { @MainActor in
+            do {
+                let result = try await viewModel.submitShakeReport(
+                    incidentID: incidentID,
+                    requestedAt: requestedAt,
+                    userReport: "",
+                    source: .diagnosticsButton
+                )
+                diagnosticsUploadStatus =
+                    "Report \(result.incidentID) sent for \(result.deviceID) at \(result.uploadedAt)"
+                isReportingProblemFromDiagnostics = false
+            } catch {
+                diagnosticsUploadStatus = "Report failed: \(error.localizedDescription)"
+                isReportingProblemFromDiagnostics = false
             }
         }
     }
