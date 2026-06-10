@@ -881,6 +881,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         backendRuntime.replacePollTask(with: task)
     }
 
+    func replaceDirectQuicSignalDrainTask(with task: Task<Void, Never>?) {
+        backendRuntime.replaceDirectQuicSignalDrainTask(with: task)
+    }
+
     func replaceBackendBootstrapRetryTask(with task: Task<Void, Never>?) {
         backendRuntime.replaceBootstrapRetryTask(with: task)
     }
@@ -1146,6 +1150,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
 
     var hasPendingBackendPollTask: Bool {
         backendRuntime.pollTask != nil
+    }
+
+    var hasPendingDirectQuicSignalDrainTask: Bool {
+        backendRuntime.directQuicSignalDrainTask != nil
     }
 
     var trackedContactIDs: Set<UUID> {
@@ -1720,8 +1728,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             "directQuicBackendAdvertised": String(directQuic.backendAdvertisesUpgrade),
             "directQuicEnabled": String(directQuic.effectiveUpgradeEnabled),
             "mediaLaneOverride": directQuic.mediaLaneOverride.rawValue,
-            "mediaLaneEffective": directQuic.transportPathState.rawValue,
-            "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.rawValue ?? "none",
+            "mediaLaneEffective": directQuic.transportPathState.diagnosticsValue,
+            "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.diagnosticsValue ?? "none",
             "mediaRelayEnabled": String(directQuic.mediaRelayEnabled),
             "mediaRelayForced": String(directQuic.mediaRelayForced),
             "mediaRelayConfigured": String(directQuic.mediaRelayConfigured),
@@ -1733,7 +1741,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
             "directQuicProvisioningStatus": directQuic.provisioningStatus,
             "directQuicFingerprint": directQuic.fingerprint ?? "none",
             "directQuicInstalledIdentityCount": String(directQuic.installedIdentityCount),
-            "directQuicTransportPath": directQuic.transportPathState.rawValue,
+            "directQuicTransportPath": directQuic.transportPathState.diagnosticsValue,
             "directQuicLocalDeviceId": directQuic.localDeviceID ?? "none",
             "directQuicPeerDeviceId": directQuic.peerDeviceID ?? "none",
             "directQuicAttemptId": directQuic.attemptID ?? "none",

@@ -229,56 +229,16 @@ where
     service
         .lock()
         .map_err(|_| "runtime-service-lock-poisoned".to_owned())?
-        .observe_app_compatible_control_command(
+        .handle_app_compatible_runtime_control_command(
             &frame.envelope.command_kind,
             participant_id,
             device_id,
             frame.envelope.channel_id.as_deref(),
             frame.envelope.subject.as_deref(),
-        );
-    Ok(runtime_control_command_body(
-        participant_id,
-        device_id,
-        frame,
-    ))
-}
-
-fn runtime_control_command_body(
-    participant_id: &str,
-    device_id: &str,
-    frame: &RuntimeControlCommandFrame,
-) -> serde_json::Value {
-    match frame.envelope.command_kind.as_str() {
-        "presence-foreground" | "presence-keepalive" => serde_json::json!({
-            "deviceId": device_id,
-            "userId": participant_id,
-            "status": "online"
-        }),
-        "presence-background" => serde_json::json!({
-            "deviceId": device_id,
-            "userId": participant_id,
-            "status": "background"
-        }),
-        "presence-offline" => serde_json::json!({
-            "deviceId": device_id,
-            "userId": participant_id,
-            "status": "offline"
-        }),
-        "join-channel" => serde_json::json!({
-            "channelId": frame.envelope.channel_id.as_deref().unwrap_or("conversation"),
-            "userId": participant_id,
-            "deviceId": device_id,
-            "status": "joined"
-        }),
-        "leave-channel" => serde_json::json!({
-            "channelId": frame.envelope.channel_id.as_deref().unwrap_or("conversation"),
-            "deviceId": device_id,
-            "status": "left"
-        }),
-        _ => serde_json::json!({
-            "status": "accepted"
-        }),
-    }
+            frame.envelope.generation,
+            frame.envelope.operation_id.as_deref(),
+        )
+        .map_err(|error| error.to_string())
 }
 
 struct RuntimeHttpControlCommandObserver<S, W, C> {

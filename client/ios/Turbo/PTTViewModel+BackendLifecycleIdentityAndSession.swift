@@ -586,6 +586,53 @@ extension PTTViewModel {
         })
     }
 
+    func startDirectQuicSignalDrainIfNeeded() {
+        guard !hasPendingDirectQuicSignalDrainTask else { return }
+        replaceDirectQuicSignalDrainTask(with: Task { [weak self] in
+            while let self, !Task.isCancelled {
+                await self.drainDirectQuicRuntimeControlSignalsOnce()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        })
+    }
+
+    func drainDirectQuicRuntimeControlSignalsOnce() async {
+        guard let backend = backendServices else { return }
+        do {
+            let response = try await backend.drainDirectQuicSignals(
+                after: backendRuntime.directQuicSignalDrainSequence
+            )
+            backendRuntime.directQuicSignalDrainSequence = max(
+                backendRuntime.directQuicSignalDrainSequence,
+                response.latestSequence
+            )
+            for delivery in response.signals {
+                backendRuntime.directQuicSignalDrainSequence = max(
+                    backendRuntime.directQuicSignalDrainSequence,
+                    delivery.sequence
+                )
+                scheduleIncomingSignalDelivery(delivery.envelope)
+            }
+            if !response.signals.isEmpty {
+                diagnostics.record(
+                    .backend,
+                    message: "Drained Direct QUIC runtime-control signals",
+                    metadata: [
+                        "count": String(response.signals.count),
+                        "latestSequence": String(backendRuntime.directQuicSignalDrainSequence),
+                    ]
+                )
+            }
+        } catch {
+            diagnostics.record(
+                .backend,
+                level: .debug,
+                message: "Direct QUIC runtime-control signal drain failed",
+                metadata: ["error": error.localizedDescription]
+            )
+        }
+    }
+
     func handleWebSocketStateChange(_ state: TurboBackendClient.WebSocketConnectionState) {
         guard let backend = backendServices, backend.supportsWebSocket else { return }
         diagnostics.record(.websocket, message: "WebSocket state changed", metadata: ["state": String(describing: state)])

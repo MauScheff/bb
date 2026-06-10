@@ -157,6 +157,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private var webSocketPresenceCommandsRejected = false
     private let runtimeControlQueue = DispatchQueue(label: "TurboBackendClient.runtime-control")
     private var runtimeControlConnection: RuntimeControlConnection?
+    private var runtimePersistentControlBackoffUntilByLane: [String: Date] = [:]
 #if DEBUG
     var channelStateResponseForTesting: (@MainActor (String) async throws -> TurboChannelStateResponse)?
     var channelReadinessResponseForTesting: (@MainActor (String) async throws -> TurboChannelReadinessResponse)?
@@ -718,6 +719,60 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         try await webSocketTask.send(.string(text))
     }
 
+    func sendDirectQuicSignal(_ envelope: TurboSignalEnvelope) async throws -> TurboRuntimeDirectQuicSignalSendResponse {
+        guard envelope.type.isDirectQuicControlSignal else {
+            throw TurboBackendError.invalidConfiguration
+        }
+        let signalData = try JSONEncoder().encode(envelope)
+        let signalPayload = String(decoding: signalData, as: UTF8.self)
+        let body = TurboControlCommandEnvelope(
+            commandKind: "direct-quic-signal-send",
+            userHandle: config.devUserHandle,
+            deviceId: config.deviceID,
+            operationId: runtimeControlOperationID(for: envelope),
+            channelId: envelope.channelId,
+            subject: signalPayload
+        )
+        return try await hedgedControlCommandRequest(
+            path: "/v1/direct-quic/signals/send",
+            body: body
+        )
+    }
+
+    func drainDirectQuicSignals(
+        after sequence: UInt64
+    ) async throws -> TurboRuntimeDirectQuicSignalDrainResponse {
+        let body = TurboControlCommandEnvelope(
+            commandKind: "direct-quic-signal-drain",
+            userHandle: config.devUserHandle,
+            deviceId: config.deviceID,
+            operationId: UUID().uuidString.lowercased(),
+            generation: sequence
+        )
+        return try await hedgedControlCommandRequest(
+            path: "/v1/direct-quic/signals/drain",
+            body: body
+        )
+    }
+
+    private func runtimeControlOperationID(for envelope: TurboSignalEnvelope) -> String {
+        let canonical = [
+            envelope.type.rawValue,
+            envelope.channelId,
+            envelope.fromUserId,
+            envelope.fromDeviceId,
+            envelope.toUserId,
+            envelope.toDeviceId,
+            envelope.payload,
+        ].joined(separator: "\u{1f}")
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in canonical.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "direct-quic-signal-\(String(hash, radix: 16))"
+    }
+
     func setWebSocketConnectionStateForTesting(_ state: WebSocketConnectionState) {
         webSocketConnectionState = state
     }
@@ -959,6 +1014,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     transport: runtimeTransport
                 )
             } catch {
+                noteRuntimePersistentControlFailure(runtimeTransport)
                 onServerNotice?(
                     "\(runtimeTransport.label) command failed; using HTTP fallback: \(error.localizedDescription)"
                 )
@@ -1057,6 +1113,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     transport: runtimeTransport
                 )
             } catch {
+                noteRuntimePersistentControlFailure(runtimeTransport)
                 emitControlCommandTrace(
                     commandKind: body.commandKind,
                     transport: .http,
@@ -1172,6 +1229,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     transport: runtimeTransport
                 )
             } catch {
+                noteRuntimePersistentControlFailure(runtimeTransport)
                 emitControlCommandTrace(
                     commandKind: envelope.commandKind,
                     transport: .http,
@@ -1283,6 +1341,12 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         if controlCommandRuntimePersistentResponseForTesting != nil {
             return true
         }
+        if let backoffUntil = runtimePersistentControlBackoffUntilByLane[lane.rawValue] {
+            if backoffUntil > Date() {
+                return false
+            }
+            runtimePersistentControlBackoffUntilByLane.removeValue(forKey: lane.rawValue)
+        }
         guard runtimeControlEndpoint(for: lane) != nil else { return false }
         switch lane {
         case .runtimeQuicControl:
@@ -1292,6 +1356,11 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         case .runtimeHttpRequest:
             return false
         }
+    }
+
+    private func noteRuntimePersistentControlFailure(_ transport: ControlCommandTransport) {
+        guard let lane = transport.runtimeLane else { return }
+        runtimePersistentControlBackoffUntilByLane[lane.rawValue] = Date().addingTimeInterval(5)
     }
 
     private func controlCommandData(
@@ -2023,6 +2092,7 @@ struct TurboControlCommandEnvelope: Encodable {
     let transmitId: String?
     let subject: String?
     let deviceSessionProof: String?
+    let generation: UInt64?
 
     init(
         commandKind: String,
@@ -2037,7 +2107,8 @@ struct TurboControlCommandEnvelope: Encodable {
         otherUserId: String? = nil,
         transmitId: String? = nil,
         subject: String? = nil,
-        deviceSessionProof: String? = nil
+        deviceSessionProof: String? = nil,
+        generation: UInt64? = nil
     ) {
         self.commandKind = commandKind
         self.userHandle = userHandle
@@ -2052,6 +2123,7 @@ struct TurboControlCommandEnvelope: Encodable {
         self.transmitId = transmitId
         self.subject = subject
         self.deviceSessionProof = deviceSessionProof
+        self.generation = generation
     }
 }
 
@@ -2126,6 +2198,7 @@ private struct TurboRuntimeControlCommandRequest: Encodable {
     let transmitId: String?
     let subject: String?
     let deviceSessionProof: String?
+    let generation: UInt64?
 
     init(
         requestId: String,
@@ -2150,7 +2223,25 @@ private struct TurboRuntimeControlCommandRequest: Encodable {
         transmitId = envelope.transmitId
         subject = envelope.subject
         deviceSessionProof = envelope.deviceSessionProof
+        generation = envelope.generation
     }
+}
+
+struct TurboRuntimeDirectQuicSignalSendResponse: Decodable {
+    let status: String
+    let deduplicated: Bool?
+    let sequence: UInt64?
+}
+
+struct TurboRuntimeDirectQuicSignalDrainResponse: Decodable {
+    let status: String
+    let latestSequence: UInt64
+    let signals: [TurboRuntimeDirectQuicSignalDelivery]
+}
+
+struct TurboRuntimeDirectQuicSignalDelivery: Decodable {
+    let sequence: UInt64
+    let envelope: TurboSignalEnvelope
 }
 
 private struct TurboResolveIdentityRequest: Encodable {

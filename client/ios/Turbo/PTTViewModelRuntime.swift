@@ -380,6 +380,7 @@ final class BackendRuntimeState {
     private static let receiverAudioReadinessDeliveryRecoveryTTL: TimeInterval = 5
 
     var pollTask: Task<Void, Never>?
+    var directQuicSignalDrainTask: Task<Void, Never>?
     var bootstrapRetryTask: Task<Void, Never>?
     var signalingJoinRecoveryTask: Task<Void, Never>?
     var config = TurboBackendConfig.load()
@@ -394,6 +395,7 @@ final class BackendRuntimeState {
     var telemetryEnabled: Bool = false
     var trackedContactIDs: Set<UUID> = []
     private var lastPresenceHeartbeatSentAt: Date?
+    var directQuicSignalDrainSequence: UInt64 = 0
     private var backendJoinSettlingStartedAtByContactID: [UUID: Date] = [:]
     private var receiverAudioReadinessDeliveryRecoveryStartedAtByContactID: [UUID: Date] = [:]
     var transportFaults = TransportFaultRuntimeState()
@@ -444,6 +446,9 @@ final class BackendRuntimeState {
         signalingJoinRecoveryTask = nil
         pollTask?.cancel()
         pollTask = nil
+        directQuicSignalDrainTask?.cancel()
+        directQuicSignalDrainTask = nil
+        directQuicSignalDrainSequence = 0
         lastPresenceHeartbeatSentAt = nil
         backendJoinSettlingStartedAtByContactID.removeAll()
         receiverAudioReadinessDeliveryRecoveryStartedAtByContactID.removeAll()
@@ -456,6 +461,11 @@ final class BackendRuntimeState {
     func replacePollTask(with task: Task<Void, Never>?) {
         pollTask?.cancel()
         pollTask = task
+    }
+
+    func replaceDirectQuicSignalDrainTask(with task: Task<Void, Never>?) {
+        directQuicSignalDrainTask?.cancel()
+        directQuicSignalDrainTask = task
     }
 
     func replaceBootstrapRetryTask(with task: Task<Void, Never>?) {
@@ -4270,8 +4280,8 @@ final class MediaRuntimeState {
             activeMediaEpochPathState = .fastRelay
         case "media-relay-tcp":
             activeMediaEpochPathState = .fastRelayTcp
-        case "relay-websocket":
-            activeMediaEpochPathState = .relay
+        case "legacy-runtime-audio", "relay-websocket":
+            activeMediaEpochPathState = nil
         default:
             break
         }
@@ -5145,7 +5155,7 @@ final class MediaRuntimeState {
 }
 
 enum MediaTransportPathState: String, Codable, Equatable {
-    case relay
+    case relay = "runtime-control"
     case fastRelay = "fast-relay"
     case fastRelayTcp = "fast-relay-tcp"
     case promoting
@@ -5155,7 +5165,7 @@ enum MediaTransportPathState: String, Codable, Equatable {
     var label: String {
         switch self {
         case .relay:
-            return "Relayed"
+            return "Runtime Control"
         case .fastRelay:
             return "Fast Relay"
         case .fastRelayTcp:
@@ -5166,6 +5176,23 @@ enum MediaTransportPathState: String, Codable, Equatable {
             return "Direct"
         case .recovering:
             return "Recovering"
+        }
+    }
+
+    nonisolated var diagnosticsValue: String {
+        switch self {
+        case .relay:
+            return "runtime-control"
+        case .fastRelay:
+            return "fast-relay"
+        case .fastRelayTcp:
+            return "fast-relay-tcp"
+        case .promoting:
+            return "promoting"
+        case .direct:
+            return "direct"
+        case .recovering:
+            return "recovering"
         }
     }
 
@@ -5184,20 +5211,20 @@ enum MediaTransportPathState: String, Codable, Equatable {
 }
 
 enum MediaTransportReadinessEvidence: String, Equatable {
-    case directQuicActive
-    case mediaRelayClient
-    case webSocketConnected
-    case localHTTPBackend
-    case webSocketUnsupportedBackend
-    case controlPlaneReconnectGrace
+    case directQuicActive = "direct-quic-active"
+    case mediaRelayClient = "media-relay-client"
+    case webSocketConnected = "runtime-control-connected"
+    case localHTTPBackend = "runtime-http-backend"
+    case webSocketUnsupportedBackend = "runtime-control-fallback"
+    case controlPlaneReconnectGrace = "control-plane-reconnect-grace"
 }
 
 enum MediaTransportUnavailableReason: String, Equatable {
-    case backendUnavailable
-    case webSocketDisconnected
-    case directPromotionNoFallback
-    case directRecoveryNoFallback
-    case noTransportReady
+    case backendUnavailable = "backend-unavailable"
+    case webSocketDisconnected = "runtime-control-disconnected"
+    case directPromotionNoFallback = "direct-promotion-no-fallback"
+    case directRecoveryNoFallback = "direct-recovery-no-fallback"
+    case noTransportReady = "no-transport-ready"
 }
 
 enum MediaTransportFallbackState: Equatable {
@@ -5350,7 +5377,7 @@ enum SelectedMediaTransportState: Equatable {
         case .fastRelayTcp:
             return "fast-relay-tcp"
         case .relay:
-            return "relay"
+            return "runtime-control"
         case .promoting:
             return "promoting"
         case .recovering:
@@ -5738,6 +5765,16 @@ struct BackendServices {
 
     func sendSignal(_ envelope: TurboSignalEnvelope) async throws {
         try await client.sendSignal(envelope)
+    }
+
+    func sendDirectQuicSignal(_ envelope: TurboSignalEnvelope) async throws -> TurboRuntimeDirectQuicSignalSendResponse {
+        try await client.sendDirectQuicSignal(envelope)
+    }
+
+    func drainDirectQuicSignals(
+        after sequence: UInt64
+    ) async throws -> TurboRuntimeDirectQuicSignalDrainResponse {
+        try await client.drainDirectQuicSignals(after: sequence)
     }
 }
 

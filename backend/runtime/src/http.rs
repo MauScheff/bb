@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env,
     io::{Read, Write},
     net::TcpListener,
@@ -272,12 +272,22 @@ struct RuntimeHttpState {
     alert_push_tokens_by_handle: BTreeMap<String, RuntimeAlertPushToken>,
     direct_quic_identities_by_device: BTreeMap<String, Value>,
     media_encryption_identities_by_device: BTreeMap<String, Value>,
+    direct_quic_signal_mailboxes_by_device: BTreeMap<String, VecDeque<RuntimeDirectQuicSignal>>,
+    direct_quic_signal_sequence_by_operation_id: BTreeMap<String, u64>,
     presence_by_handle: BTreeMap<String, RuntimePresence>,
     diagnostics_by_device: BTreeMap<String, Value>,
     diagnostics_by_user_device: BTreeMap<String, Value>,
     wake_events: Vec<Value>,
     invariant_events: Vec<Value>,
     next_transmit_id: u64,
+    next_direct_quic_signal_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeDirectQuicSignal {
+    sequence: u64,
+    operation_id: Option<String>,
+    envelope: Value,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -392,6 +402,49 @@ where
         &self.route_service
     }
 
+    pub fn handle_app_compatible_runtime_control_command(
+        &mut self,
+        command_kind: &str,
+        participant_id: &str,
+        device_id: &str,
+        channel_id: Option<&str>,
+        payload: Option<&str>,
+        generation: Option<u64>,
+        operation_id: Option<&str>,
+    ) -> Result<Value, RuntimeHttpError> {
+        match command_kind {
+            "direct-quic-signal-send" => {
+                return self.record_direct_quic_runtime_signal(
+                    participant_id,
+                    device_id,
+                    channel_id,
+                    payload,
+                    operation_id,
+                );
+            }
+            "direct-quic-signal-drain" => {
+                return Ok(
+                    self.drain_direct_quic_runtime_signals(device_id, generation.unwrap_or(0))
+                );
+            }
+            _ => {}
+        }
+
+        self.observe_app_compatible_control_command(
+            command_kind,
+            participant_id,
+            device_id,
+            channel_id,
+            payload,
+        );
+        Ok(app_compatible_control_command_body(
+            command_kind,
+            participant_id,
+            device_id,
+            channel_id,
+        ))
+    }
+
     pub fn observe_app_compatible_control_command(
         &mut self,
         command_kind: &str,
@@ -442,6 +495,103 @@ where
             }
             _ => {}
         }
+    }
+
+    fn record_direct_quic_runtime_signal(
+        &mut self,
+        participant_id: &str,
+        device_id: &str,
+        channel_id: Option<&str>,
+        payload: Option<&str>,
+        operation_id: Option<&str>,
+    ) -> Result<Value, RuntimeHttpError> {
+        let payload = payload.ok_or(RuntimeHttpError::MissingField("subject"))?;
+        let envelope: Value =
+            serde_json::from_str(payload).map_err(RuntimeHttpError::InvalidJson)?;
+        validate_direct_quic_runtime_signal_envelope(
+            &envelope,
+            participant_id,
+            device_id,
+            channel_id,
+        )?;
+
+        if let Some(operation_id) = operation_id.filter(|value| !value.trim().is_empty()) {
+            if let Some(sequence) = self
+                .state
+                .direct_quic_signal_sequence_by_operation_id
+                .get(operation_id)
+                .copied()
+            {
+                return Ok(serde_json::json!({
+                    "status": "stored",
+                    "deduplicated": true,
+                    "sequence": sequence
+                }));
+            }
+        }
+
+        let to_device_id = required_string(&envelope, &["toDeviceId"], "toDeviceId")?.to_owned();
+        self.state.next_direct_quic_signal_sequence += 1;
+        let sequence = self.state.next_direct_quic_signal_sequence;
+        let mailbox = self
+            .state
+            .direct_quic_signal_mailboxes_by_device
+            .entry(to_device_id.clone())
+            .or_default();
+        mailbox.push_back(RuntimeDirectQuicSignal {
+            sequence,
+            operation_id: operation_id.map(ToOwned::to_owned),
+            envelope,
+        });
+        while mailbox.len() > 128 {
+            mailbox.pop_front();
+        }
+        if let Some(operation_id) = operation_id.filter(|value| !value.trim().is_empty()) {
+            self.state
+                .direct_quic_signal_sequence_by_operation_id
+                .insert(operation_id.to_owned(), sequence);
+        }
+        Ok(serde_json::json!({
+            "status": "stored",
+            "deduplicated": false,
+            "sequence": sequence,
+            "toDeviceId": to_device_id
+        }))
+    }
+
+    fn drain_direct_quic_runtime_signals(&self, device_id: &str, after_sequence: u64) -> Value {
+        let signals = self
+            .state
+            .direct_quic_signal_mailboxes_by_device
+            .get(device_id)
+            .map(|mailbox| {
+                mailbox
+                    .iter()
+                    .filter(|entry| entry.sequence > after_sequence)
+                    .map(|entry| {
+                        serde_json::json!({
+                            "sequence": entry.sequence,
+                            "operationId": entry.operation_id,
+                            "envelope": entry.envelope
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let latest_sequence = self
+            .state
+            .direct_quic_signal_mailboxes_by_device
+            .get(device_id)
+            .and_then(|mailbox| mailbox.back())
+            .map(|entry| entry.sequence)
+            .unwrap_or(after_sequence);
+        serde_json::json!({
+            "status": "drained",
+            "deviceId": device_id,
+            "afterSequence": after_sequence,
+            "latestSequence": latest_sequence.max(after_sequence),
+            "signals": signals
+        })
     }
 
     pub fn observe_app_compatible_websocket_connected(
@@ -735,6 +885,42 @@ where
             return Ok(error_response(405, "method not allowed"));
         }
         let body = parse_body(&request.body)?;
+        if is_direct_quic_signal_send_path(&request.path) {
+            let handle = request_handle(&request);
+            let device_id = required_string(&body, &["deviceId"], "deviceId")?.to_owned();
+            let channel_id = path_value(&body, &["channelId"]).and_then(Value::as_str);
+            let payload = path_value(&body, &["subject"]).and_then(Value::as_str);
+            let operation_id = path_value(&body, &["operationId"]).and_then(Value::as_str);
+            return Ok(HttpResponse {
+                status: 200,
+                body: self.handle_app_compatible_runtime_control_command(
+                    "direct-quic-signal-send",
+                    &user_id_for_handle(handle),
+                    &device_id,
+                    channel_id,
+                    payload,
+                    None,
+                    operation_id,
+                )?,
+            });
+        }
+        if is_direct_quic_signal_drain_path(&request.path) {
+            let handle = request_handle(&request);
+            let device_id = required_string(&body, &["deviceId"], "deviceId")?.to_owned();
+            let generation = path_value(&body, &["generation"]).and_then(Value::as_u64);
+            return Ok(HttpResponse {
+                status: 200,
+                body: self.handle_app_compatible_runtime_control_command(
+                    "direct-quic-signal-drain",
+                    &user_id_for_handle(handle),
+                    &device_id,
+                    None,
+                    None,
+                    generation,
+                    path_value(&body, &["operationId"]).and_then(Value::as_str),
+                )?,
+            });
+        }
         if is_auth_session_path(&request.path) {
             let handle = normalize_identity_reference(request_handle(&request));
             let profile_name = self
@@ -2967,6 +3153,14 @@ fn receiver_audio_readiness_path(path: &str) -> Option<&str> {
     }
 }
 
+fn is_direct_quic_signal_send_path(path: &str) -> bool {
+    control_plane_path_parts(path).as_slice() == ["v1", "direct-quic", "signals", "send"]
+}
+
+fn is_direct_quic_signal_drain_path(path: &str) -> bool {
+    control_plane_path_parts(path).as_slice() == ["v1", "direct-quic", "signals", "drain"]
+}
+
 fn control_plane_path_parts(path: &str) -> Vec<&str> {
     let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -3128,6 +3322,80 @@ fn request_handle(request: &HttpRequest) -> &str {
     header_value(request, "x-turbo-user-handle")
         .or_else(|| header_value(request, "authorization").and_then(bearer_handle))
         .unwrap_or("@self")
+}
+
+fn app_compatible_control_command_body(
+    command_kind: &str,
+    participant_id: &str,
+    device_id: &str,
+    channel_id: Option<&str>,
+) -> Value {
+    match command_kind {
+        "presence-foreground" | "presence-keepalive" => serde_json::json!({
+            "deviceId": device_id,
+            "userId": participant_id,
+            "status": "online"
+        }),
+        "presence-background" => serde_json::json!({
+            "deviceId": device_id,
+            "userId": participant_id,
+            "status": "background"
+        }),
+        "presence-offline" => serde_json::json!({
+            "deviceId": device_id,
+            "userId": participant_id,
+            "status": "offline"
+        }),
+        "join-channel" => serde_json::json!({
+            "channelId": channel_id.unwrap_or("conversation"),
+            "userId": participant_id,
+            "deviceId": device_id,
+            "status": "joined"
+        }),
+        "leave-channel" => serde_json::json!({
+            "channelId": channel_id.unwrap_or("conversation"),
+            "deviceId": device_id,
+            "status": "left"
+        }),
+        _ => serde_json::json!({
+            "status": "accepted"
+        }),
+    }
+}
+
+fn validate_direct_quic_runtime_signal_envelope(
+    envelope: &Value,
+    participant_id: &str,
+    device_id: &str,
+    channel_id: Option<&str>,
+) -> Result<(), RuntimeHttpError> {
+    let signal_type = required_string(envelope, &["type"], "type")?;
+    if !matches!(
+        signal_type,
+        "direct-quic-offer"
+            | "direct-quic-answer"
+            | "ice-candidate"
+            | "hangup"
+            | "direct-quic-upgrade-request"
+    ) {
+        return Err(RuntimeHttpError::MalformedRequest);
+    }
+    if let Some(channel_id) = channel_id {
+        let signal_channel_id = required_string(envelope, &["channelId"], "channelId")?;
+        if signal_channel_id != channel_id {
+            return Err(RuntimeHttpError::MalformedRequest);
+        }
+    }
+    let from_user_id = required_string(envelope, &["fromUserId"], "fromUserId")?;
+    let from_device_id = required_string(envelope, &["fromDeviceId"], "fromDeviceId")?;
+    let to_device_id = required_string(envelope, &["toDeviceId"], "toDeviceId")?;
+    if from_user_id != participant_id
+        || from_device_id != device_id
+        || to_device_id.trim().is_empty()
+    {
+        return Err(RuntimeHttpError::MalformedRequest);
+    }
+    Ok(())
 }
 
 fn alert_push_token_invalidation_reason<'a>(
@@ -3872,6 +4140,85 @@ mod tests {
             .expect("body should encode"),
         });
         assert_eq!(response.status, 200);
+    }
+
+    #[test]
+    fn self_hosted_runtime_control_mailbox_routes_direct_quic_signals_without_websocket() {
+        let mut service = service_with_config(RuntimeHttpConfig {
+            supports_websocket: false,
+            supports_direct_quic_upgrade: true,
+            ..RuntimeHttpConfig::default()
+        });
+        let signal = serde_json::json!({
+            "type": "direct-quic-offer",
+            "channelId": "channel-a",
+            "fromUserId": user_id_for_handle("@avery"),
+            "fromDeviceId": "device-a",
+            "toUserId": user_id_for_handle("@blake"),
+            "toDeviceId": "device-b",
+            "payload": "{\"attemptId\":\"attempt-a\"}"
+        });
+
+        let send = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/direct-quic/signals/send".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-a",
+                "operationId": "signal-op-a",
+                "channelId": "channel-a",
+                "subject": signal.to_string()
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(send.status, 200);
+        assert_eq!(send.body["status"], "stored");
+        assert_eq!(send.body["sequence"], 1);
+
+        let duplicate = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/direct-quic/signals/send".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-a",
+                "operationId": "signal-op-a",
+                "channelId": "channel-a",
+                "subject": signal.to_string()
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(duplicate.status, 200);
+        assert_eq!(duplicate.body["deduplicated"], true);
+        assert_eq!(duplicate.body["sequence"], 1);
+
+        let drain = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/direct-quic/signals/drain".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "generation": 0
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(drain.status, 200);
+        assert_eq!(drain.body["status"], "drained");
+        assert_eq!(drain.body["latestSequence"], 1);
+        assert_eq!(drain.body["signals"][0]["sequence"], 1);
+        assert_eq!(drain.body["signals"][0]["envelope"], signal);
+
+        let already_seen = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/direct-quic/signals/drain".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({
+                "deviceId": "device-b",
+                "generation": 1
+            }))
+            .expect("body should encode"),
+        });
+        assert_eq!(already_seen.status, 200);
+        assert!(already_seen.body["signals"].as_array().unwrap().is_empty());
     }
 
     #[test]

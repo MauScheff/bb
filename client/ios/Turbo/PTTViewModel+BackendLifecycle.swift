@@ -807,6 +807,7 @@ extension PTTViewModel {
                 self.captureDiagnosticsState("backend-config:post-login-refresh-finished")
             }
             startBackendPollingIfNeeded()
+            startDirectQuicSignalDrainIfNeeded()
             statusMessage = selectedContact == nil ? "Ready to connect" : statusMessage
             diagnostics.record(
                 .backend,

@@ -2086,7 +2086,6 @@ extension PTTViewModel {
         }
 
         do {
-            try await backend.waitForWebSocketConnection()
             let envelope = try TurboSignalEnvelope.directQuicHangup(
                 channelId: attempt.channelID,
                 fromUserId: backend.currentUserID ?? "",
@@ -2098,9 +2097,9 @@ extension PTTViewModel {
                     reason: reason
                 )
             )
-            try await backend.sendSignal(envelope)
+            _ = try await backend.sendDirectQuicSignal(envelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC hangup sent",
                 metadata: [
                     "contactId": contactID.uuidString,
@@ -2112,7 +2111,7 @@ extension PTTViewModel {
             )
         } catch {
             diagnostics.record(
-                .websocket,
+                .backend,
                 level: .error,
                 message: "Direct QUIC hangup send failed",
                 metadata: [
@@ -2139,7 +2138,6 @@ extension PTTViewModel {
         guard let backend = backendServices else { return }
 
         do {
-            try await backend.waitForWebSocketConnection()
             for candidate in candidates {
                 let envelope = try TurboSignalEnvelope.directQuicCandidate(
                     channelId: channelID,
@@ -2152,7 +2150,7 @@ extension PTTViewModel {
                         candidate: candidate
                     )
                 )
-                try await backend.sendSignal(envelope)
+                _ = try await backend.sendDirectQuicSignal(envelope)
             }
             if endOfCandidates {
                 let envelope = try TurboSignalEnvelope.directQuicCandidate(
@@ -2167,10 +2165,10 @@ extension PTTViewModel {
                         endOfCandidates: true
                     )
                 )
-                try await backend.sendSignal(envelope)
+                _ = try await backend.sendDirectQuicSignal(envelope)
             }
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC candidates sent",
                 metadata: [
                     "contactId": contactID.uuidString,
@@ -2435,7 +2433,6 @@ extension PTTViewModel {
                     && !backendAdvertisesDirectQuicUpgrade
             )
             mediaRuntime.directQuicUpgrade.markLocalOffer(offerPayload, for: contactID)
-            try await backend.waitForWebSocketConnection()
             let envelope = try TurboSignalEnvelope.directQuicOffer(
                 channelId: channelID,
                 fromUserId: backend.currentUserID ?? "",
@@ -2444,9 +2441,9 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: offerPayload
             )
-            try await backend.sendSignal(envelope)
+            _ = try await backend.sendDirectQuicSignal(envelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC offer sent",
                 metadata: [
                     "contactId": contactID.uuidString,
@@ -2843,9 +2840,9 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: offerPayload
             )
-            try await backend.sendSignal(offerEnvelope)
+            _ = try await backend.sendDirectQuicSignal(offerEnvelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC active offer resent",
                 metadata: [
                     "contactId": contactID.uuidString,
@@ -2859,7 +2856,7 @@ extension PTTViewModel {
             )
         } catch {
             diagnostics.record(
-                .websocket,
+                .backend,
                 level: .error,
                 message: "Direct QUIC active offer resend failed",
                 metadata: [
@@ -3099,7 +3096,6 @@ extension PTTViewModel {
         }
 
         do {
-            try await backend.waitForWebSocketConnection()
             let answerEnvelope = try TurboSignalEnvelope.directQuicAnswer(
                 channelId: envelope.channelId,
                 fromUserId: backend.currentUserID ?? "",
@@ -3108,9 +3104,9 @@ extension PTTViewModel {
                 toDeviceId: envelope.fromDeviceId,
                 payload: answerPayload
             )
-            try await backend.sendSignal(answerEnvelope)
+            _ = try await backend.sendDirectQuicSignal(answerEnvelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC answer sent",
                 metadata: [
                     "contactId": contactID.uuidString,

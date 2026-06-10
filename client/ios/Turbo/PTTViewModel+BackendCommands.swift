@@ -1023,7 +1023,6 @@ extension PTTViewModel {
         acceptedBeep: TurboBeepResponse,
         backend: BackendServices
     ) async {
-        guard backend.supportsWebSocket else { return }
         guard let currentUserID = backend.currentUserID else { return }
 
         let remoteUserID: String
@@ -1067,9 +1066,9 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: payload
             )
-            try await backend.sendSignal(envelope)
+            _ = try await backend.sendDirectQuicSignal(envelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Published join accepted control signal",
                 metadata: [
                     "contactId": request.contactID.uuidString,
@@ -1082,7 +1081,7 @@ extension PTTViewModel {
             )
         } catch {
             diagnostics.record(
-                .websocket,
+                .backend,
                 level: .notice,
                 message: "Join accepted control signal send failed",
                 metadata: [

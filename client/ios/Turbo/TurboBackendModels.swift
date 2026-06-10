@@ -2021,7 +2021,7 @@ enum TurboPhysicalBoundaryLaunchProfile {
         } else if mediaRelayEnabled == true {
             transport = "media-relay-enabled"
         } else if relayOnlyForced == true {
-            transport = "relay-websocket"
+            transport = "runtime-control"
         } else if directQuicAutoUpgradeDisabled == false,
                   mediaRelayEnabled == false,
                   mediaRelayForced == false,

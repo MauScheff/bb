@@ -1330,10 +1330,10 @@ extension PTTViewModel {
             )
             return
         }
-        guard let backend = backendServices, backend.supportsWebSocket else {
+        guard let backend = backendServices else {
             diagnostics.record(
-                .websocket,
-                message: "Direct QUIC upgrade request skipped because websocket is unavailable",
+                .backend,
+                message: "Direct QUIC upgrade request skipped because backend is unavailable",
                 metadata: [
                     "contactId": contactID.uuidString,
                     "reason": reason,
@@ -1399,9 +1399,9 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: payload
             )
-            try await backend.sendSignal(envelope)
+            _ = try await backend.sendDirectQuicSignal(envelope)
             diagnostics.record(
-                .websocket,
+                .backend,
                 message: "Direct QUIC upgrade request sent",
                 metadata: [
                     "contactId": contactID.uuidString,
@@ -1415,7 +1415,7 @@ extension PTTViewModel {
         } catch {
             mediaRuntime.clearDirectQuicUpgradeRequestThrottle(for: contactID)
             diagnostics.record(
-                .websocket,
+                .backend,
                 level: .error,
                 message: "Direct QUIC upgrade request send failed",
                 metadata: [
@@ -1818,7 +1818,7 @@ extension PTTViewModel {
                 "selectedContact": selectedContact?.handle ?? "none",
                 "previousValue": previousValue.rawValue,
                 "newValue": override.rawValue,
-                "effectiveTransportPath": mediaRuntime.transportPathState.rawValue,
+                "effectiveTransportPath": mediaRuntime.transportPathState.diagnosticsValue,
                 "configured": String(TurboMediaRelayDebugOverride.config()?.isConfigured == true),
             ]
         )

@@ -258,7 +258,7 @@ extension PTTViewModel {
     func audioPlaybackAckTransportLabel(_ transport: IncomingAudioPayloadTransport) -> String {
         switch transport {
         case .relayWebSocket:
-            return "relay-websocket"
+            return "legacy-runtime-audio"
         case .mediaRelayPacket:
             return "media-relay-packet"
         case .mediaRelayTcp:
@@ -531,12 +531,12 @@ extension PTTViewModel {
             expectation.encryptedSequenceNumber == nil
             && payload.encryptedSequenceNumber == nil
             && expectation.deliveredTransports.contains("media-relay-packet")
-            && (payload.transport == "relay-websocket" || payload.transport == "media-relay-tcp")
+            && (payload.transport == "legacy-runtime-audio" || payload.transport == "media-relay-tcp")
         let orderedRelayAckForCurrentExpectation =
             expectation.encryptedSequenceNumber == nil
             && payload.encryptedSequenceNumber == nil
             && expectation.deliveredTransports.contains(payload.transport)
-            && (payload.transport == "relay-websocket" || payload.transport == "media-relay-tcp")
+            && (payload.transport == "legacy-runtime-audio" || payload.transport == "media-relay-tcp")
         let unorderedPacketAckForCurrentExpectation =
             expectation.encryptedSequenceNumber == nil
             && payload.encryptedSequenceNumber == nil
@@ -1275,7 +1275,7 @@ extension PTTViewModel {
                         "toDeviceId": target.deviceID,
                         "reason": reason,
                         "mediaLaneOverride": configuredMediaLaneOverrideRaw,
-                        "mediaLaneEffective": configuredTransportPathState.rawValue,
+                        "mediaLaneEffective": configuredTransportPathState.diagnosticsValue,
                     ]
                     extraMetadata.forEach { metadata[$0.key] = $0.value }
                     diagnosticsStore.record(
@@ -1736,8 +1736,8 @@ extension PTTViewModel {
                 "transportPolicy": senderPolicy.rawValue,
                 "transport": configuredOutgoingAudioTransportLabel(for: target.contactID),
                 "mediaLaneOverride": TurboMediaLaneDebugOverride.mediaLaneOverride().rawValue,
-                "mediaLaneEffective": mediaTransportPathState.rawValue,
-                "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.rawValue ?? "none",
+                "mediaLaneEffective": mediaTransportPathState.diagnosticsValue,
+                "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.diagnosticsValue ?? "none",
                 "directQuicActive": String(shouldUseDirectQuicTransport(for: target.contactID)),
                 "directQuicAudioEligible": String(directQuicAudioEligible),
                 "directQuicAudioVerified": String(directAudioPlaybackVerifiedKeys.contains(directAudioAckKey)),

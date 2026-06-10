@@ -748,7 +748,7 @@ struct DiagnosticsTests {
         #expect(
             !viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_chunk_gap"
-                    && $0.metadata["incomingTransport"] == "relay-websocket"
+                    && $0.metadata["incomingTransport"] == "legacy-runtime-audio"
             }
         )
 
@@ -762,7 +762,7 @@ struct DiagnosticsTests {
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
                 $0.invariantID == "media.incoming_audio_chunk_gap"
-                    && $0.metadata["incomingTransport"] == "relay-websocket"
+                    && $0.metadata["incomingTransport"] == "legacy-runtime-audio"
                     && $0.metadata["gapMilliseconds"] == "1101"
                     && $0.metadata["thresholdMilliseconds"] == "1000"
             }

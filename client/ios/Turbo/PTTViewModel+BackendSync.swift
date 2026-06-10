@@ -17,7 +17,7 @@ nonisolated enum IncomingAudioPayloadTransport: Equatable, Hashable, Sendable {
     var diagnosticsValue: String {
         switch self {
         case .relayWebSocket:
-            return "relay-websocket"
+            return "legacy-runtime-audio"
         case .mediaRelayPacket:
             return "media-relay-packet"
         case .mediaRelayTcp:

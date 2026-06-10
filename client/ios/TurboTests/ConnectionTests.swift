@@ -1650,7 +1650,7 @@ struct ConnectionTests {
         #expect(direct.isReadyForTransmit)
         #expect(direct.fallbackReady)
         #expect(direct.pathState == .direct)
-        #expect(direct.fallbackDiagnosticsValue == "mediaRelayClient")
+        #expect(direct.fallbackDiagnosticsValue == "media-relay-client")
 
         let recovering = SelectedMediaTransportState(
             pathState: .recovering,
@@ -1662,7 +1662,7 @@ struct ConnectionTests {
         #expect(!recovering.directMediaPathActive)
         #expect(!recovering.isReadyForTransmit)
         #expect(recovering.pathState == .recovering)
-        #expect(recovering.fallbackDiagnosticsValue == "webSocketDisconnected")
+        #expect(recovering.fallbackDiagnosticsValue == "runtime-control-disconnected")
     }
 
     @Test func outgoingAudioSendTargetGateInvalidatesOldHotPathTokens() {
@@ -9147,6 +9147,129 @@ struct ConnectionTests {
 
         let sent = try #require(client.sentSignalsForTesting().first)
         #expect(sent.sessionId == "session-current")
+    }
+
+    @MainActor
+    @Test func directQuicSignalUsesRuntimeControlWhenWebSocketIsRetired() async throws {
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsDirectQuicUpgrade: true,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
+        )
+
+        var capturedPath: String?
+        var capturedCommand: TurboControlCommandEnvelope?
+        client.controlCommandHTTPResponseForTesting = { path, envelope in
+            capturedPath = path
+            capturedCommand = envelope
+            return Data(#"{"status":"stored","deduplicated":false,"sequence":7}"#.utf8)
+        }
+
+        let envelope = try TurboSignalEnvelope.directQuicOffer(
+            channelId: "channel-a",
+            fromUserId: "user-self",
+            fromDeviceId: "device-a",
+            toUserId: "user-peer",
+            toDeviceId: "device-b",
+            payload: TurboDirectQuicOfferPayload(
+                attemptId: "attempt-a",
+                channelId: "channel-a",
+                fromDeviceId: "device-a",
+                toDeviceId: "device-b",
+                quicAlpn: "turbo-direct-quic-v1",
+                certificateFingerprint: "sha256:abc",
+                candidates: [],
+                roleIntent: .listener
+            )
+        )
+
+        let response = try await client.sendDirectQuicSignal(envelope)
+
+        #expect(response.sequence == 7)
+        #expect(capturedPath == "/v1/direct-quic/signals/send")
+        let command = try #require(capturedCommand)
+        #expect(command.commandKind == "direct-quic-signal-send")
+        #expect(command.channelId == "channel-a")
+        #expect(command.deviceId == "test-device")
+        let subject = try #require(command.subject)
+        let routedEnvelope = try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8))
+        #expect(routedEnvelope == envelope)
+    }
+
+    @MainActor
+    @Test func directQuicSignalDrainUsesRuntimeControlGeneration() async throws {
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "self-hosted",
+                supportsWebSocket: false,
+                supportsDirectQuicUpgrade: true,
+                supportsRuntimeQuicControl: false,
+                supportsRuntimeTlsControl: false
+            )
+        )
+        let envelope = try TurboSignalEnvelope.directQuicHangup(
+            channelId: "channel-a",
+            fromUserId: "user-peer",
+            fromDeviceId: "device-b",
+            toUserId: "user-self",
+            toDeviceId: "test-device",
+            payload: TurboDirectQuicHangupPayload(
+                attemptId: "attempt-a",
+                reason: "test"
+            )
+        )
+
+        var capturedPath: String?
+        var capturedCommand: TurboControlCommandEnvelope?
+        client.controlCommandHTTPResponseForTesting = { path, command in
+            capturedPath = path
+            capturedCommand = command
+            let signalObject = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(envelope)
+            )
+            return try JSONSerialization.data(withJSONObject: [
+                "status": "drained",
+                "latestSequence": 12,
+                "signals": [
+                    [
+                        "sequence": 12,
+                        "envelope": signalObject,
+                    ],
+                ],
+            ])
+        }
+
+        let response = try await client.drainDirectQuicSignals(after: 11)
+
+        #expect(capturedPath == "/v1/direct-quic/signals/drain")
+        #expect(capturedCommand?.commandKind == "direct-quic-signal-drain")
+        #expect(capturedCommand?.generation == 11)
+        #expect(response.latestSequence == 12)
+        #expect(response.signals.first?.sequence == 12)
+        #expect(response.signals.first?.envelope == envelope)
+    }
+
+    @Test func legacyRuntimeAudioDoesNotProjectAsRemovedRelayWebSocketLane() {
+        #expect(MediaTransportPathState.relay.rawValue == "runtime-control")
+        #expect(MediaTransportPathState.relay.diagnosticsValue == "runtime-control")
+        #expect(IncomingAudioPayloadTransport.relayWebSocket.diagnosticsValue == "legacy-runtime-audio")
+        #expect(IncomingAudioPayloadTransport.mediaRelayTcp.diagnosticsValue == "media-relay-tcp")
+
+        let runtime = MediaRuntimeState()
+        runtime.markActiveMediaEpochTransport("relay-websocket")
+        #expect(runtime.activeMediaEpochPathState == nil)
+
+        runtime.markActiveMediaEpochTransport("legacy-runtime-audio")
+        #expect(runtime.activeMediaEpochPathState == nil)
+
+        runtime.markActiveMediaEpochTransport("media-relay-tcp")
+        #expect(runtime.activeMediaEpochPathState == .fastRelayTcp)
     }
 
     @MainActor
@@ -27550,7 +27673,7 @@ struct ConnectionTests {
     }
 
     @MainActor
-    @Test func relayWebSocketAudioSequenceGapRecordsBeforePlayback() async throws {
+    @Test func runtimeWebSocketAudioPayloadIsRejectedBeforePlayback() async throws {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -27578,31 +27701,16 @@ struct ConnectionTests {
         viewModel.mediaRuntime.attach(session: mediaSession, contactID: contactID)
         viewModel.mediaRuntime.updateConnectionState(.connected)
 
-        let firstPayload = try TurboRelayWebSocketAudioPayloadCodec.encode(
+        let payload = try TurboRelayWebSocketAudioPayloadCodec.encode(
             TurboRelayWebSocketAudioPayload(
                 payload: "AQE=",
                 sequenceNumber: 1,
                 sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
             )
         )
-        let thirdPayload = try TurboRelayWebSocketAudioPayloadCodec.encode(
-            TurboRelayWebSocketAudioPayload(
-                payload: "AQM=",
-                sequenceNumber: 3,
-                sentAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
-            )
-        )
 
         await viewModel.handleIncomingAudioPayload(
-            firstPayload,
-            channelID: "channel-123",
-            fromUserID: "peer-user",
-            fromDeviceID: "peer-device",
-            contactID: contactID,
-            incomingAudioTransport: .relayWebSocket
-        )
-        await viewModel.handleIncomingAudioPayload(
-            thirdPayload,
+            payload,
             channelID: "channel-123",
             fromUserID: "peer-user",
             fromDeviceID: "peer-device",
@@ -27610,14 +27718,13 @@ struct ConnectionTests {
             incomingAudioTransport: .relayWebSocket
         )
 
-        #expect(mediaSession.receivedRemoteAudioChunks == ["AQE=", "AQM="])
+        #expect(mediaSession.receivedRemoteAudioChunks.isEmpty)
         #expect(
             viewModel.diagnostics.invariantViolations.contains {
-                $0.invariantID == "media.incoming_audio_sequence_gap"
-                    && $0.metadata["previousSequenceNumber"] == "1"
-                    && $0.metadata["sequenceNumber"] == "3"
-                    && $0.metadata["missingSequenceCount"] == "1"
-                    && $0.metadata["incomingTransport"] == "relay-websocket"
+                $0.invariantID == "media.runtime_never_carries_live_audio"
+                    && $0.metadata["transport"] == "legacy-runtime-audio"
+                    && $0.metadata["payloadClass"] == "liveMedia"
+                    && $0.metadata["action"] == "rejected"
             }
         )
     }

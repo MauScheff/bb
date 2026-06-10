@@ -2022,7 +2022,7 @@ struct TalkTurnTests {
                 transportDigest: "first-websocket-digest",
                 encryptedSequenceNumber: nil,
                 queuedAt: Date(),
-                deliveredTransports: ["relay-websocket"]
+                deliveredTransports: ["legacy-runtime-audio"]
             )
 
         viewModel.handleAudioPlaybackStartedAck(
@@ -2031,7 +2031,7 @@ struct TalkTurnTests {
                 channelId: "channel-1",
                 senderDeviceId: "sender-device",
                 receiverDeviceId: "receiver-device",
-                transport: "relay-websocket",
+                transport: "legacy-runtime-audio",
                 transportDigest: "later-websocket-digest",
                 encryptedSequenceNumber: nil
             ),

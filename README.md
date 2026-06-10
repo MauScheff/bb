@@ -26,6 +26,9 @@ Transport model:
 
 Runtime control is not a live media lane. Backend `audio-chunk` control signals
 are rejected as invalid live media rather than played as a hidden fallback.
+Diagnostics normalize historical runtime-audio compatibility labels to
+`legacy-runtime-audio`; new media proofs must use `direct-quic`,
+`media-relay-packet`, or `media-relay-tcp`.
 Diagnostics lane forcing is local test policy: it selects a sender lane for an
 epoch, and the peer adapts to any valid current-epoch media lane without
 changing backend truth.
