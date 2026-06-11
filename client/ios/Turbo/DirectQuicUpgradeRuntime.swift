@@ -188,6 +188,10 @@ final class DirectQuicUpgradeRuntimeState {
         attemptByContactID[contactID]
     }
 
+    var hasActiveDirectPath: Bool {
+        attemptByContactID.values.contains { $0.isDirectActive }
+    }
+
     func retryBackoffRemaining(
         for contactID: UUID,
         now: Date = Date()

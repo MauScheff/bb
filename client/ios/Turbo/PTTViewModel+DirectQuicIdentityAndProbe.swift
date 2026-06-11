@@ -8,6 +8,7 @@ extension PTTViewModel {
     private var foregroundDirectQuicInitialConnectivityRetryBackoffMilliseconds: Int { 1_000 }
     private var foregroundDirectQuicSelectedConnectivityRetryBackoffCapMilliseconds: Int { 3_000 }
     private var foregroundDirectQuicInitialConnectivityRetryLimit: Int { 2 }
+    private var directQuicFallbackAttemptStaleMilliseconds: Int { 5_000 }
     var directQuicFirstTalkGraceMilliseconds: Int { 5_000 }
     var directQuicAudioFreshnessMilliseconds: Int { 30_000 }
     var directQuicUpgradeRequestThrottleMilliseconds: Int { 5_000 }
@@ -1092,8 +1093,7 @@ extension PTTViewModel {
 
         let staleAgeMilliseconds = Int(now.timeIntervalSince(attempt.lastUpdatedAt) * 1_000)
         let hadProbeController = mediaRuntime.directQuicProbeController != nil
-        mediaRuntime.directQuicProbeController?.cancel(reason: "stale-attempt-blocking-reprobe")
-        mediaRuntime.directQuicProbeController = nil
+        let isStale = staleAgeMilliseconds >= directQuicFallbackAttemptStaleMilliseconds
         let metadata = [
             "contactId": contactID.uuidString,
             "channelId": attempt.channelID,
@@ -1102,9 +1102,22 @@ extension PTTViewModel {
             "transportPath": mediaTransportPathState.rawValue,
             "probeControllerActive": String(hadProbeController),
             "staleAgeMilliseconds": "\(staleAgeMilliseconds)",
+            "staleThresholdMilliseconds": "\(directQuicFallbackAttemptStaleMilliseconds)",
             "trigger": trigger,
         ]
-        if staleAgeMilliseconds >= 5_000 {
+
+        guard isStale || !hadProbeController else {
+            diagnostics.record(
+                .media,
+                message: "Preserved fresh Direct QUIC probe after relay fallback",
+                metadata: metadata
+            )
+            return
+        }
+
+        mediaRuntime.directQuicProbeController?.cancel(reason: "stale-attempt-blocking-reprobe")
+        mediaRuntime.directQuicProbeController = nil
+        if isStale {
             diagnostics.recordInvariantViolation(
                 invariantID: "direct-quic.stale_attempt_blocks_reprobe",
                 scope: .local,
@@ -1141,6 +1154,23 @@ extension PTTViewModel {
         case .direct:
             return true
         case .relay, .fastRelay, .fastRelayTcp, .promoting, .recovering:
+            guard canSurfaceDirectAsSelectedAudioLane(for: contactID) else {
+                diagnostics.record(
+                    .media,
+                    message: "Kept Direct QUIC candidate behind proven relay audio lane",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "channelId": attempt.channelID,
+                        "attemptId": attempt.attemptId,
+                        "transportPath": mediaTransportPathState.rawValue,
+                        "trigger": trigger,
+                        "continuityFallbackConfigured": String(hasConfiguredOutgoingAudioContinuityFallback()),
+                        "directQuicAudioVerified": String(directQuicAudioPlaybackVerified(for: contactID)),
+                        "directQuicLanePromotionVerified": String(directQuicLanePromotionVerified(for: contactID)),
+                    ]
+                )
+                return true
+            }
             diagnostics.recordInvariantViolation(
                 invariantID: "direct-quic.active_path_surfaced_as_relay",
                 scope: .local,
@@ -1151,6 +1181,9 @@ extension PTTViewModel {
                     "attemptId": attempt.attemptId,
                     "transportPath": mediaTransportPathState.rawValue,
                     "trigger": trigger,
+                    "continuityFallbackConfigured": String(hasConfiguredOutgoingAudioContinuityFallback()),
+                    "directQuicAudioVerified": String(directQuicAudioPlaybackVerified(for: contactID)),
+                    "directQuicLanePromotionVerified": String(directQuicLanePromotionVerified(for: contactID)),
                 ]
             )
             mediaRuntime.updateTransportPathState(.direct)

@@ -160,7 +160,8 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private let runtimeControlQueue = DispatchQueue(label: "TurboBackendClient.runtime-control")
     private var runtimeControlConnection: RuntimeControlConnection?
     private var runtimeControlCommandInFlight = false
-    private var runtimeControlCommandWaiters: [CheckedContinuation<Void, Never>] = []
+    private var runtimeControlCommandWaiterSequence: UInt64 = 0
+    private var runtimeControlCommandWaiters: [RuntimeControlCommandWaiter] = []
     private var runtimePersistentControlBackoffUntilByLane: [String: Date] = [:]
 #if DEBUG
     var channelStateResponseForTesting: (@MainActor (String) async throws -> TurboChannelStateResponse)?
@@ -208,6 +209,9 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                 effectiveLane: .runtimeHttpRequest,
                 fallbackReason: "runtime-config-unavailable"
             )
+    }
+    var canUseSelectedPersistentRuntimeControlNow: Bool {
+        !orderedPersistentRuntimeControlTransports.isEmpty
     }
     var directQuicPolicy: TurboDirectQuicPolicy? { runtimeConfig?.directQuicPolicy }
     var modeDescription: String { runtimeConfig?.mode ?? "unknown" }
@@ -1045,24 +1049,26 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         body: TurboControlCommandEnvelope
     ) async throws -> Response {
         let requestStartedAt = DispatchTime.now().uptimeNanoseconds
-        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
-            do {
-                return try decodeControlCommandResponse(
-                    try await controlCommandData(
-                        path: path,
-                        body: body,
-                        transport: runtimeTransport,
-                        requestStartedAt: requestStartedAt
-                    ),
+        let persistentRuntimeAttempt: (response: Response?, attempted: Bool) =
+            try await firstSuccessfulPersistentRuntimeControlCommand(
+                path: path,
+                body: body,
+                requestStartedAt: requestStartedAt
+            )
+        if let response = persistentRuntimeAttempt.response {
+            return response
+        }
+        if persistentRuntimeAttempt.attempted {
+            return try decodeControlCommandResponse(
+                try await controlCommandData(
+                    path: path,
                     body: body,
-                    transport: runtimeTransport
-                )
-            } catch {
-                noteRuntimePersistentControlFailure(runtimeTransport)
-                onServerNotice?(
-                    "\(runtimeTransport.label) command failed; using HTTP fallback: \(error.localizedDescription)"
-                )
-            }
+                    transport: .http,
+                    requestStartedAt: requestStartedAt
+                ),
+                body: body,
+                transport: .http
+            )
         }
         if canAttemptWebSocketControlCommand {
             do {
@@ -1129,24 +1135,62 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
-    private var selectedPersistentRuntimeControlTransport: ControlCommandTransport? {
-        let selection = runtimeControlSelection
-        guard selection.usesPersistentTransport else { return nil }
-        guard let transport = ControlCommandTransport.persistentRuntime(selection.effectiveLane) else {
-            return nil
+    private enum RuntimeControlCommandPriority: Int, Comparable {
+        case normal = 0
+        case directSignalDrain = 10
+        case directSignalSend = 20
+
+        static func < (lhs: RuntimeControlCommandPriority, rhs: RuntimeControlCommandPriority) -> Bool {
+            lhs.rawValue < rhs.rawValue
         }
-        guard canAttemptRuntimePersistentControlCommand(transport) else { return nil }
-        return transport
     }
 
-    private func hedgedControlCommandRequest<Response: Decodable>(
+    private struct RuntimeControlCommandWaiter {
+        let priority: RuntimeControlCommandPriority
+        let sequence: UInt64
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private var selectedPersistentRuntimeControlTransport: ControlCommandTransport? {
+        orderedPersistentRuntimeControlTransports.first
+    }
+
+    private var orderedPersistentRuntimeControlTransports: [ControlCommandTransport] {
+        let lanes: [TurboRuntimeControlLane]
+        switch controlCommandTransportPolicy {
+        case .automatic:
+            lanes = runtimeControlPreference
+        case .forceRuntimeQuic:
+            lanes = [.runtimeQuicControl]
+        case .forceRuntimeTls:
+            lanes = [.runtimeTlsControl]
+        case .httpOnly, .forceRuntimeHttp:
+            lanes = []
+        }
+
+        var seen: [TurboRuntimeControlLane] = []
+        var transports: [ControlCommandTransport] = []
+        for lane in lanes {
+            guard !seen.contains(lane) else { continue }
+            seen.append(lane)
+            guard let transport = ControlCommandTransport.persistentRuntime(lane) else { continue }
+            guard canAttemptRuntimePersistentControlCommand(transport) else { continue }
+            transports.append(transport)
+        }
+        return transports
+    }
+
+    private func firstSuccessfulPersistentRuntimeControlCommand<Response: Decodable>(
         path: String,
-        body: TurboControlCommandEnvelope
-    ) async throws -> Response {
-        let requestStartedAt = DispatchTime.now().uptimeNanoseconds
-        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
+        body: TurboControlCommandEnvelope,
+        requestStartedAt: UInt64
+    ) async throws -> (response: Response?, attempted: Bool) {
+        var remainingTransports = orderedPersistentRuntimeControlTransports
+        let attempted = !remainingTransports.isEmpty
+        while !remainingTransports.isEmpty {
+            let runtimeTransport = remainingTransports.removeFirst()
             do {
-                return try decodeControlCommandResponse(
+                let response: Response = try decodeControlCommandResponse(
                     try await controlCommandData(
                         path: path,
                         body: body,
@@ -1156,11 +1200,13 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     body: body,
                     transport: runtimeTransport
                 )
+                return (response, attempted)
             } catch {
                 noteRuntimePersistentControlFailure(runtimeTransport)
+                let fallbackTransport = remainingTransports.first ?? .http
                 emitControlCommandTrace(
                     commandKind: body.commandKind,
-                    transport: .http,
+                    transport: fallbackTransport.trace,
                     phase: .hedgeStarted,
                     operationId: body.operationId,
                     channelId: body.channelId,
@@ -1169,19 +1215,38 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
                     detail: "\(runtimeTransport.trace.rawValue)-failed"
                 )
                 onServerNotice?(
-                    "\(runtimeTransport.label) \(body.commandKind) failed; using HTTP fallback: \(error.localizedDescription)"
-                )
-                return try decodeControlCommandResponse(
-                    try await controlCommandData(
-                        path: path,
-                        body: body,
-                        transport: .http,
-                        requestStartedAt: requestStartedAt
-                    ),
-                    body: body,
-                    transport: .http
+                    "\(runtimeTransport.label) \(body.commandKind) failed; trying \(fallbackTransport.label): \(error.localizedDescription)"
                 )
             }
+        }
+        return (nil, attempted)
+    }
+
+    private func hedgedControlCommandRequest<Response: Decodable>(
+        path: String,
+        body: TurboControlCommandEnvelope
+    ) async throws -> Response {
+        let requestStartedAt = DispatchTime.now().uptimeNanoseconds
+        let persistentRuntimeAttempt: (response: Response?, attempted: Bool) =
+            try await firstSuccessfulPersistentRuntimeControlCommand(
+                path: path,
+                body: body,
+                requestStartedAt: requestStartedAt
+            )
+        if let response = persistentRuntimeAttempt.response {
+            return response
+        }
+        if persistentRuntimeAttempt.attempted {
+            return try decodeControlCommandResponse(
+                try await controlCommandData(
+                    path: path,
+                    body: body,
+                    transport: .http,
+                    requestStartedAt: requestStartedAt
+                ),
+                body: body,
+                transport: .http
+            )
         }
         guard canAttemptWebSocketControlCommand else {
             return try decodeControlCommandResponse(
@@ -1260,44 +1325,26 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
             deviceId: config.deviceID
         )
         let requestStartedAt = DispatchTime.now().uptimeNanoseconds
-        if let runtimeTransport = selectedPersistentRuntimeControlTransport {
-            do {
-                return try decodeControlCommandResponse(
-                    try await controlCommandData(
-                        path: path,
-                        body: envelope,
-                        transport: runtimeTransport,
-                        requestStartedAt: requestStartedAt
-                    ),
+        let persistentRuntimeAttempt: (response: Response?, attempted: Bool) =
+            try await firstSuccessfulPersistentRuntimeControlCommand(
+                path: path,
+                body: envelope,
+                requestStartedAt: requestStartedAt
+            )
+        if let response = persistentRuntimeAttempt.response {
+            return response
+        }
+        if persistentRuntimeAttempt.attempted {
+            return try decodeControlCommandResponse(
+                try await controlCommandData(
+                    path: path,
                     body: envelope,
-                    transport: runtimeTransport
-                )
-            } catch {
-                noteRuntimePersistentControlFailure(runtimeTransport)
-                emitControlCommandTrace(
-                    commandKind: envelope.commandKind,
                     transport: .http,
-                    phase: .hedgeStarted,
-                    operationId: envelope.operationId,
-                    channelId: envelope.channelId,
-                    requestId: nil,
-                    startedAtNanoseconds: requestStartedAt,
-                    detail: "\(runtimeTransport.trace.rawValue)-failed"
-                )
-                onServerNotice?(
-                    "\(runtimeTransport.label) \(envelope.commandKind) failed; using HTTP fallback: \(error.localizedDescription)"
-                )
-                return try decodeControlCommandResponse(
-                    try await controlCommandData(
-                        path: path,
-                        body: envelope,
-                        transport: .http,
-                        requestStartedAt: requestStartedAt
-                    ),
-                    body: envelope,
-                    transport: .http
-                )
-            }
+                    requestStartedAt: requestStartedAt
+                ),
+                body: envelope,
+                transport: .http
+            )
         }
         guard canSendPresenceCommandsOverWebSocket else {
             return try decodeControlCommandResponse(
@@ -1513,7 +1560,9 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         }
 
         let frameData = try runtimeControlFrameData(for: envelope, requestID: requestID)
-        await acquireRuntimeControlCommandSlot()
+        await acquireRuntimeControlCommandSlot(
+            priority: runtimeControlCommandPriority(for: envelope.commandKind)
+        )
         defer { releaseRuntimeControlCommandSlot() }
 
         if let controlCommandRuntimePersistentResponseForTesting {
@@ -1559,13 +1608,32 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
-    private func acquireRuntimeControlCommandSlot() async {
+    private func runtimeControlCommandPriority(for commandKind: String) -> RuntimeControlCommandPriority {
+        switch commandKind {
+        case "direct-quic-signal-send":
+            return .directSignalSend
+        case "direct-quic-signal-drain":
+            return .directSignalDrain
+        default:
+            return .normal
+        }
+    }
+
+    private func acquireRuntimeControlCommandSlot(priority: RuntimeControlCommandPriority) async {
         if !runtimeControlCommandInFlight {
             runtimeControlCommandInFlight = true
             return
         }
+        let sequence = runtimeControlCommandWaiterSequence
+        runtimeControlCommandWaiterSequence &+= 1
         await withCheckedContinuation { continuation in
-            runtimeControlCommandWaiters.append(continuation)
+            runtimeControlCommandWaiters.append(
+                RuntimeControlCommandWaiter(
+                    priority: priority,
+                    sequence: sequence,
+                    continuation: continuation
+                )
+            )
         }
     }
 
@@ -1573,8 +1641,16 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         if runtimeControlCommandWaiters.isEmpty {
             runtimeControlCommandInFlight = false
         } else {
-            let continuation = runtimeControlCommandWaiters.removeFirst()
-            continuation.resume()
+            let waiterIndex = runtimeControlCommandWaiters.indices.max { lhs, rhs in
+                let lhsWaiter = runtimeControlCommandWaiters[lhs]
+                let rhsWaiter = runtimeControlCommandWaiters[rhs]
+                if lhsWaiter.priority != rhsWaiter.priority {
+                    return lhsWaiter.priority < rhsWaiter.priority
+                }
+                return lhsWaiter.sequence > rhsWaiter.sequence
+            } ?? runtimeControlCommandWaiters.startIndex
+            let waiter = runtimeControlCommandWaiters.remove(at: waiterIndex)
+            waiter.continuation.resume()
         }
     }
 

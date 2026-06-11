@@ -3,7 +3,7 @@ import Testing
 @testable import BeepBeep
 
 struct OutboundAudioTransportPlanTests {
-    @Test func verifiedDirectQuicIsExclusivePrimaryLane() throws {
+    @Test func verifiedDirectQuicKeepsPacketRelayRescueWhenStandbyIsReady() throws {
         let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: true,
@@ -14,11 +14,27 @@ struct OutboundAudioTransportPlanTests {
 
         #expect(plan.attempts == [
             .directQuic(.verifiedPrimary),
+            .mediaRelay(.rescueAfterPrimaryFailure),
+        ])
+        #expect(plan.hasSequentialMediaRelayRescue)
+    }
+
+    @Test func verifiedDirectQuicIsExclusivePrimaryLaneWithoutPacketRelayStandby() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
+            directAvailable: true,
+            directVerified: true,
+            standbyRelayAvailable: false,
+            standbyRelayIsTCPContinuity: false,
+            legacyPCMBypassesPacketRelay: false
+        ))
+
+        #expect(plan.attempts == [
+            .directQuic(.verifiedPrimary),
         ])
         #expect(!plan.hasSequentialMediaRelayRescue)
     }
 
-    @Test func unverifiedDirectQuicIsPrimaryBeforeSequentialPacketRelayRescue() throws {
+    @Test func unverifiedDirectQuicUsesPacketRelayPrimaryUntilPlaybackProof() throws {
         let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
@@ -28,20 +44,39 @@ struct OutboundAudioTransportPlanTests {
         ))
 
         #expect(plan.attempts == [
-            .directQuic(.unverifiedPrimary),
-            .mediaRelay(.rescueAfterPrimaryFailure),
+            .mediaRelay(.primary),
         ])
-        #expect(plan.hasSequentialMediaRelayRescue)
-        #expect(plan.attemptsDirectQuic)
+        #expect(!plan.hasSequentialMediaRelayRescue)
+        #expect(!plan.attemptsDirectQuic)
     }
 
-    @Test func unverifiedDirectQuicWithoutPacketRelayHasNoLiveMediaRescue() throws {
+    @Test func lanePromotedDirectQuicKeepsPacketRelayContinuityUntilPlaybackProof() throws {
+        let plan = try #require(OutboundAudioTransportPlan.dynamic(
+            directAvailable: true,
+            directVerified: false,
+            directPromotionVerified: true,
+            standbyRelayAvailable: true,
+            standbyRelayIsTCPContinuity: false,
+            legacyPCMBypassesPacketRelay: false,
+            allowUnverifiedDirectPrimary: false
+        ))
+
+        #expect(plan.attempts == [
+            .directQuic(.unverifiedPrimary),
+            .mediaRelay(.continuityWhileDirectUnverified),
+        ])
+        #expect(plan.attemptsDirectQuic)
+        #expect(plan.hasContinuityRelayForUnverifiedDirect)
+    }
+
+    @Test func unverifiedDirectQuicWithoutRequiredRelayCanBeDirectOnlyPrimary() throws {
         let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
             standbyRelayAvailable: false,
             standbyRelayIsTCPContinuity: false,
-            legacyPCMBypassesPacketRelay: false
+            legacyPCMBypassesPacketRelay: false,
+            allowUnverifiedDirectPrimary: true
         ))
 
         #expect(plan.attempts == [
@@ -49,7 +84,20 @@ struct OutboundAudioTransportPlanTests {
         ])
     }
 
-    @Test func tcpContinuityRelayIsSequentialRescueNotShadowPacketRelay() throws {
+    @Test func unverifiedDirectQuicWithRequiredRelayHasNoPrimaryWhenRelayUnavailable() {
+        let plan = OutboundAudioTransportPlan.dynamic(
+            directAvailable: true,
+            directVerified: false,
+            standbyRelayAvailable: false,
+            standbyRelayIsTCPContinuity: false,
+            legacyPCMBypassesPacketRelay: false,
+            allowUnverifiedDirectPrimary: false
+        )
+
+        #expect(plan == nil)
+    }
+
+    @Test func tcpContinuityRelayIsPrimaryUntilDirectPlaybackProof() throws {
         let plan = try #require(OutboundAudioTransportPlan.dynamic(
             directAvailable: true,
             directVerified: false,
@@ -59,7 +107,6 @@ struct OutboundAudioTransportPlanTests {
         ))
 
         #expect(plan.attempts == [
-            .directQuic(.unverifiedPrimary),
             .mediaRelay(.tcpContinuity),
         ])
         #expect(plan.usesTcpContinuityRelay)

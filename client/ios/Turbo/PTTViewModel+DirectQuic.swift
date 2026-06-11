@@ -8,6 +8,21 @@ extension PTTViewModel {
         contactID: UUID,
         attemptID: String
     ) {
+        if let attempt = mediaRuntime.directQuicUpgrade.attempt(for: contactID),
+           attempt.attemptId == attemptID,
+           attempt.isDirectActive {
+            diagnostics.record(
+                .media,
+                message: "Skipped Direct QUIC promotion timeout for active path",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": attempt.channelID,
+                    "attemptId": attemptID,
+                ]
+            )
+            cancelDirectQuicPromotionTimeout()
+            return
+        }
         let timeoutMilliseconds = directQuicPromotionTimeoutMilliseconds()
         mediaRuntime.replaceDirectQuicPromotionTimeoutTask(with: Task { [weak self] in
             guard let self else { return }
@@ -286,6 +301,20 @@ extension PTTViewModel {
     ) async {
         guard let activeAttempt = mediaRuntime.directQuicUpgrade.attempt(for: contactID),
               activeAttempt.attemptId == attemptID else {
+            return
+        }
+        if activeAttempt.isDirectActive {
+            diagnostics.record(
+                .media,
+                message: "Ignored Direct QUIC promotion timeout after activation",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": activeAttempt.channelID,
+                    "attemptId": attemptID,
+                    "timeoutMilliseconds": "\(timeoutMilliseconds)",
+                ]
+            )
+            cancelDirectQuicPromotionTimeout()
             return
         }
         let elapsedSinceProgressMilliseconds = Int(Date().timeIntervalSince(activeAttempt.lastUpdatedAt) * 1_000)
@@ -1164,6 +1193,23 @@ extension PTTViewModel {
                 "supportsOpusV2": String(payload.mediaCapabilities?.supportsOpusV2 == true),
             ]
         )
+        if source != .mediaRelay,
+           let attempt = directQuicAttempt(for: contactID, matching: attemptID),
+           attempt.isDirectActive {
+            recordDirectQuicLanePromotionProof(
+                contactID: contactID,
+                channelID: payload.channelId,
+                peerDeviceID: payload.fromDeviceId,
+                reason: "receiver-prewarm-ack",
+                source: source.rawValue,
+                attemptID: attemptID
+            )
+            applyDirectQuicUpgradeTransition(.directActivated(attempt), for: contactID)
+            if let activeTarget = transmitProjection.activeTarget,
+               activeTarget.contactID == contactID {
+                configureOutgoingAudioRoute(target: activeTarget)
+            }
+        }
         updateStatusForSelectedContact()
     }
 
@@ -1344,6 +1390,26 @@ extension PTTViewModel {
             contactID: contactID,
             pingID: pingID
         )
+        if let attempt = directQuicAttempt(for: contactID, matching: attemptID),
+           attempt.isDirectActive,
+           let peerDeviceID = directQuicPeerDeviceID(
+                for: contactID,
+                fallback: attempt.peerDeviceID
+           ) {
+            recordDirectQuicLanePromotionProof(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                peerDeviceID: peerDeviceID,
+                reason: "warm-pong",
+                source: "direct-quic-data-channel",
+                attemptID: attemptID
+            )
+            applyDirectQuicUpgradeTransition(.directActivated(attempt), for: contactID)
+            if let activeTarget = transmitProjection.activeTarget,
+               activeTarget.contactID == contactID {
+                configureOutgoingAudioRoute(target: activeTarget)
+            }
+        }
         diagnostics.record(
             .media,
             message: "Direct QUIC warm pong received",
@@ -2126,6 +2192,50 @@ extension PTTViewModel {
         }
     }
 
+    func shouldSendDirectQuicSetupSignal(
+        contactID: UUID,
+        channelID: String,
+        attemptID: String,
+        signalKind: String
+    ) -> Bool {
+        guard let attempt = directQuicAttempt(for: contactID, matching: attemptID),
+              attempt.channelID == channelID else {
+            diagnostics.record(
+                .backend,
+                message: "Skipped stale Direct QUIC setup signal",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "attemptId": attemptID,
+                    "signalKind": signalKind,
+                    "reason": "stale-attempt",
+                ]
+            )
+            return false
+        }
+        guard !isExplicitTransmitStopInProgress(for: contactID) else {
+            diagnostics.record(
+                .backend,
+                message: "Skipped Direct QUIC setup signal during explicit transmit stop",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "attemptId": attemptID,
+                    "signalKind": signalKind,
+                    "reason": "explicit-stop",
+                ]
+            )
+            return false
+        }
+        return true
+    }
+
+    func isExplicitTransmitStopInProgress(for contactID: UUID) -> Bool {
+        guard transmitRuntime.explicitStopRequested else { return false }
+        return transmitRuntime.activeTarget?.contactID == contactID
+            || transmitCoordinator.state.activeTarget?.contactID == contactID
+    }
+
     func sendDirectQuicCandidateSignals(
         channelID: String,
         contactID: UUID,
@@ -2136,9 +2246,21 @@ extension PTTViewModel {
         endOfCandidates: Bool
     ) async {
         guard let backend = backendServices else { return }
+        guard shouldSendDirectQuicSetupSignal(
+            contactID: contactID,
+            channelID: channelID,
+            attemptID: attemptID,
+            signalKind: endOfCandidates ? "candidate-end" : "candidate"
+        ) else { return }
 
         do {
             for candidate in candidates {
+                guard shouldSendDirectQuicSetupSignal(
+                    contactID: contactID,
+                    channelID: channelID,
+                    attemptID: attemptID,
+                    signalKind: "candidate"
+                ) else { return }
                 let envelope = try TurboSignalEnvelope.directQuicCandidate(
                     channelId: channelID,
                     fromUserId: backend.currentUserID ?? "",
@@ -2153,6 +2275,12 @@ extension PTTViewModel {
                 _ = try await backend.sendDirectQuicSignal(envelope)
             }
             if endOfCandidates {
+                guard shouldSendDirectQuicSetupSignal(
+                    contactID: contactID,
+                    channelID: channelID,
+                    attemptID: attemptID,
+                    signalKind: "candidate-end"
+                ) else { return }
                 let envelope = try TurboSignalEnvelope.directQuicCandidate(
                     channelId: channelID,
                     fromUserId: backend.currentUserID ?? "",
@@ -2313,6 +2441,18 @@ extension PTTViewModel {
             )
         }
         guard mediaRuntime.directQuicUpgrade.attempt(for: contactID) == nil else { return }
+        guard !isExplicitTransmitStopInProgress(for: contactID) else {
+            diagnostics.record(
+                .media,
+                message: "Skipped direct QUIC probe during explicit transmit stop",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID,
+                    "reason": "explicit-stop",
+                ]
+            )
+            return
+        }
         if let retryBackoff = mediaRuntime.directQuicUpgrade.retryBackoffState(for: contactID),
            let retryRemaining = mediaRuntime.directQuicUpgrade.retryBackoffRemaining(for: contactID) {
             diagnostics.record(
@@ -2441,6 +2581,12 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: offerPayload
             )
+            guard shouldSendDirectQuicSetupSignal(
+                contactID: contactID,
+                channelID: channelID,
+                attemptID: attemptID,
+                signalKind: "offer"
+            ) else { return }
             _ = try await backend.sendDirectQuicSignal(envelope)
             diagnostics.record(
                 .backend,
@@ -2840,6 +2986,12 @@ extension PTTViewModel {
                 toDeviceId: peerDeviceID,
                 payload: offerPayload
             )
+            guard shouldSendDirectQuicSetupSignal(
+                contactID: contactID,
+                channelID: attempt.channelID,
+                attemptID: attempt.attemptId,
+                signalKind: "offer-resend"
+            ) else { return }
             _ = try await backend.sendDirectQuicSignal(offerEnvelope)
             diagnostics.record(
                 .backend,
@@ -3104,6 +3256,12 @@ extension PTTViewModel {
                 toDeviceId: envelope.fromDeviceId,
                 payload: answerPayload
             )
+            guard shouldSendDirectQuicSetupSignal(
+                contactID: contactID,
+                channelID: envelope.channelId,
+                attemptID: offer.attemptId,
+                signalKind: "answer"
+            ) else { return }
             _ = try await backend.sendDirectQuicSignal(answerEnvelope)
             diagnostics.record(
                 .backend,

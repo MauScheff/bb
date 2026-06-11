@@ -783,6 +783,12 @@ struct ContentView: View {
                 }
             )
             .id(contact.id)
+            .task(id: contact.id) {
+                await viewModel.prewarmActiveConversationTransportPath(
+                    for: contact.id,
+                    reason: "call-screen-presented"
+                )
+            }
             .ignoresSafeArea()
             .transition(.callScreenLiquidGlassCrossfade(reduceMotion: reduceMotion))
             .zIndex(20)

@@ -3891,8 +3891,8 @@ final class MediaRuntimeState {
         session = nil
         contactID = nil
         connectionState = .idle
-        if preserveDirectQuic {
-            // Keep the active direct path surfaced through a media-session handoff.
+        if preserveDirectQuic, directQuicUpgrade.hasActiveDirectPath {
+            transportPathState = .direct
         } else if preserveMediaRelay {
             transportPathState = activeMediaRelayPathState()
         } else {
@@ -4303,7 +4303,8 @@ final class MediaRuntimeState {
     }
 
     func surfacedTransportPathState(
-        for transition: DirectQuicUpgradeTransition
+        for transition: DirectQuicUpgradeTransition,
+        surfaceDirectActivated: Bool = true
     ) -> MediaTransportPathState {
         guard hasActiveMediaRelayClient else {
             return transition.pathState
@@ -4311,7 +4312,7 @@ final class MediaRuntimeState {
 
         switch transition {
         case .directActivated:
-            return .direct
+            return surfaceDirectActivated ? .direct : activeMediaRelayPathState()
         case .enteredPromoting, .updatedPromoting, .recovering, .fellBackToRelay:
             return activeMediaRelayPathState()
         }
@@ -5212,6 +5213,17 @@ enum MediaTransportPathState: String, Codable, Equatable {
     }
 }
 
+nonisolated struct OutgoingMediaEpochTransportDecision: Equatable {
+    let primaryPath: MediaTransportPathState
+    let rescuePath: MediaTransportPathState?
+    let senderPolicy: MediaTransportPolicy
+    let transportLabel: String
+    let reason: String
+    let continuityFallbackConfigured: Bool
+    let directQuicAudioEligible: Bool
+    let directQuicTransportReady: Bool
+}
+
 enum MediaTransportReadinessEvidence: String, Equatable {
     case directQuicActive = "direct-quic-active"
     case mediaRelayClient = "media-relay-client"
@@ -5516,6 +5528,9 @@ struct BackendServices {
     var webSocketSessionID: String? { client.webSocketSessionID }
     var controlCommandTransportPolicy: TurboControlCommandTransportPolicy { client.controlCommandTransportPolicy }
     var runtimeControlSelection: TurboRuntimeControlSelection { client.runtimeControlSelection }
+    var canUseSelectedPersistentRuntimeControlNow: Bool {
+        client.canUseSelectedPersistentRuntimeControlNow
+    }
     var shouldSendHTTPPresenceHeartbeat: Bool {
         if controlCommandTransportPolicy == .httpOnly {
             return true

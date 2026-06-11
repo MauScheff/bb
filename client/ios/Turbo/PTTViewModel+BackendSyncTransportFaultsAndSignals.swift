@@ -104,13 +104,47 @@ extension PTTViewModel {
             || mediaSessionContactID == contactID
     }
 
+    func canSurfaceDirectAsSelectedAudioLane(for contactID: UUID) -> Bool {
+        let mediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        guard !mediaLaneOverride.disablesDirectQuic else { return false }
+        guard shouldUseDirectQuicTransport(for: contactID) else { return false }
+        if mediaLaneOverride == .forceDirectQuic {
+            return true
+        }
+        if !directQuicRelayContinuityProofRequired(for: contactID) {
+            return true
+        }
+        return directQuicLanePromotionVerified(for: contactID)
+    }
+
+    func directQuicRelayContinuityProofRequired(for contactID: UUID) -> Bool {
+        guard hasConfiguredOutgoingAudioContinuityFallback() else { return false }
+        if transmitProjection.activeTarget?.contactID == contactID {
+            return true
+        }
+        if remoteTransmittingContactIDs.contains(contactID) {
+            return true
+        }
+        switch selectedConversationState(for: contactID).phase {
+        case .startingTransmit, .transmitting, .receiving:
+            return true
+        case .idle, .outgoingBeep, .incomingBeep, .friendReady, .wakeReady,
+             .waitingForPeer, .localJoinFailed, .ready, .blockedByOtherSession,
+             .systemMismatch:
+            return false
+        }
+    }
+
     func applyDirectQuicUpgradeTransition(
         _ transition: DirectQuicUpgradeTransition,
         for contactID: UUID
     ) {
         guard shouldSurfaceDirectTransportPath(for: contactID) else { return }
 
-        let surfacedPathState = mediaRuntime.surfacedTransportPathState(for: transition)
+        let surfacedPathState = mediaRuntime.surfacedTransportPathState(
+            for: transition,
+            surfaceDirectActivated: canSurfaceDirectAsSelectedAudioLane(for: contactID)
+        )
         let suppressedByActiveMediaRelay =
             surfacedPathState != transition.pathState && mediaRuntime.hasActiveMediaRelayClient
 
@@ -154,6 +188,18 @@ extension PTTViewModel {
         if selectedContactId == contactID {
             updateStatusForSelectedContact()
             captureDiagnosticsState("direct-quic:\(surfacedPathState.rawValue)")
+        }
+
+        if case .directActivated = transition,
+           surfacedPathState != .direct,
+           shouldUseDirectQuicTransport(for: contactID),
+           !directQuicLanePromotionVerified(for: contactID) {
+            scheduleActiveConversationTransportPrewarmIfNeeded(
+                for: contactID,
+                reason: "direct-quic-activated-awaiting-lane-proof",
+                force: true,
+                delayNanoseconds: 750_000_000
+            )
         }
     }
 
@@ -287,6 +333,33 @@ extension PTTViewModel {
             envelope: envelope,
             contactID: contactID
         ) {
+            if localBlockReason == "peer-device-not-connected",
+               shouldAcceptDirectQuicSignalDuringPeerDeviceConnectivityRace(
+                signal,
+                envelope: envelope,
+                contactID: contactID
+               ) {
+                recordRecentPeerDeviceEvidence(
+                    contactID: contactID,
+                    channelID: envelope.channelId,
+                    peerDeviceID: envelope.fromDeviceId,
+                    reason: "direct-quic-peer-device-connectivity-race:\(envelope.type.rawValue)",
+                    diagnosticSubsystem: .websocket
+                )
+                diagnostics.record(
+                    .media,
+                    message: "Accepted Direct QUIC signal while backend peer device connectivity is catching up",
+                    metadata: [
+                        "type": envelope.type.rawValue,
+                        "channelId": envelope.channelId,
+                        "contactId": contactID.uuidString,
+                        "attemptId": signal.attemptId,
+                        "fromDeviceId": envelope.fromDeviceId,
+                        "toDeviceId": envelope.toDeviceId,
+                    ]
+                )
+                return true
+            }
             diagnostics.record(
                 .websocket,
                 message: "Ignored stale Direct QUIC signal because local Conversation is not eligible",
@@ -394,6 +467,56 @@ extension PTTViewModel {
             return "peer-device-not-connected"
         }
         return nil
+    }
+
+    func shouldAcceptDirectQuicSignalDuringPeerDeviceConnectivityRace(
+        _ signal: TurboDirectQuicSignalPayload,
+        envelope: TurboSignalEnvelope,
+        contactID: UUID
+    ) -> Bool {
+        guard let backend = backendServices,
+              !envelope.fromDeviceId.isEmpty,
+              !envelope.toDeviceId.isEmpty,
+              envelope.toDeviceId == backend.deviceID else {
+            return false
+        }
+        guard let contact = contacts.first(where: { $0.id == contactID }),
+              let backendChannelID = contact.backendChannelId,
+              backendChannelID == envelope.channelId,
+              contact.remoteUserId == envelope.fromUserId else {
+            return false
+        }
+        guard let channel = selectedChannelSnapshot(for: contactID),
+              channel.membership.hasLocalMembership,
+              channel.membership.hasPeerMembership,
+              !channel.membership.peerDeviceConnected else {
+            return false
+        }
+        guard let peerDeviceID = directQuicPeerDeviceID(for: contactID, fallback: envelope.fromDeviceId),
+              peerDeviceID == envelope.fromDeviceId else {
+            return false
+        }
+
+        switch signal {
+        case .offer(let payload):
+            return payload.channelId == envelope.channelId
+                && payload.fromDeviceId == envelope.fromDeviceId
+                && payload.toDeviceId == envelope.toDeviceId
+
+        case .answer, .candidate:
+            guard let attempt = directQuicAttempt(for: contactID, matching: signal.attemptId),
+                  attempt.channelID == envelope.channelId else {
+                return false
+            }
+            if let attemptPeerDeviceID = attempt.peerDeviceID,
+               attemptPeerDeviceID != envelope.fromDeviceId {
+                return false
+            }
+            return true
+
+        case .hangup:
+            return false
+        }
     }
 
     func shouldAcceptIncomingDirectQuicSignal(

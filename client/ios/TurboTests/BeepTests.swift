@@ -78,9 +78,15 @@ struct BeepTests {
     @Test func selectedDirectQuicPrewarmRepairsActiveDirectPathSurfacedAsFastRelay() {
         TurboDirectPathDebugOverride.setRelayOnlyForced(false)
         TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        TurboMediaRelayDebugOverride.setEnabled(false)
+        TurboMediaRelayDebugOverride.setForced(false)
         defer {
             TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
             TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
         }
 
         let contactID = UUID()

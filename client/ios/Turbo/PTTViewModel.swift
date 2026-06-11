@@ -290,6 +290,9 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var recentOutgoingBeepEvidenceByContactID: [UUID: RecentOutgoingBeepEvidence] = [:]
     var optimisticOutgoingBeepEvidenceByContactID: [UUID: OptimisticOutgoingBeepEvidence] = [:]
     var recentPeerDeviceEvidenceByContactID: [UUID: RecentPeerDeviceEvidence] = [:]
+    var activeConversationPrewarmInFlight: Set<UUID> = []
+    var activeConversationPrewarmScheduledAtByContactID: [UUID: Date] = [:]
+    var activeConversationPrewarmRetryIntervalSeconds: TimeInterval = 5
     var selectedContactPrewarmInFlight: Set<UUID> = []
     var selectedContactPrewarmedSelectionContactID: UUID?
     var selectedContactPrewarmPipelineEnabled: Bool = false
@@ -303,6 +306,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var firstAudioPlaybackAckCompletedKeys: Set<FirstAudioPlaybackAckSentKey> = []
     var firstAudioPlaybackAckRecentlyClearedKeys: [FirstAudioPlaybackAckSentKey: Date] = [:]
     var directAudioPlaybackVerifiedKeys: Set<FirstAudioPlaybackAckSentKey> = []
+    var directQuicLanePromotionProofVerifiedAtByKey: [FirstAudioPlaybackAckSentKey: Date] = [:]
     var pendingBeginTransmitAfterSettlingTask: Task<Void, Never>?
     private var diagnosticsAutoPublishTask: Task<Void, Never>?
     private var diagnosticsAutoPublishPendingTrigger: String?
@@ -743,6 +747,10 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
                     applicationState: self.currentApplicationState()
                 )
             }
+            scheduleActiveConversationTransportPrewarmIfNeeded(
+                for: activeChannelId,
+                reason: "ptt-sync-active-conversation"
+            )
         }
         let readinessContactIDs = Set(
             [previousActiveChannelID, activeChannelId, mediaSessionContactID].compactMap { $0 }
@@ -2415,49 +2423,332 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
         }
     }
 
-    func mediaTransportPolicyForOutgoingAudio(for contactID: UUID) -> MediaTransportPolicy {
+    func outgoingMediaEpochTransportDecision(
+        for contactID: UUID
+    ) -> OutgoingMediaEpochTransportDecision {
+        let mediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
+        let pathState = mediaTransportPathState
+        let continuityFallbackConfigured = hasConfiguredOutgoingAudioContinuityFallback()
+        let directQuicAudioEligible = shouldUseDirectQuicAudioTransport(for: contactID)
+        let directQuicLanePromotionVerified = directQuicLanePromotionVerified(for: contactID)
+        let directQuicTransportReady = shouldUseDirectQuicTransport(for: contactID)
+
+        if isDirectPathRelayOnlyForced && mediaLaneOverride != .forceFastRelayTls {
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .relay,
+                rescuePath: nil,
+                senderPolicy: .orderedContinuity,
+                transportLabel: "no-live-media-lane",
+                reason: "direct-path-relay-only-forced",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
+        }
+
         if shouldUseWakeBackgroundContinuityForOutgoingAudio(for: contactID) {
-            switch TurboMediaLaneDebugOverride.mediaLaneOverride() {
+            switch mediaLaneOverride {
             case .forceFastRelayTls:
-                return .orderedContinuity
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .fastRelayTcp,
+                    rescuePath: nil,
+                    senderPolicy: .orderedContinuity,
+                    transportLabel: "media-relay-tcp-forced",
+                    reason: "forced-fast-relay-tls-wake-continuity",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
             case .forceFastRelayQuic:
-                return .fastRelayBalanced
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .fastRelay,
+                    rescuePath: nil,
+                    senderPolicy: .fastRelayBalanced,
+                    transportLabel: "media-relay-packet-forced",
+                    reason: "forced-fast-relay-quic-wake-continuity",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
             case .automatic, .forceDirectQuic:
                 break
             }
-            if mediaTransportPathState == .fastRelayTcp {
-                return .orderedContinuity
+            if pathState == .fastRelayTcp {
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .fastRelayTcp,
+                    rescuePath: nil,
+                    senderPolicy: .orderedContinuity,
+                    transportLabel: "media-relay-standby",
+                    reason: "wake-continuity-fast-relay-tls",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
             }
-            if mediaTransportPathState == .fastRelay
+            if pathState == .fastRelay
                 || canAttemptMediaRelayForWakeContinuityAudioSend() {
-                return .fastRelayBalanced
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .fastRelay,
+                    rescuePath: nil,
+                    senderPolicy: .fastRelayBalanced,
+                    transportLabel: "media-relay-standby",
+                    reason: "wake-continuity-fast-relay-quic",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
             }
-            return .wakeBackgroundContinuity
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .relay,
+                rescuePath: nil,
+                senderPolicy: .wakeBackgroundContinuity,
+                transportLabel: mediaLaneOverride == .forceDirectQuic
+                    ? "direct-quic-forced"
+                    : "no-live-media-lane",
+                reason: "wake-continuity-awaiting-live-lane",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         }
-        switch TurboMediaLaneDebugOverride.mediaLaneOverride() {
+        switch mediaLaneOverride {
         case .forceFastRelayQuic:
-            return .fastRelayBalanced
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .fastRelay,
+                rescuePath: nil,
+                senderPolicy: .fastRelayBalanced,
+                transportLabel: "media-relay-packet-forced",
+                reason: "forced-fast-relay-quic",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         case .forceFastRelayTls:
-            return .orderedContinuity
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .fastRelayTcp,
+                rescuePath: nil,
+                senderPolicy: .orderedContinuity,
+                transportLabel: "media-relay-tcp-forced",
+                reason: "forced-fast-relay-tls",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         case .automatic, .forceDirectQuic:
             break
         }
-        if shouldUseDirectQuicAudioTransport(for: contactID) {
-            return .directLowLatency
+        if TurboMediaRelayDebugOverride.isForced() {
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: pathState == .fastRelayTcp ? .fastRelayTcp : .fastRelay,
+                rescuePath: nil,
+                senderPolicy: pathState == .fastRelayTcp ? .orderedContinuity : .fastRelayBalanced,
+                transportLabel: "media-relay-forced",
+                reason: "legacy-media-relay-forced",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         }
-        if shouldUseDirectQuicTransport(for: contactID) {
-            if hasConfiguredOutgoingAudioContinuityFallback() {
-                return .fastRelayBalanced
+        if directQuicAudioEligible && (
+            directQuicLanePromotionVerified
+                || mediaLaneOverride == .forceDirectQuic
+                || !continuityFallbackConfigured
+        ) {
+            if continuityFallbackConfigured {
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .direct,
+                    rescuePath: .fastRelay,
+                    senderPolicy: .fastRelayBalanced,
+                    transportLabel: mediaLaneOverride == .forceDirectQuic
+                        ? "direct-quic-forced"
+                        : "direct-quic",
+                    reason: "direct-quic-with-fast-relay-rescue",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
             }
-            return .directLowLatency
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .direct,
+                rescuePath: nil,
+                senderPolicy: .directLowLatency,
+                transportLabel: mediaLaneOverride == .forceDirectQuic
+                    ? "direct-quic-forced"
+                    : "direct-quic",
+                reason: "direct-quic-only",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
+        }
+        if directQuicAudioEligible, continuityFallbackConfigured {
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: pathState == .fastRelayTcp ? .fastRelayTcp : .fastRelay,
+                rescuePath: nil,
+                senderPolicy: pathState == .fastRelayTcp ? .orderedContinuity : .fastRelayBalanced,
+                transportLabel: pathState == .fastRelayTcp
+                    ? "media-relay-tcp-standby"
+                    : "media-relay-standby",
+                reason: "direct-quic-awaiting-audio-proof-with-fast-relay-primary",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
+        }
+        if directQuicTransportReady {
+            if continuityFallbackConfigured {
+                return OutgoingMediaEpochTransportDecision(
+                    primaryPath: .fastRelay,
+                    rescuePath: nil,
+                    senderPolicy: .fastRelayBalanced,
+                    transportLabel: "media-relay-standby",
+                    reason: "direct-quic-awaiting-audio-proof-with-fast-relay-rescue",
+                    continuityFallbackConfigured: continuityFallbackConfigured,
+                    directQuicAudioEligible: directQuicAudioEligible,
+                    directQuicTransportReady: directQuicTransportReady
+                )
+            }
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .direct,
+                rescuePath: nil,
+                senderPolicy: .directLowLatency,
+                transportLabel: mediaLaneOverride == .forceDirectQuic
+                    ? "direct-quic-forced"
+                    : "direct-quic",
+                reason: "direct-quic-transport-ready",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         }
         if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
-            return .orderedContinuity
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .fastRelayTcp,
+                rescuePath: nil,
+                senderPolicy: .orderedContinuity,
+                transportLabel: "media-relay-suppressed",
+                reason: "media-relay-audio-send-suppressed",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         }
-        if mediaTransportPathState == .fastRelay {
-            return .fastRelayBalanced
+        if pathState == .fastRelay {
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .fastRelay,
+                rescuePath: nil,
+                senderPolicy: .fastRelayBalanced,
+                transportLabel: "media-relay-standby",
+                reason: "fast-relay-quic-ready",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
         }
-        return .orderedContinuity
+        if pathState == .fastRelayTcp {
+            return OutgoingMediaEpochTransportDecision(
+                primaryPath: .fastRelayTcp,
+                rescuePath: nil,
+                senderPolicy: .orderedContinuity,
+                transportLabel: "media-relay-standby",
+                reason: "fast-relay-tls-ready",
+                continuityFallbackConfigured: continuityFallbackConfigured,
+                directQuicAudioEligible: directQuicAudioEligible,
+                directQuicTransportReady: directQuicTransportReady
+            )
+        }
+        return OutgoingMediaEpochTransportDecision(
+            primaryPath: .relay,
+            rescuePath: nil,
+            senderPolicy: .orderedContinuity,
+            transportLabel: mediaLaneOverride == .forceDirectQuic
+                ? "direct-quic-forced"
+                : "no-live-media-lane",
+            reason: "no-proven-live-lane",
+            continuityFallbackConfigured: continuityFallbackConfigured,
+            directQuicAudioEligible: directQuicAudioEligible,
+            directQuicTransportReady: directQuicTransportReady
+        )
+    }
+
+    func mediaTransportPolicyForOutgoingAudio(for contactID: UUID) -> MediaTransportPolicy {
+        outgoingMediaEpochTransportDecision(for: contactID).senderPolicy
+    }
+
+    func directQuicAudioPlaybackVerified(for contactID: UUID) -> Bool {
+        guard let key = directQuicLaneProofKey(for: contactID) else { return false }
+        return directAudioPlaybackVerifiedKeys.contains(key)
+    }
+
+    func directQuicLanePromotionVerified(for contactID: UUID, now: Date = Date()) -> Bool {
+        if directQuicAudioPlaybackVerified(for: contactID) {
+            return true
+        }
+        guard shouldUseDirectQuicTransport(for: contactID),
+              let key = directQuicLaneProofKey(for: contactID),
+              let verifiedAt = directQuicLanePromotionProofVerifiedAtByKey[key] else {
+            return false
+        }
+        let maximumAge = TimeInterval(directQuicAudioFreshnessMilliseconds) / 1_000
+        return now.timeIntervalSince(verifiedAt) <= maximumAge
+    }
+
+    func recordDirectQuicLanePromotionProof(
+        contactID: UUID,
+        channelID: String,
+        peerDeviceID: String,
+        reason: String,
+        source: String,
+        attemptID: String? = nil
+    ) {
+        let senderDeviceID = backendServices?.deviceID ?? backendConfig?.deviceID ?? ""
+        guard !senderDeviceID.isEmpty else { return }
+        guard !channelID.isEmpty, !peerDeviceID.isEmpty else { return }
+        let key = firstAudioPlaybackAckKey(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: senderDeviceID,
+            receiverDeviceID: peerDeviceID
+        )
+        directQuicLanePromotionProofVerifiedAtByKey[key] = Date()
+        diagnostics.record(
+            .media,
+            message: "Recorded Direct QUIC lane promotion proof",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "senderDeviceId": senderDeviceID,
+                "receiverDeviceId": peerDeviceID,
+                "attemptId": attemptID ?? "none",
+                "reason": reason,
+                "source": source,
+            ]
+        )
+    }
+
+    func directQuicLaneProofKey(for contactID: UUID) -> FirstAudioPlaybackAckSentKey? {
+        let senderDeviceID = backendServices?.deviceID ?? backendConfig?.deviceID ?? ""
+        guard !senderDeviceID.isEmpty else { return nil }
+        let channelID =
+            selectedChannelState(for: contactID)?.channelId
+            ?? contacts.first(where: { $0.id == contactID })?.backendChannelId
+            ?? contactSummaryByContactID[contactID]?.channelId
+            ?? ""
+        guard !channelID.isEmpty else { return nil }
+        guard let receiverDeviceID = directQuicPeerDeviceID(
+            for: contactID,
+            fallback: mediaRuntime.directQuicUpgrade.attempt(for: contactID)?.peerDeviceID
+        ),
+              !receiverDeviceID.isEmpty else {
+            return nil
+        }
+
+        return FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: channelID,
+            senderDeviceID: senderDeviceID,
+            receiverDeviceID: receiverDeviceID
+        )
     }
 
     func hasConfiguredOutgoingAudioContinuityFallback() -> Bool {

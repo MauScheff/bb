@@ -1479,6 +1479,182 @@ extension PTTViewModel {
         }
     }
 
+    func prewarmActiveConversationTransportPath(
+        for contactID: UUID,
+        reason: String
+    ) async {
+        guard contacts.contains(where: { $0.id == contactID }) else {
+            diagnostics.record(
+                .media,
+                message: "Skipped active conversation transport prewarm",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "blockReason": "contact-missing",
+                ]
+            )
+            return
+        }
+        guard selectedContactId == contactID
+                || activeChannelId == contactID
+                || requestedExpandedCallContactID == contactID else {
+            diagnostics.record(
+                .media,
+                message: "Skipped active conversation transport prewarm",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "blockReason": "conversation-not-active",
+                ]
+            )
+            return
+        }
+        guard !activeConversationPrewarmInFlight.contains(contactID) else {
+            diagnostics.record(
+                .media,
+                message: "Coalesced active conversation transport prewarm",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                ]
+            )
+            return
+        }
+        activeConversationPrewarmInFlight.insert(contactID)
+        defer {
+            activeConversationPrewarmInFlight.remove(contactID)
+        }
+
+        diagnostics.record(
+            .media,
+            message: "Active conversation transport prewarm started",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "reason": reason,
+                "selectedContactCurrent": String(selectedContactId == contactID),
+                "activeChannelCurrent": String(activeChannelId == contactID),
+            ]
+        )
+
+        await prewarmForegroundTalkPathIfNeeded(
+            for: contactID,
+            reason: "active-conversation-\(reason)"
+        )
+
+        if shouldUseDirectQuicTransport(for: contactID) {
+            await requestReceiverPrewarmForFirstTalk(
+                for: contactID,
+                reason: "active-conversation-\(reason)"
+            )
+        } else if let blockReason = directQuicSelectionPrewarmBlockReason(
+            for: contactID,
+            requireSelectedContact: false
+        ) {
+            diagnostics.record(
+                .media,
+                message: "Active conversation Direct QUIC prewarm skipped",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "blockReason": blockReason,
+                ]
+            )
+            if blockReason == "not-listener-offerer" {
+                await requestRemoteDirectQuicOfferIfPossible(
+                    for: contactID,
+                    reason: "active-conversation-\(reason)"
+                )
+            }
+        } else {
+            diagnostics.record(
+                .media,
+                message: "Active conversation Direct QUIC prewarm requested",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                ]
+            )
+            await maybeStartDirectQuicProbe(for: contactID)
+        }
+
+        if canScheduleReadyChannelMediaRelayPrejoin(contactID: contactID) {
+            await prejoinMediaRelayForReadyChannelIfNeeded(
+                contactID: contactID,
+                channelReadiness: channelReadinessByContactID[contactID]
+            )
+        }
+
+        diagnostics.record(
+            .media,
+            message: "Active conversation transport prewarm completed",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "reason": reason,
+                "directQuicTransportReady": String(shouldUseDirectQuicTransport(for: contactID)),
+                "directQuicLanePromotionVerified": String(
+                    directQuicLanePromotionVerified(for: contactID)
+                ),
+            ]
+        )
+    }
+
+    func scheduleActiveConversationTransportPrewarmIfNeeded(
+        for contactID: UUID,
+        reason: String,
+        force: Bool = false,
+        delayNanoseconds: UInt64 = 0,
+        now: Date = Date()
+    ) {
+        guard contacts.contains(where: { $0.id == contactID }) else { return }
+        guard selectedContactId == contactID
+                || activeChannelId == contactID
+                || mediaSessionContactID == contactID
+                || requestedExpandedCallContactID == contactID else {
+            return
+        }
+        if !force,
+           let scheduledAt = activeConversationPrewarmScheduledAtByContactID[contactID],
+           now.timeIntervalSince(scheduledAt) < activeConversationPrewarmRetryIntervalSeconds {
+            diagnostics.record(
+                .media,
+                message: "Throttled active conversation transport prewarm",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": reason,
+                    "retryIntervalSeconds": String(activeConversationPrewarmRetryIntervalSeconds),
+                ]
+            )
+            return
+        }
+
+        activeConversationPrewarmScheduledAtByContactID[contactID] = now
+        diagnostics.record(
+            .media,
+            message: "Scheduled active conversation transport prewarm",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "reason": reason,
+                "delayNanoseconds": String(delayNanoseconds),
+                "directQuicTransportReady": String(shouldUseDirectQuicTransport(for: contactID)),
+                "directQuicLanePromotionVerified": String(
+                    directQuicLanePromotionVerified(for: contactID, now: now)
+                ),
+            ]
+        )
+
+        Task(priority: .utility) { @MainActor [weak self] in
+            guard let self else { return }
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+                guard !Task.isCancelled else { return }
+            }
+            await self.prewarmActiveConversationTransportPath(
+                for: contactID,
+                reason: reason
+            )
+        }
+    }
+
     private func runSelectedContactPrewarmStage(
         _ stage: String,
         contactID: UUID,

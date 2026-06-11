@@ -105,6 +105,7 @@ actor AudioChunkSender {
     private var payloadBatchCollectionNanoseconds: UInt64
     private var minimumPayloadDispatchSpacingNanoseconds: UInt64
     private var maximumInFlightSends: Int
+    private var sendCompletionSemantics: MediaTransportSendCompletionSemantics
     private var sendTimeoutNanoseconds: UInt64?
     private var slowSendDropThresholdNanoseconds: UInt64?
     private var dropsPendingPayloadsAfterSlowSend: Bool
@@ -173,6 +174,7 @@ actor AudioChunkSender {
         self.payloadBatchCollectionNanoseconds = 0
         self.minimumPayloadDispatchSpacingNanoseconds = 0
         self.maximumInFlightSends = 1
+        self.sendCompletionSemantics = .completion
         self.sendTimeoutNanoseconds = nil
         self.slowSendDropThresholdNanoseconds = nil
         self.dropsPendingPayloadsAfterSlowSend = false
@@ -197,6 +199,7 @@ actor AudioChunkSender {
         self.minimumPayloadDispatchSpacingNanoseconds =
             resolvedConfiguration.minimumPayloadDispatchSpacingNanoseconds
         self.maximumInFlightSends = resolvedConfiguration.maximumInFlightSends
+        self.sendCompletionSemantics = resolvedConfiguration.sendCompletionSemantics
         self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
         self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
         self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
@@ -290,6 +293,7 @@ actor AudioChunkSender {
         self.minimumPayloadDispatchSpacingNanoseconds =
             resolvedConfiguration.minimumPayloadDispatchSpacingNanoseconds
         self.maximumInFlightSends = resolvedConfiguration.maximumInFlightSends
+        self.sendCompletionSemantics = resolvedConfiguration.sendCompletionSemantics
         self.sendTimeoutNanoseconds = resolvedConfiguration.sendTimeoutNanoseconds
         self.slowSendDropThresholdNanoseconds = resolvedConfiguration.slowSendDropThresholdNanoseconds
         self.dropsPendingPayloadsAfterSlowSend = resolvedConfiguration.dropsPendingPayloadsAfterSlowSend
@@ -327,6 +331,7 @@ actor AudioChunkSender {
                 minimumPayloadDispatchSpacingNanoseconds
                     ?? configuration.minimumPayloadDispatchSpacingNanoseconds,
             maximumInFlightSends: max(1, maximumInFlightSends ?? configuration.maximumInFlightSends),
+            sendCompletionSemantics: configuration.sendCompletionSemantics,
             sendTimeoutNanoseconds: sendTimeoutNanoseconds ?? configuration.sendTimeoutNanoseconds,
             slowSendDropThresholdNanoseconds:
                 configuration.slowSendDropThresholdNanoseconds
@@ -424,12 +429,18 @@ actor AudioChunkSender {
                 startedAt: nil
             )
             let generationGate = sendGenerationGate
-            let sendTask = Task.detached(priority: .userInitiated) { [sendChunk, generationGate, transportPayload] in
+            let sendCompletionSemantics = sendCompletionSemantics
+            let sendTask = Task.detached(
+                priority: .userInitiated
+            ) { [sendChunk, generationGate, transportPayload, sendCompletionSemantics] in
                 let sendStartedAt = DispatchTime.now().uptimeNanoseconds
                 await self.markTransportSendStarted(
                     sendID: sendID,
                     startedAt: sendStartedAt
                 )
+                if sendCompletionSemantics == .admission {
+                    await self.markTransportSendAdmitted(sendID: sendID)
+                }
                 let result: Result<Void, Error>
                 do {
                     try Task.checkCancellation()
@@ -445,17 +456,30 @@ actor AudioChunkSender {
                 } catch {
                     result = .failure(error)
                 }
-                await self.completeTransportSend(
-                    sendID: sendID,
-                    payload: transportPayload.payload,
-                    pendingPayloadCount: pendingPayloadCount,
-                    sendStartedAt: sendStartedAt,
-                    result: result
-                )
+                if sendCompletionSemantics == .admission {
+                    await self.completeAdmittedTransportSend(
+                        sendID: sendID,
+                        payload: transportPayload.payload,
+                        pendingPayloadCount: pendingPayloadCount,
+                        result: result
+                    )
+                } else {
+                    await self.completeTransportSend(
+                        sendID: sendID,
+                        payload: transportPayload.payload,
+                        pendingPayloadCount: pendingPayloadCount,
+                        sendStartedAt: sendStartedAt,
+                        result: result
+                    )
+                }
             }
             inFlightSendTasks[sendID] = sendTask
         }
         isDraining = false
+    }
+
+    private func markTransportSendAdmitted(sendID: UInt64) {
+        inFlightSends.removeValue(forKey: sendID)
     }
 
     private func markTransportSendStarted(
@@ -472,6 +496,28 @@ actor AudioChunkSender {
             pendingPayloadCount: inFlightSend.pendingPayloadCount,
             elapsedNanoseconds: startDelayNanoseconds
         )
+    }
+
+    private func completeAdmittedTransportSend(
+        sendID: UInt64,
+        payload: String,
+        pendingPayloadCount: Int,
+        result: Result<Void, Error>
+    ) async {
+        inFlightSendTasks.removeValue(forKey: sendID)
+        switch result {
+        case .success:
+            await reportRecoveryIfNeeded()
+            reportTransportSendSucceededIfNeeded(
+                payload: payload,
+                pendingPayloadCount: pendingPayloadCount
+            )
+        case .failure(let error):
+            if error is CancellationError { return }
+            transportFailureReported = true
+            await reportFailure("audio send failed: \(error.localizedDescription)")
+            pendingPayloads.removeAll(keepingCapacity: false)
+        }
     }
 
     private func completeTransportSend(
@@ -1342,6 +1388,7 @@ nonisolated(unsafe) final class PCMWebSocketMediaSession: TransportArrivalAwareM
                 metadata: [
                     "maximumPayloadsPerMessage": String(configuration.maximumPayloadsPerMessage),
                     "maximumInFlightSends": String(configuration.maximumInFlightSends),
+                    "sendCompletionSemantics": configuration.sendCompletionSemantics.rawValue,
                     "minimumDispatchSpacingMs": String(
                         configuration.minimumPayloadDispatchSpacingNanoseconds / 1_000_000
                     ),

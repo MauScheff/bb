@@ -48,6 +48,13 @@ extension PTTViewModel {
         return message == "media relay peer is unavailable"
     }
 
+    nonisolated func isDirectQuicAudioMediaPathUnavailable(_ error: Error) -> Bool {
+        guard case let DirectQuicProbeError.connectionFailed(message) = error else { return false }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "direct quic media path is unavailable"
+            || normalized.contains("no verified direct quic connection")
+    }
+
     func recordMediaRelayPeerUnavailableInvariantIfNeeded(
         error: Error,
         contactID: UUID,
@@ -105,6 +112,7 @@ extension PTTViewModel {
         firstAudioPlaybackAckSentEncryptedSequenceByKey.removeAll()
         firstAudioPlaybackAckCompletedKeys.removeAll()
         directAudioPlaybackVerifiedKeys.removeAll()
+        directQuicLanePromotionProofVerifiedAtByKey.removeAll()
     }
 
     func firstAudioPlaybackAckKey(
@@ -268,6 +276,13 @@ extension PTTViewModel {
             if let senderDeviceID, key.senderDeviceID != senderDeviceID { return true }
             return false
         }
+        directQuicLanePromotionProofVerifiedAtByKey =
+            directQuicLanePromotionProofVerifiedAtByKey.filter { key, _ in
+                if key.contactID != contactID { return true }
+                if let channelID, key.channelID != channelID { return true }
+                if let senderDeviceID, key.senderDeviceID != senderDeviceID { return true }
+                return false
+            }
     }
 
     func clearFirstAudioPlaybackAckSentState(
@@ -292,6 +307,12 @@ extension PTTViewModel {
             if let channelID, key.channelID != channelID { return true }
             return false
         }
+        directQuicLanePromotionProofVerifiedAtByKey =
+            directQuicLanePromotionProofVerifiedAtByKey.filter { key, _ in
+                if key.contactID != contactID { return true }
+                if let channelID, key.channelID != channelID { return true }
+                return false
+            }
     }
 
     func mergeFirstAudioPlaybackAckDeliveredTransportsIfPending(
@@ -350,6 +371,22 @@ extension PTTViewModel {
             sequenceNumber = nil
         }
         return (AudioChunkPayloadCodec.transportDigest(payload), sequenceNumber)
+    }
+
+    func packetAudioPlaybackAckIsFreshForExpectation(
+        _ payload: TurboAudioPlaybackStartedPayload,
+        expectation: FirstAudioPlaybackAckExpectation
+    ) -> Bool {
+        guard payload.transport == "direct-quic" || payload.transport == "media-relay-packet" else {
+            return false
+        }
+        guard expectation.deliveredTransports.isEmpty
+                || expectation.deliveredTransports.contains(payload.transport) else {
+            return false
+        }
+        let queuedAtMilliseconds = Int64(expectation.queuedAt.timeIntervalSince1970 * 1_000)
+        let acceptedClockSkewGraceMilliseconds: Int64 = 5_000
+        return payload.acceptedAtMilliseconds + acceptedClockSkewGraceMilliseconds >= queuedAtMilliseconds
     }
 
     @discardableResult
@@ -686,6 +723,7 @@ extension PTTViewModel {
         let packetIdentityMatches: Bool
         if let expectedSequenceNumber, let receivedSequenceNumber {
             packetIdentityMatches = receivedSequenceNumber >= expectedSequenceNumber
+                || packetAudioPlaybackAckIsFreshForExpectation(payload, expectation: expectation)
         } else if packetRelayFallbackAck
                     || orderedRelayAckForCurrentExpectation
                     || unorderedPacketAckForCurrentExpectation {
@@ -1261,6 +1299,7 @@ extension PTTViewModel {
         let routeIsMediaRelayForced =
             TurboMediaRelayDebugOverride.isForced()
             || configuredMediaLaneOverride.forcesFastRelay
+        let continuityFallbackConfigured = hasConfiguredOutgoingAudioContinuityFallback()
         let configuredTransportPathState = mediaTransportPathState
         let configuredMediaLaneOverrideRaw = configuredMediaLaneOverride.rawValue
         let forcedMediaRelayMediaMode = configuredMediaLaneOverride.forcedMediaRelayMediaMode
@@ -1270,6 +1309,8 @@ extension PTTViewModel {
             senderDeviceID: fromDeviceID,
             receiverDeviceID: target.deviceID
         )
+        let directLanePromotionInitiallyVerified =
+            directQuicLanePromotionVerified(for: target.contactID)
         let directTransportForAudioSend = !configuredMediaLaneOverride.disablesDirectQuic
             && shouldUseDirectQuicAudioTransport(for: target.contactID)
             ? mediaRuntime.directQuicProbeController
@@ -1300,6 +1341,17 @@ extension PTTViewModel {
             }
             : nil
         let directAudioInitiallyVerified = directAudioPlaybackVerifiedKeys.contains(directAudioAckKey)
+        let unverifiedDirectMediaRelayAudioClientTask: Task<TurboMediaRelayClient?, Never>? =
+            !routeIsMediaRelayForced
+            && !usesWakeBackgroundContinuityForOutgoingAudio
+            && continuityFallbackConfigured
+            && directTransportForAudioSend != nil
+            && !directAudioInitiallyVerified
+            ? Task { [weak self] in
+                guard let self else { return nil }
+                return await self.mediaRelayClientForAudioSend(target: target)
+            }
+            : nil
         let directAckPrearmGate = MediaHotPathOneShotGate(consumed: directAudioInitiallyVerified)
         let firstPlaybackAckExpectationGate = MediaHotPathOneShotGate(
             consumed: firstAudioPlaybackAckExpectationsByContactID[target.contactID] != nil
@@ -1739,12 +1791,16 @@ extension PTTViewModel {
                 var deliveredTransports: [String] = []
                 var deliveryFailures: [(transport: String, error: Error)] = []
                 let directTransport = directTransportForAudioSend
+                var pendingDirectPathLostAttemptID: String?
                 var prearmedDirectAckExpectation = false
                 var directAckPrearmTask: Task<Void, Never>?
-                let standbyRelayClient = await self.existingMediaRelayClientForSequentialRescue(
+                var standbyRelayClient = await self.existingMediaRelayClientForSequentialRescue(
                     target: target,
                     localDeviceID: fromDeviceID
                 )
+                if standbyRelayClient == nil {
+                    standbyRelayClient = await unverifiedDirectMediaRelayAudioClientTask?.value
+                }
                 let standbyRelayIsTCPContinuity = standbyRelayClient.map {
                     isMediaRelayTcpContinuityPath($0)
                 } ?? false
@@ -1754,9 +1810,12 @@ extension PTTViewModel {
                 guard let transportPlan = OutboundAudioTransportPlan.dynamic(
                     directAvailable: directTransport != nil,
                     directVerified: directAudioInitiallyVerified,
+                    directPromotionVerified: directLanePromotionInitiallyVerified,
                     standbyRelayAvailable: standbyRelayClient != nil,
                     standbyRelayIsTCPContinuity: standbyRelayIsTCPContinuity,
-                    legacyPCMBypassesPacketRelay: standbyRelayLegacyPCMBypass
+                    legacyPCMBypassesPacketRelay: standbyRelayLegacyPCMBypass,
+                    allowUnverifiedDirectPrimary: !continuityFallbackConfigured
+                        || configuredMediaLaneOverride == .forceDirectQuic
                 ) else {
                     diagnosticsStore.record(
                         .media,
@@ -1772,7 +1831,7 @@ extension PTTViewModel {
                     )
                     throw OutgoingAudioSendError.noLegalLiveMediaLane
                 }
-                if let directTransport {
+                if let directTransport, transportPlan.attemptsDirectQuic {
                     do {
                         if directAckPrearmGate.take() {
                             prearmedDirectAckExpectation = true
@@ -1833,8 +1892,20 @@ extension PTTViewModel {
                             }
                             prearmedDirectAckExpectation = false
                         }
+                        let directPathLostAttemptID = await MainActor.run {
+                            guard self.isDirectQuicAudioMediaPathUnavailable(error) else {
+                                return nil as String?
+                            }
+                            return self.mediaRuntime.directQuicUpgrade
+                                .attempt(for: target.contactID)?
+                                .attemptId
+                        }
+                        pendingDirectPathLostAttemptID = directPathLostAttemptID
                         await MainActor.run {
                             self.directAudioPlaybackVerifiedKeys.remove(directAudioAckKey)
+                            self.directQuicLanePromotionProofVerifiedAtByKey.removeValue(
+                                forKey: directAudioAckKey
+                            )
                             self.diagnostics.record(
                                 .media,
                                 level: .error,
@@ -1896,10 +1967,16 @@ extension PTTViewModel {
                         }
                     }
                     let shouldSendStandbyPacketRelay =
-                        deliveredTransports.isEmpty
-                        && (
-                            transportPlan.usesPrimaryMediaRelay
-                            || transportPlan.hasSequentialMediaRelayRescue
+                        (
+                            deliveredTransports.isEmpty
+                            && (
+                                transportPlan.usesPrimaryMediaRelay
+                                || transportPlan.hasSequentialMediaRelayRescue
+                            )
+                        )
+                        || (
+                            transportPlan.hasContinuityRelayForUnverifiedDirect
+                            && !directAudioInitiallyVerified
                         )
                     if shouldSendStandbyPacketRelay, !bypassMediaRelayPacket {
                         do {
@@ -1971,6 +2048,13 @@ extension PTTViewModel {
                     }
                 }
                 if deliveredTransports.isEmpty, let firstFailure = deliveryFailures.first {
+                    if let pendingDirectPathLostAttemptID {
+                        await self.handleDirectQuicMediaPathLost(
+                            for: target.contactID,
+                            attemptID: pendingDirectPathLostAttemptID,
+                            reason: "audio-send-path-lost-media-unavailable"
+                        )
+                    }
                     if directTransport == nil {
                         try await failNoLegalLiveMediaLane(
                             "media-relay-standby-unavailable",
@@ -2000,6 +2084,13 @@ extension PTTViewModel {
                             deliveredTransportsSnapshot
                         )
                     }
+                    if let pendingDirectPathLostAttemptID {
+                        await self.handleDirectQuicMediaPathLost(
+                            for: target.contactID,
+                            attemptID: pendingDirectPathLostAttemptID,
+                            reason: "audio-send-path-lost-media-unavailable"
+                        )
+                    }
                 }
                 return
             }
@@ -2011,7 +2102,8 @@ extension PTTViewModel {
         }
         mediaServices.replaceSendAudioChunk(sendAudioChunk)
         mediaServices.session()?.updateSendAudioChunk(sendAudioChunk)
-        let senderPolicy = mediaTransportPolicyForOutgoingAudio(for: target.contactID)
+        let transportDecision = outgoingMediaEpochTransportDecision(for: target.contactID)
+        let senderPolicy = transportDecision.senderPolicy
         mediaServices.session()?.updateSenderConfiguration(senderPolicy.senderConfiguration)
         mediaServices.session()?.updateOutboundVoiceMediaPolicy(
             outboundVoiceMediaPayloadFormat(for: target)
@@ -2019,7 +2111,7 @@ extension PTTViewModel {
         let opusPolicy = outboundOpusEncodingPolicy(for: target.contactID)
         mediaServices.session()?.updateOutboundOpusEncodingPolicy(opusPolicy)
         let selectedChannel = selectedChannelSnapshot(for: target.contactID)
-        let directQuicAudioEligible = shouldUseDirectQuicAudioTransport(for: target.contactID)
+        let directQuicAudioEligible = transportDecision.directQuicAudioEligible
         let wakeContinuityOutgoing = shouldUseWakeBackgroundContinuityForOutgoingAudio(
             for: target.contactID
         )
@@ -2032,13 +2124,20 @@ extension PTTViewModel {
                 "deviceId": target.deviceID,
                 "voiceMediaPolicy": outboundVoiceMediaPayloadFormat(for: target).rawValue,
                 "transportPolicy": senderPolicy.rawValue,
-                "transport": configuredOutgoingAudioTransportLabel(for: target.contactID),
+                "transport": transportDecision.transportLabel,
+                "primaryMediaLane": transportDecision.primaryPath.diagnosticsValue,
+                "rescueMediaLane": transportDecision.rescuePath?.diagnosticsValue ?? "none",
+                "transportDecision": transportDecision.reason,
+                "continuityFallbackConfigured": String(
+                    transportDecision.continuityFallbackConfigured
+                ),
                 "mediaLaneOverride": TurboMediaLaneDebugOverride.mediaLaneOverride().rawValue,
                 "mediaLaneEffective": mediaTransportPathState.diagnosticsValue,
                 "mediaLaneActiveProven": mediaRuntime.activeMediaEpochPathState?.diagnosticsValue ?? "none",
-                "directQuicActive": String(shouldUseDirectQuicTransport(for: target.contactID)),
+                "directQuicActive": String(transportDecision.directQuicTransportReady),
                 "directQuicAudioEligible": String(directQuicAudioEligible),
                 "directQuicAudioVerified": String(directAudioPlaybackVerifiedKeys.contains(directAudioAckKey)),
+                "directQuicLanePromotionVerified": String(directLanePromotionInitiallyVerified),
                 "wakeContinuityOutgoing": String(wakeContinuityOutgoing),
                 "applicationState": String(describing: currentApplicationState()),
                 "remoteAudioReadyForLiveTransmit": String(
@@ -2095,32 +2194,7 @@ extension PTTViewModel {
     }
 
     func configuredOutgoingAudioTransportLabel(for contactID: UUID) -> String {
-        let mediaLaneOverride = TurboMediaLaneDebugOverride.mediaLaneOverride()
-        if isDirectPathRelayOnlyForced && mediaLaneOverride != .forceFastRelayTls {
-            return "no-live-media-lane"
-        }
-        if mediaLaneOverride == .forceDirectQuic {
-            return "direct-quic-forced"
-        }
-        if mediaLaneOverride == .forceFastRelayQuic {
-            return "media-relay-packet-forced"
-        }
-        if mediaLaneOverride == .forceFastRelayTls {
-            return "media-relay-tcp-forced"
-        }
-        if isMediaRelayAudioSendSuppressedForActiveOutgoingAudio(contactID: contactID) {
-            return "media-relay-suppressed"
-        }
-        if TurboMediaRelayDebugOverride.isForced() {
-            return "media-relay-forced"
-        }
-        if shouldUseDirectQuicAudioTransport(for: contactID) {
-            return "direct-quic"
-        }
-        if TurboMediaRelayDebugOverride.isEnabled() {
-            return "media-relay-standby"
-        }
-        return "no-live-media-lane"
+        outgoingMediaEpochTransportDecision(for: contactID).transportLabel
     }
 
     func mediaRelayClientForAudioSend(
@@ -2833,7 +2907,7 @@ extension PTTViewModel {
             await MainActor.run {
                 if !TurboMediaRelayDebugOverride.isForced(),
                    !isDirectPathRelayOnlyForced,
-                   shouldUseDirectQuicTransport(for: contactID) {
+                   canSurfaceDirectAsSelectedAudioLane(for: contactID) {
                     mediaRuntime.updateTransportPathState(.direct)
                 } else {
                     mediaRuntime.updateTransportPathState(
@@ -3211,17 +3285,21 @@ extension PTTViewModel {
         guard !channelSnapshot.remoteAudioReadyForLiveTransmit else {
             return true
         }
-        if shouldReleaseInitialOutboundAudioSendGateForForegroundDirectQuic(
+        if shouldReleaseInitialOutboundAudioSendGateForForegroundLiveMediaLane(
             target: target,
             channelSnapshot: channelSnapshot
         ) {
             diagnostics.record(
                 .media,
-                message: "Foreground Direct QUIC receiver is prepared; releasing outbound audio send gate",
+                message: "Foreground live media receiver is prepared; releasing outbound audio send gate",
                 metadata: [
                     "contactId": target.contactID.uuidString,
                     "channelId": target.channelID,
+                    "transportPath": mediaTransportPathState.diagnosticsValue,
+                    "directQuicActive": String(shouldUseDirectQuicTransport(for: target.contactID)),
+                    "mediaRelayActive": String(mediaRuntime.hasActiveMediaRelayClient),
                     "remoteAudioReadiness": String(describing: channelSnapshot.remoteAudioReadiness),
+                    "remoteWakeCapability": String(describing: channelSnapshot.remoteWakeCapability),
                     "readinessStatus": String(describing: channelSnapshot.readinessStatus),
                     "peerDeviceConnected": String(channelSnapshot.membership.peerDeviceConnected),
                 ]
@@ -3397,17 +3475,17 @@ extension PTTViewModel {
         }
     }
 
-    func shouldReleaseInitialOutboundAudioSendGateForForegroundDirectQuic(
+    func shouldReleaseInitialOutboundAudioSendGateForForegroundLiveMediaLane(
         target: TransmitTarget,
         channelSnapshot: ChannelReadinessSnapshot
     ) -> Bool {
         guard currentApplicationState() == .active else { return false }
-        guard shouldUseDirectQuicTransport(for: target.contactID) else { return false }
         guard channelSnapshot.membership.peerDeviceConnected else { return false }
-        if case .wakeCapable = channelSnapshot.remoteWakeCapability {
-            return false
+
+        if shouldUseDirectQuicTransport(for: target.contactID) {
+            return true
         }
-        return true
+        return mediaTransportPathState.isFastRelay
     }
 
     func reconcileExplicitTransmitStopIfNeeded(

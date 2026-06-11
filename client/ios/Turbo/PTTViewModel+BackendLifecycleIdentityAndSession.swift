@@ -85,6 +85,27 @@ struct DiagnosticsPreparedUpload {
     let localFallbackReasons: [String]
 }
 
+enum RuntimeControlSignalDrainPlan: Equatable {
+    case paused
+    case persistentRuntime
+    case httpFallback
+
+    var shouldDrain: Bool {
+        self != .paused
+    }
+
+    var sleepNanoseconds: UInt64 {
+        switch self {
+        case .paused:
+            return 5_000_000_000
+        case .persistentRuntime:
+            return 250_000_000
+        case .httpFallback:
+            return 1_000_000_000
+        }
+    }
+}
+
 extension PTTViewModel {
     func updateDevUserHandle(_ handle: String) async {
         TurboBackendConfig.setPersistedDevUserHandle(handle)
@@ -590,11 +611,41 @@ extension PTTViewModel {
         guard !hasPendingDirectQuicSignalDrainTask else { return }
         replaceDirectQuicSignalDrainTask(with: Task { [weak self] in
             while let self, !Task.isCancelled {
-                await self.drainDirectQuicRuntimeControlSignalsOnce()
-                await self.drainRuntimeControlSignalsOnce()
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                let plan = await MainActor.run { @MainActor in
+                    self.runtimeControlSignalDrainPlan()
+                }
+                if plan.shouldDrain {
+                    await self.drainDirectQuicRuntimeControlSignalsOnce()
+                    await self.drainRuntimeControlSignalsOnce()
+                }
+                try? await Task.sleep(nanoseconds: plan.sleepNanoseconds)
             }
         })
+    }
+
+    func shouldDrainRuntimeControlSignalsNow() -> Bool {
+        if selectedContactId != nil { return true }
+        if conversationActionCoordinator.pendingAction != .none { return true }
+        if hasPendingBeginOrActiveTransmit { return true }
+        if hasActiveTransmitOrMediaSession { return true }
+        if isJoined || isTransmitting { return true }
+        if transmitCoordinator.state.isPressingTalk { return true }
+        if pttCoordinator.state.systemChannelUUID != nil { return true }
+        if pttCoordinator.state.isTransmitting { return true }
+        if pttWakeRuntime.pendingIncomingPush != nil { return true }
+        if mediaRuntime.directQuicProbeController != nil { return true }
+        if !mediaRuntime.directQuicUpgrade.attemptByContactID.isEmpty { return true }
+        return false
+    }
+
+    func runtimeControlSignalDrainPlan() -> RuntimeControlSignalDrainPlan {
+        guard shouldDrainRuntimeControlSignalsNow() else {
+            return .paused
+        }
+        if backendServices?.canUseSelectedPersistentRuntimeControlNow == true {
+            return .persistentRuntime
+        }
+        return .httpFallback
     }
 
     func drainDirectQuicRuntimeControlSignalsOnce() async {

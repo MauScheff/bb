@@ -87,12 +87,25 @@ extension PTTViewModel {
                 "transportPathState": mediaTransportPathState.rawValue,
             ]
         )
+        let contactID = selectedContactId ?? activeChannelId
+        let directAttempt = contactID.flatMap { mediaRuntime.directQuicUpgrade.attempt(for: $0) }
+        let directWasActive =
+            directAttempt?.isDirectActive == true
+            && mediaRuntime.directQuicProbeController != nil
+            && mediaTransportPathState == .direct
+
         receiveEngineEvent(
             .transport(.networkChanged(engineNetworkInterface(for: interface))),
             source: "network-path-changed:\(source)"
         )
 
-        guard let contactID = selectedContactId ?? activeChannelId else { return }
+        if directWasActive, interface != .unavailable {
+            syncEngineDirectQuicLaneAvailable(
+                source: "direct-quic-network-migration"
+            )
+        }
+
+        guard let contactID else { return }
         if interface != .unavailable,
            mediaRuntime.transportPathState == .fastRelayTcp,
            let key = mediaRuntime.currentMediaRelayConnectionKey(),
@@ -110,11 +123,6 @@ extension PTTViewModel {
             )
         }
 
-        let directAttempt = mediaRuntime.directQuicUpgrade.attempt(for: contactID)
-        let directWasActive =
-            directAttempt?.isDirectActive == true
-            && mediaRuntime.directQuicProbeController != nil
-            && mediaTransportPathState == .direct
         _ = clearDirectQuicConnectivityBackoffForSelectedNetworkChangeIfNeeded(
             for: contactID,
             generation: generation,

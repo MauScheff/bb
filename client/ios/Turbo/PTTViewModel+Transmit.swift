@@ -1642,17 +1642,18 @@ extension PTTViewModel {
             || isTransmitting
         guard hasPendingOrActiveTransmit else { return }
         diagnostics.record(.media, message: "End transmit requested", metadata: ["reason": reason])
-        sendTelemetryEvent(
-            eventName: "ios.transmit.end_requested",
-            severity: .notice,
-            reason: reason,
-            message: "End transmit requested",
-            metadata: ["reason": reason]
-        )
-        syncEngineEndTalkIntent(reason: reason)
+        let stopFenceStartedAt = DispatchTime.now().uptimeNanoseconds
+        let activeTarget = transmitCoordinator.state.activeTarget ?? transmitRuntime.activeTarget
+        let systemChannelUUID =
+            transmitCoordinator.state.pendingRequest?.channelUUID
+            ?? activeTarget.flatMap { channelUUID(for: $0.contactID) }
+            ?? activeChannelId.flatMap { channelUUID(for: $0) }
+        transmitRuntime.markExplicitStopRequested()
+        transmitRuntime.markPressEnded()
+        transmitRuntime.syncActiveTarget(activeTarget)
         // Clear the local press latch immediately so a system-end callback racing
         // with release does not look like an unexpected end that should be retried.
-        if let activeTarget = transmitCoordinator.state.activeTarget ?? transmitRuntime.activeTarget {
+        if let activeTarget {
             markLocalTransmitStopProjectionGrace(for: activeTarget.contactID)
             cutLocalOutgoingAudioImmediatelyForExplicitStop(
                 target: activeTarget,
@@ -1661,20 +1662,35 @@ extension PTTViewModel {
         } else if let activeChannelId {
             markLocalTransmitStopProjectionGrace(for: activeChannelId)
         }
-        transmitRuntime.markExplicitStopRequested()
-        transmitRuntime.markPressEnded()
-        transmitRuntime.syncActiveTarget(transmitCoordinator.state.activeTarget)
-        let systemChannelUUID =
-            transmitCoordinator.state.pendingRequest?.channelUUID
-            ?? transmitCoordinator.state.activeTarget.flatMap { channelUUID(for: $0.contactID) }
-            ?? transmitRuntime.activeTarget.flatMap { channelUUID(for: $0.contactID) }
-            ?? activeChannelId.flatMap { channelUUID(for: $0) }
         cancelRequestedSystemTransmitHandoffIfNeeded(
             channelUUID: systemChannelUUID,
             reason: reason
         )
         transmitTaskCoordinator.send(.cancelBegin)
         syncTransmitState()
+        let stopFenceFinishedAt = DispatchTime.now().uptimeNanoseconds
+        let stopFenceElapsedMs =
+            stopFenceFinishedAt >= stopFenceStartedAt
+            ? (stopFenceFinishedAt - stopFenceStartedAt) / 1_000_000
+            : 0
+        diagnostics.record(
+            .media,
+            message: "Applied immediate transmit stop fence",
+            metadata: [
+                "reason": reason,
+                "elapsedMilliseconds": String(stopFenceElapsedMs),
+                "contactId": activeTarget?.contactID.uuidString ?? "none",
+                "channelUUID": systemChannelUUID?.uuidString ?? "none",
+            ]
+        )
+        syncEngineEndTalkIntent(reason: reason)
+        sendTelemetryEvent(
+            eventName: "ios.transmit.end_requested",
+            severity: .notice,
+            reason: reason,
+            message: "End transmit requested",
+            metadata: ["reason": reason]
+        )
         Task {
             await transmitCoordinator.handle(.releaseRequested)
             syncTransmitState()

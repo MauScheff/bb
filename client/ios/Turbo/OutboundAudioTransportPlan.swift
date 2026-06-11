@@ -14,6 +14,7 @@ nonisolated enum OutboundAudioDirectQuicRole: String, Equatable, Sendable {
 nonisolated enum OutboundAudioMediaRelayRole: String, Equatable, Sendable {
     case primary
     case rescueAfterPrimaryFailure
+    case continuityWhileDirectUnverified
     case tcpContinuity
 }
 
@@ -27,7 +28,7 @@ nonisolated enum OutboundAudioTransportAttempt: Equatable, Sendable {
             return .directQuic
         case .mediaRelay(let role):
             switch role {
-            case .primary, .rescueAfterPrimaryFailure:
+            case .primary, .rescueAfterPrimaryFailure, .continuityWhileDirectUnverified:
                 return .mediaRelayPacket
             case .tcpContinuity:
                 return .mediaRelayTcp
@@ -60,6 +61,10 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
         rescue == .mediaRelay(.rescueAfterPrimaryFailure)
     }
 
+    var hasContinuityRelayForUnverifiedDirect: Bool {
+        rescue == .mediaRelay(.continuityWhileDirectUnverified)
+    }
+
     var usesPrimaryMediaRelay: Bool {
         primary == .mediaRelay(.primary)
     }
@@ -72,29 +77,36 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
     static func dynamic(
         directAvailable: Bool,
         directVerified: Bool,
+        directPromotionVerified: Bool? = nil,
         standbyRelayAvailable: Bool,
         standbyRelayIsTCPContinuity: Bool,
-        legacyPCMBypassesPacketRelay: Bool
+        legacyPCMBypassesPacketRelay: Bool,
+        allowUnverifiedDirectPrimary: Bool = true
     ) -> OutboundAudioTransportPlan? {
         if directAvailable && directVerified {
+            if standbyRelayAvailable,
+               !standbyRelayIsTCPContinuity,
+               !legacyPCMBypassesPacketRelay {
+                return OutboundAudioTransportPlan(
+                    primary: .directQuic(.verifiedPrimary),
+                    rescue: .mediaRelay(.rescueAfterPrimaryFailure)
+                )
+            }
             return OutboundAudioTransportPlan(
                 primary: .directQuic(.verifiedPrimary),
                 rescue: nil
             )
         }
 
-        if directAvailable {
-            let rescue: OutboundAudioTransportAttempt?
-            if standbyRelayAvailable, !legacyPCMBypassesPacketRelay {
-                rescue = standbyRelayIsTCPContinuity
-                    ? .mediaRelay(.tcpContinuity)
-                    : .mediaRelay(.rescueAfterPrimaryFailure)
-            } else {
-                rescue = nil
-            }
+        let canProbationDirect = directPromotionVerified ?? directVerified
+        if directAvailable,
+           canProbationDirect,
+           standbyRelayAvailable,
+           !standbyRelayIsTCPContinuity,
+           !legacyPCMBypassesPacketRelay {
             return OutboundAudioTransportPlan(
                 primary: .directQuic(.unverifiedPrimary),
-                rescue: rescue
+                rescue: .mediaRelay(.continuityWhileDirectUnverified)
             )
         }
 
@@ -103,6 +115,13 @@ nonisolated struct OutboundAudioTransportPlan: Equatable, Sendable {
                 primary: standbyRelayIsTCPContinuity
                     ? .mediaRelay(.tcpContinuity)
                     : .mediaRelay(.primary),
+                rescue: nil
+            )
+        }
+
+        if directAvailable && allowUnverifiedDirectPrimary {
+            return OutboundAudioTransportPlan(
+                primary: .directQuic(.unverifiedPrimary),
                 rescue: nil
             )
         }

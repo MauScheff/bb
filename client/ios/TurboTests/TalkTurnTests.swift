@@ -1255,7 +1255,8 @@ struct TalkTurnTests {
 
     @MainActor
     @Test func releaseCutsPacketAudioTailWithoutWaitingForCoordinatorStopEffect() async throws {
-        let viewModel = PTTViewModel()
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
         let request = TransmitRequestContext(
@@ -1294,6 +1295,9 @@ struct TalkTurnTests {
         viewModel.pttCoordinator.send(
             .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
         )
+        viewModel.pttCoordinator.send(
+            .didBeginTransmitting(channelUUID: channelUUID, origin: .foregroundAppPress)
+        )
         viewModel.syncPTTState()
         viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
         _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
@@ -1319,6 +1323,7 @@ struct TalkTurnTests {
         viewModel.transmitRuntime.syncActiveTarget(target)
 
         viewModel.endTransmit(reason: "test-release")
+        #expect(pttClient.stopTransmitRequests == [channelUUID])
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(viewModel.mediaServices.sendAudioChunk() == nil)
@@ -1328,6 +1333,42 @@ struct TalkTurnTests {
         #expect(
             viewModel.diagnosticsTranscript.contains(
                 "Cut local outgoing audio immediately for explicit transmit stop"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("Applied immediate transmit stop fence"))
+    }
+
+    @MainActor
+    @Test func directQuicSetupSignalsAreRejectedDuringExplicitStopForCurrentTarget() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let target = TransmitTarget(
+            contactID: contactID,
+            userID: "peer-user",
+            deviceID: "peer-device",
+            channelID: "channel-123",
+            transmitID: "transmit-1"
+        )
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            peerDeviceID: "peer-device"
+        )
+        viewModel.transmitRuntime.syncActiveTarget(target)
+        viewModel.transmitRuntime.markExplicitStopRequested()
+
+        let shouldSend = viewModel.shouldSendDirectQuicSetupSignal(
+            contactID: contactID,
+            channelID: "channel-123",
+            attemptID: "attempt-1",
+            signalKind: "candidate"
+        )
+
+        #expect(shouldSend == false)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Skipped Direct QUIC setup signal during explicit transmit stop"
             )
         )
     }
@@ -2281,7 +2322,7 @@ struct TalkTurnTests {
                 receiverDeviceID: "receiver-device",
                 transportDigest: "current-packet-digest",
                 encryptedSequenceNumber: 60,
-                queuedAt: Date(),
+                queuedAt: Date(timeIntervalSince1970: 100),
                 deliveredTransports: ["direct-quic"]
             )
 
@@ -2293,7 +2334,8 @@ struct TalkTurnTests {
                 receiverDeviceId: "receiver-device",
                 transport: "direct-quic",
                 transportDigest: "older-packet-digest",
-                encryptedSequenceNumber: 40
+                encryptedSequenceNumber: 40,
+                acceptedAtMilliseconds: 90_000
             ),
             contactID: contactID,
             source: .directQuicDataChannel
@@ -2308,6 +2350,55 @@ struct TalkTurnTests {
                 $0.invariantID == "media.audio_playback_ack_mismatch"
                     && $0.metadata["contractName"] == "media.first_audio_ack_matches_pending_expectation"
                     && $0.metadata["ackId"] == "ack-stale-packet"
+            }
+        )
+    }
+
+    @MainActor
+    @Test func firstAudioPlaybackAckAcceptsFreshOlderDirectPacketSequenceAsLaneProof() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let completedKey = FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: "sender-device",
+            receiverDeviceID: "receiver-device"
+        )
+        viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] =
+            FirstAudioPlaybackAckExpectation(
+                ackID: "expected-ack",
+                contactID: contactID,
+                channelID: "channel-1",
+                senderDeviceID: "sender-device",
+                receiverDeviceID: "receiver-device",
+                transportDigest: "current-packet-digest",
+                encryptedSequenceNumber: 621,
+                queuedAt: Date(timeIntervalSince1970: 100),
+                deliveredTransports: ["direct-quic", "media-relay-packet"]
+            )
+
+        viewModel.handleAudioPlaybackStartedAck(
+            TurboAudioPlaybackStartedPayload(
+                ackId: "ack-one-packet-behind",
+                channelId: "channel-1",
+                senderDeviceId: "sender-device",
+                receiverDeviceId: "receiver-device",
+                transport: "direct-quic",
+                transportDigest: "previous-direct-packet-digest",
+                encryptedSequenceNumber: 620,
+                acceptedAtMilliseconds: 100_100
+            ),
+            contactID: contactID,
+            source: .directQuicDataChannel
+        )
+
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] == nil)
+        #expect(viewModel.firstAudioPlaybackAckCompletedKeys.contains(completedKey))
+        #expect(viewModel.directAudioPlaybackVerifiedKeys.contains(completedKey))
+        #expect(viewModel.diagnosticsTranscript.contains("First audio playback ACK received"))
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "media.audio_playback_ack_mismatch"
             }
         )
     }
@@ -10350,7 +10441,78 @@ struct TalkTurnTests {
         #expect(dropMetadata?["droppedPayloadCount"] == "2")
     }
 
-    @Test func audioChunkSenderIgnoresLateCompletionAfterTimedOutPacketSend() async {
+    @Test func fastRelayPacketSenderDoesNotDropQueuedPayloadsAfterCompletionDelay() async {
+        actor Delay {
+            var shouldDelayNextSend = true
+
+            func delayFirstSend() async throws {
+                guard shouldDelayNextSend else { return }
+                shouldDelayNextSend = false
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+
+        actor Recorder {
+            var payloads: [String] = []
+            var metadataByEvent: [String: [[String: String]]] = [:]
+
+            func appendPayload(_ payload: String) {
+                payloads.append(payload)
+            }
+
+            func appendEvent(_ event: String, metadata: [String: String]) {
+                metadataByEvent[event, default: []].append(metadata)
+            }
+
+            func firstMetadata(for event: String) -> [String: String]? {
+                metadataByEvent[event]?.first
+            }
+        }
+
+        let delay = Delay()
+        let recorder = Recorder()
+        let sender = AudioChunkSender(
+            sendChunk: { payload in
+                try await delay.delayFirstSend()
+                try Task.checkCancellation()
+                await recorder.appendPayload(payload)
+            },
+            reportFailure: { _ in },
+            reportEvent: { message, metadata in
+                await recorder.appendEvent(message, metadata: metadata)
+            },
+            configuration: .fastRelayBalanced,
+            maximumPendingPayloads: 8,
+            maximumInFlightSends: 1
+        )
+
+        let firstSend = Task {
+            await sender.enqueue("chunk-0")
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let staleQueuedSend = Task {
+            await sender.enqueue(["chunk-stale-1", "chunk-stale-2", "chunk-fresh"])
+        }
+
+        await firstSend.value
+        await staleQueuedSend.value
+        await sender.finishDraining(pollNanoseconds: 1_000_000)
+        for _ in 0..<100 {
+            if await recorder.payloads.flatMap(AudioChunkPayloadCodec.decode).count == 4 { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        let deliveredPayloads = await recorder.payloads.flatMap(AudioChunkPayloadCodec.decode)
+        #expect(Set(deliveredPayloads) == Set(["chunk-0", "chunk-stale-1", "chunk-stale-2", "chunk-fresh"]))
+        #expect(deliveredPayloads.count == 4)
+
+        let dropMetadata = await recorder.firstMetadata(
+            for: "Dropped stale outbound audio transport payload"
+        )
+        #expect(dropMetadata == nil)
+    }
+
+    @Test func audioChunkSenderKeepsPacketAdmissionIndependentOfLateCompletion() async {
         actor FirstSendGate {
             var didBlockFirstSend = false
             var isOpen = false
@@ -10449,23 +10611,25 @@ struct TalkTurnTests {
         await sender.finishDraining(pollNanoseconds: 1_000_000)
 
         await gate.open()
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        for _ in 0..<100 {
+            if await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode).count == 4 { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
 
-        #expect(await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-fresh"])
-        #expect(await recorder.cancelledPayloads.flatMap(AudioChunkPayloadCodec.decode) == ["chunk-0"])
+        let completedPayloads = await recorder.completedPayloads.flatMap(AudioChunkPayloadCodec.decode)
+        #expect(Set(completedPayloads) == Set(["chunk-0", "chunk-stale-1", "chunk-stale-2", "chunk-fresh"]))
+        #expect(completedPayloads.count == 4)
+        #expect(await recorder.cancelledPayloads.isEmpty)
         #expect(await recorder.failures.isEmpty)
 
         let slowMetadata = await recorder.firstMetadata(
             for: "Outbound audio transport send was slow"
         )
-        #expect(slowMetadata?["invariantID"] == "media.outbound_audio_transport_send_slow")
-        #expect(slowMetadata?["reason"] == "packet-lane-slow-send")
+        #expect(slowMetadata == nil)
         let dropMetadata = await recorder.firstMetadata(
             for: "Dropped stale outbound audio transport payload"
         )
-        #expect(dropMetadata?["invariantID"] == "media.outbound_audio_transport_slow_send_drop")
-        #expect(dropMetadata?["droppedPayloadCount"] == "2")
-        #expect(dropMetadata?["retainedPayloadCount"] == "1")
+        #expect(dropMetadata == nil)
     }
 
     @Test func audioChunkSenderAllowsBoundedInFlightPacketSends() async {
@@ -16380,7 +16544,7 @@ struct TalkTurnTests {
     }
 
     @MainActor
-    @Test func outgoingAudioSendGateReleasesForegroundDirectQuicReceiverWithoutReadinessTelemetry() async {
+    @Test func outgoingAudioSendGateReleasesForegroundLiveMediaReceiverWithoutReadinessTelemetry() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -16450,12 +16614,154 @@ struct TalkTurnTests {
         #expect(didBecomeReady)
         #expect(
             viewModel.diagnosticsTranscript.contains(
-                "Foreground Direct QUIC receiver is prepared; releasing outbound audio send gate"
+                "Foreground live media receiver is prepared; releasing outbound audio send gate"
             )
         )
         #expect(
             !viewModel.diagnosticsTranscript.contains(
                 "Waiting for remote receiver audio readiness before sending outbound audio"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func outgoingAudioSendGateReleasesForegroundFastRelayReceiverWithoutReadinessTelemetry() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .active
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .transmitting,
+                    canTransmit: false,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .selfTransmitting(activeTransmitterUserId: "local-user"),
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: true,
+                    remoteAudioReadiness: .waiting,
+                    remoteWakeCapability: .unavailable
+                )
+            )
+        )
+
+        let didBecomeReady = await viewModel.waitForRemoteReceiverAudioReadinessBeforeSendingIfNeeded(
+            target: TransmitTarget(
+                contactID: contactID,
+                userID: "peer-user",
+                deviceID: "peer-device",
+                channelID: "channel"
+            ),
+            timeoutNanoseconds: 500_000_000,
+            pollNanoseconds: 20_000_000
+        )
+
+        #expect(didBecomeReady)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Foreground live media receiver is prepared; releasing outbound audio send gate"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains("transportPath=fast-relay")
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Waiting for remote receiver audio readiness before sending outbound audio"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func outgoingAudioSendGateReleasesForegroundFastRelayWhenWakeCapabilityIsStaleButPeerConnected() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: channelUUID,
+            backendChannelId: "channel",
+            remoteUserId: "peer-user"
+        )
+
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.applicationStateOverride = .active
+        viewModel.seedEngineJoinedConversationForTesting(contactID: contactID)
+        viewModel.transmitRuntime.markPressBegan()
+        viewModel.mediaRuntime.updateTransportPathState(.fastRelay)
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .transmitting,
+                    canTransmit: false,
+                    peerDeviceConnected: true
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .selfTransmitting(activeTransmitterUserId: "local-user"),
+                    selfHasActiveDevice: true,
+                    peerHasActiveDevice: true,
+                    remoteAudioReadiness: .wakeCapable,
+                    remoteWakeCapability: .wakeCapable(targetDeviceId: "peer-device")
+                )
+            )
+        )
+
+        let didBecomeReady = await viewModel.waitForRemoteReceiverAudioReadinessBeforeSendingIfNeeded(
+            target: TransmitTarget(
+                contactID: contactID,
+                userID: "peer-user",
+                deviceID: "peer-device",
+                channelID: "channel"
+            ),
+            timeoutNanoseconds: 500_000_000,
+            pollNanoseconds: 20_000_000
+        )
+
+        #expect(didBecomeReady)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Foreground live media receiver is prepared; releasing outbound audio send gate"
+            )
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains("remoteWakeCapability=wakeCapable")
+        )
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Waiting for wake-capable receiver recovery before sending initial outbound audio"
             )
         )
     }

@@ -59,12 +59,18 @@ nonisolated struct MediaTransportPlaybackCushionConfiguration: Equatable {
     let timeoutNanoseconds: UInt64
 }
 
+nonisolated enum MediaTransportSendCompletionSemantics: String, Equatable, Sendable {
+    case admission
+    case completion
+}
+
 nonisolated struct MediaTransportSenderConfiguration: Equatable {
     let maximumPendingPayloads: Int
     let maximumPayloadsPerMessage: Int
     let payloadBatchCollectionNanoseconds: UInt64
     let minimumPayloadDispatchSpacingNanoseconds: UInt64
     let maximumInFlightSends: Int
+    let sendCompletionSemantics: MediaTransportSendCompletionSemantics
     let sendTimeoutNanoseconds: UInt64?
     let slowSendDropThresholdNanoseconds: UInt64?
     let dropsPendingPayloadsAfterSlowSend: Bool
@@ -78,6 +84,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         payloadBatchCollectionNanoseconds: 0,
         minimumPayloadDispatchSpacingNanoseconds: VoiceFrameAccumulator.frameDurationNanoseconds,
         maximumInFlightSends: 1,
+        sendCompletionSemantics: .admission,
         sendTimeoutNanoseconds: 250_000_000,
         slowSendDropThresholdNanoseconds: 250_000_000,
         dropsPendingPayloadsAfterSlowSend: true,
@@ -92,11 +99,12 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         payloadBatchCollectionNanoseconds: 0,
         minimumPayloadDispatchSpacingNanoseconds: VoiceFrameAccumulator.frameDurationNanoseconds,
         maximumInFlightSends: 4,
-        sendTimeoutNanoseconds: 750_000_000,
-        slowSendDropThresholdNanoseconds: 750_000_000,
+        sendCompletionSemantics: .admission,
+        sendTimeoutNanoseconds: 250_000_000,
+        slowSendDropThresholdNanoseconds: 250_000_000,
         dropsPendingPayloadsAfterSlowSend: true,
         dropsPendingPayloadsWhenTransportBecomesAvailable: true,
-        retainedNewestPayloadsAfterSlowSend: 0,
+        retainedNewestPayloadsAfterSlowSend: 1,
         stopDrainTimeoutNanoseconds: 220_000_000
     )
 
@@ -106,6 +114,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         payloadBatchCollectionNanoseconds: 120_000_000,
         minimumPayloadDispatchSpacingNanoseconds: 0,
         maximumInFlightSends: 1,
+        sendCompletionSemantics: .completion,
         sendTimeoutNanoseconds: nil,
         slowSendDropThresholdNanoseconds: nil,
         dropsPendingPayloadsAfterSlowSend: false,
@@ -120,6 +129,7 @@ nonisolated struct MediaTransportSenderConfiguration: Equatable {
         payloadBatchCollectionNanoseconds: 0,
         minimumPayloadDispatchSpacingNanoseconds: 0,
         maximumInFlightSends: 1,
+        sendCompletionSemantics: .completion,
         sendTimeoutNanoseconds: nil,
         slowSendDropThresholdNanoseconds: nil,
         dropsPendingPayloadsAfterSlowSend: false,

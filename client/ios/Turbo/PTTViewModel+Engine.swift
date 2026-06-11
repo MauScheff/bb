@@ -125,6 +125,20 @@ extension PTTViewModel {
         )
     }
 
+    func syncEngineDirectQuicLaneAvailable(source: String) {
+        receiveEngineEvent(
+            .transport(
+                .laneAvailable(
+                    TransportLaneAvailability(
+                        lane: .directQuic,
+                        networkPathGeneration: mediaRuntime.networkPathGeneration
+                    )
+                )
+            ),
+            source: "transport-lane-available:\(source)"
+        )
+    }
+
     func syncEngineDirectQuicLaneFailed(reason: String, source: String) {
         let normalizedReason = reason.lowercased()
         let unavailableReason: TransportUnavailableReason
