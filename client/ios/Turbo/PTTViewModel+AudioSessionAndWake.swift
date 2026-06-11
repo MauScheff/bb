@@ -215,6 +215,28 @@ extension PTTViewModel {
         }
         mediaRuntime.replaceInteractivePrewarmRecoveryTask(with: nil)
         pttWakeRuntime.clearAll(clearSuppression: false)
+        if applicationState != .active,
+           let contactID = backgroundReceiverReadinessContactIDForPTTAudioDeactivation(
+                deactivatedEpoch: deactivatedEpoch
+           ) {
+            controlPlaneCoordinator.send(
+                .receiverAudioReadinessEpochAdvanced(contactID: contactID)
+            )
+            diagnostics.record(
+                .backend,
+                message: "Publishing receiver not-ready after background PTT audio deactivation",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "reason": "ptt-audio-deactivated-background-ready",
+                    "pttAudioOwner": deactivatedEpoch?.owner.diagnosticsValue ?? "none",
+                    "applicationState": String(describing: applicationState),
+                ]
+            )
+            await syncLocalReceiverAudioReadinessSignal(
+                for: contactID,
+                reason: .appBackgroundMediaClosed
+            )
+        }
         if let contactID = mediaRuntime.pendingInteractivePrewarmAfterAudioDeactivationContactID {
             guard applicationState == .active else {
                 diagnostics.record(
@@ -247,6 +269,28 @@ extension PTTViewModel {
             try? await Task.sleep(nanoseconds: 200_000_000)
             await prewarmLocalMediaIfNeeded(for: contactID, applicationState: applicationState)
         }
+    }
+
+    private func backgroundReceiverReadinessContactIDForPTTAudioDeactivation(
+        deactivatedEpoch: PTTAudioSessionEpoch?
+    ) -> UUID? {
+        let candidates = [
+            deactivatedEpoch?.owner.contactID,
+            mediaRuntime.pendingInteractivePrewarmAfterAudioDeactivationContactID,
+            pttCoordinator.state.activeContactID,
+            selectedContactId,
+        ]
+
+        for contactID in candidates.compactMap({ $0 }) {
+            guard let contact = contacts.first(where: { $0.id == contactID }),
+                  contact.backendChannelId != nil,
+                  contact.remoteUserId != nil,
+                  devicePTTEvidenceExists(for: contactID) else {
+                continue
+            }
+            return contactID
+        }
+        return nil
     }
 
     private func shouldTreatPTTAudioDeactivationAsStaleReceiveHandoff(

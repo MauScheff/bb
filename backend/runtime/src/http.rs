@@ -1870,16 +1870,7 @@ where
             .and_then(|channel| channel.joined_devices_by_handle.get(&peer_handle))
             .cloned()
             .unwrap_or_else(|| "peer-device".to_owned());
-        let wake_target = self.state.channels.get(channel_id).and_then(|channel| {
-            if channel.wake_disconnected_handles.contains(&peer_handle) {
-                channel
-                    .ephemeral_tokens_by_handle
-                    .get(&peer_handle)
-                    .cloned()
-            } else {
-                None
-            }
-        });
+        let wake_target = self.peer_wake_target_for_transmit(channel_id, &peer_handle);
         let started_at = runtime_iso8601_utc_millis(now_ms);
         let channel = self
             .state
@@ -2040,6 +2031,26 @@ where
             Err(error) => {
                 self.record_wake_event(base_event, "transport-failed", 0, &error.to_string());
             }
+        }
+    }
+
+    fn peer_wake_target_for_transmit(
+        &self,
+        channel_id: &str,
+        peer_handle: &str,
+    ) -> Option<RuntimeEphemeralToken> {
+        let peer_handle = normalize_handle(peer_handle);
+        let channel = self.state.channels.get(channel_id)?;
+        if !channel.joined_devices_by_handle.contains_key(&peer_handle) {
+            return None;
+        }
+        let wake_target = channel.ephemeral_tokens_by_handle.get(&peer_handle)?;
+        let peer_is_live_connected = self.handle_is_connected(&peer_handle)
+            && !channel.wake_disconnected_handles.contains(&peer_handle);
+        if peer_is_live_connected {
+            None
+        } else {
+            Some(wake_target.clone())
         }
     }
 
@@ -6829,6 +6840,100 @@ mod tests {
         assert_eq!(event["statusCode"], "200");
         assert_eq!(event["channelId"], channel_id);
         assert_eq!(event["senderDeviceId"], "device-b");
+        assert_eq!(event["targetDeviceId"], "device-a");
+        assert_eq!(event["startedAt"], begin.body["startedAt"]);
+
+        worker.join().expect("worker should finish");
+    }
+
+    #[test]
+    fn self_hosted_begin_transmit_wakes_joined_peer_with_token_without_live_presence() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("worker listener should bind");
+        let worker_address = listener.local_addr().expect("worker address should exist");
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("worker should accept request");
+            let mut request = vec![0_u8; 8192];
+            let read = stream
+                .read(&mut request)
+                .expect("worker should read request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("POST /apns/send HTTP/1.1"));
+            assert!(request.contains("wake-token-a"));
+            assert!(request.contains("\"event\":\"transmit-start\""));
+            assert!(request.contains("\"senderDeviceId\":\"device-b\""));
+            assert!(request.contains("\"targetDeviceId\":\"device-a\""));
+            let body = br#"{"ok":true,"result":"sent","status":200,"reason":null}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("worker should write response");
+        });
+
+        let mut service = service_with_config(RuntimeHttpConfig {
+            supports_websocket: false,
+            apns_worker: Some(RuntimeApnsWorkerConfig {
+                base_url: format!("http://{worker_address}"),
+                secret: "secret".to_owned(),
+                bundle_id: "com.rounded.Turbo".to_owned(),
+                use_sandbox: true,
+                timeout_ms: 1_000,
+            }),
+            ..RuntimeHttpConfig::default()
+        });
+        let channel = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/channels/direct".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@avery".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "otherHandle": "@blake" }))
+                .expect("body should encode"),
+        });
+        let channel_id = channel.body["channelId"].as_str().expect("channel id");
+        for (handle, device_id) in [("@avery", "device-a"), ("@blake", "device-b")] {
+            let join = service.handle(HttpRequest {
+                method: "POST".to_owned(),
+                path: format!("/v1/channels/{channel_id}/join"),
+                headers: vec![("x-turbo-user-handle".to_owned(), handle.to_owned())],
+                body: serde_json::to_vec(&serde_json::json!({ "deviceId": device_id }))
+                    .expect("body should encode"),
+            });
+            assert_eq!(join.status, 200);
+        }
+        service.record_ephemeral_token(
+            channel_id,
+            "@avery",
+            "device-a",
+            "wake-token-a",
+            Some("sandbox".to_owned()),
+        );
+        service.record_presence("@avery", "background", Some("device-a".to_owned()));
+
+        let begin = service.handle(HttpRequest {
+            method: "POST".to_owned(),
+            path: format!("/v1/channels/{channel_id}/begin-transmit"),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: serde_json::to_vec(&serde_json::json!({ "deviceId": "device-b" }))
+                .expect("body should encode"),
+        });
+        assert_eq!(begin.status, 200);
+        assert_eq!(begin.body["status"], "transmitting");
+        assert_eq!(begin.body["targetDeviceId"], "device-a");
+
+        let wake_events = service.handle(HttpRequest {
+            method: "GET".to_owned(),
+            path: "/v1/dev/wake-events/recent".to_owned(),
+            headers: vec![("x-turbo-user-handle".to_owned(), "@blake".to_owned())],
+            body: Vec::new(),
+        });
+        assert_eq!(wake_events.status, 200);
+        let event = wake_events.body["events"][0]
+            .as_object()
+            .expect("wake event should be an object");
+        assert_eq!(event["event"], "transmit-start");
+        assert_eq!(event["result"], "sent");
         assert_eq!(event["targetDeviceId"], "device-a");
         assert_eq!(event["startedAt"], begin.body["startedAt"]);
 

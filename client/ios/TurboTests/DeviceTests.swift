@@ -1512,6 +1512,11 @@ struct DeviceTests {
     @MainActor
     @Test func backgroundPTTAudioDeactivationReassertsTalkReadinessWithoutPrewarm() async {
         let pttClient = RecordingPTTSystemClient()
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(mode: "cloud", supportsWebSocket: false)
+        )
+        client.enableReceiverAudioReadinessCaptureForTesting()
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
         let channelUUID = UUID()
@@ -1527,6 +1532,11 @@ struct DeviceTests {
 
         viewModel.applicationStateOverride = .background
         viewModel.backendRuntime.isReady = true
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
         viewModel.contacts = [contact]
         viewModel.trackContact(contactID)
         viewModel.selectedContactId = contactID
@@ -1542,6 +1552,8 @@ struct DeviceTests {
         let transmissionModeUpdateCount = pttClient.transmissionModeUpdates.count
         let serviceStatusUpdateCount = pttClient.serviceStatusUpdates.count
         let accessoryUpdateCount = pttClient.accessoryButtonEventUpdates.count
+        let receiverAudioReadinessPublishCount =
+            client.receiverAudioReadinessPublishesForTesting().count
 
         viewModel.deferInteractivePrewarmUntilPTTAudioDeactivation(for: contactID)
 
@@ -1560,6 +1572,20 @@ struct DeviceTests {
         #expect(pttClient.serviceStatusUpdates.last?.status == .ready)
         #expect(pttClient.accessoryButtonEventUpdates.count == accessoryUpdateCount + 1)
         #expect(pttClient.accessoryButtonEventUpdates.last?.enabled == true)
+        let readinessPublishes = client.receiverAudioReadinessPublishesForTesting()
+        #expect(readinessPublishes.count == receiverAudioReadinessPublishCount + 1)
+        let deactivationPublish = readinessPublishes.dropFirst(
+            receiverAudioReadinessPublishCount
+        ).last
+        #expect(deactivationPublish?.type == TurboSignalKind.receiverNotReady.rawValue)
+        #expect(
+            deactivationPublish?.payload.contains("app-background-media-closed") == true
+        )
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Publishing receiver not-ready after background PTT audio deactivation"
+            )
+        )
         #expect(viewModel.diagnosticsTranscript.contains("Reasserted PTT talk readiness"))
     }
 

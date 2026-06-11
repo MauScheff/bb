@@ -14994,6 +14994,46 @@ struct TalkTurnTests {
         )
     }
 
+    @Test func controlPlaneReducerRepublishesReceiverNotReadyAfterReadinessEpochAdvance() {
+        let contactID = UUID()
+        let intent = ReceiverAudioReadinessIntent(
+            contactID: contactID,
+            contactHandle: "@blake",
+            backendChannelID: "channel",
+            remoteUserID: "peer-user",
+            currentUserID: "self-user",
+            deviceID: "self-device",
+            isReady: false,
+            reason: .appBackgroundMediaClosed,
+            telemetry: nil
+        )
+
+        let published = ControlPlaneReducer.reduce(
+            state: ControlPlaneSessionState(),
+            event: .receiverAudioReadinessSyncRequested(
+                intent,
+                peerIsRoutable: true,
+                webSocketConnected: true
+            )
+        )
+        let advanced = ControlPlaneReducer.reduce(
+            state: published.state,
+            event: .receiverAudioReadinessEpochAdvanced(contactID: contactID)
+        )
+        let republished = ControlPlaneReducer.reduce(
+            state: advanced.state,
+            event: .receiverAudioReadinessSyncRequested(
+                intent,
+                peerIsRoutable: true,
+                webSocketConnected: true
+            )
+        )
+
+        #expect(published.effects == [.publishReceiverAudioReadiness(intent)])
+        #expect(advanced.state.receiverAudioReadinessStates[contactID] == nil)
+        #expect(republished.effects == [.publishReceiverAudioReadiness(intent)])
+    }
+
     @Test func controlPlaneReducerDoesNotDowngradePublishedReceiverNotReadyToSuppressed() {
         let contactID = UUID()
         let publishedIntent = ReceiverAudioReadinessIntent(

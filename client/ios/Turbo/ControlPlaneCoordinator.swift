@@ -321,6 +321,7 @@ enum ControlPlaneEvent: Equatable {
     case receiverAudioReadinessPublished(ReceiverAudioReadinessIntent)
     case receiverAudioReadinessDeferred(ReceiverAudioReadinessIntent)
     case receiverAudioReadinessContextUnavailable(contactID: UUID)
+    case receiverAudioReadinessEpochAdvanced(contactID: UUID)
     case receiverAudioReadinessCacheCleared(contactID: UUID?)
     case webSocketStateChanged(TurboBackendClient.WebSocketConnectionState)
     case postWakeRepairRequested(contactID: UUID)
@@ -389,6 +390,9 @@ enum ControlPlaneReducer {
             effects.append(.deferReceiverAudioReadinessUntilReconnect(intent))
 
         case .receiverAudioReadinessContextUnavailable(let contactID):
+            nextState.receiverAudioReadinessStates[contactID] = nil
+
+        case .receiverAudioReadinessEpochAdvanced(let contactID):
             nextState.receiverAudioReadinessStates[contactID] = nil
 
         case .receiverAudioReadinessCacheCleared(let contactID):
