@@ -5336,6 +5336,20 @@ extension PTTViewModel {
                 deactivateAudioSession: false,
                 preserveDirectQuic: shouldUseDirectQuicTransport(for: contactID)
             )
+            let wakeChannelID =
+                wake.payload.channelId
+                ?? contacts.first(where: { $0.id == contactID })?.backendChannelId
+                ?? channelStateByContactID[contactID]?.channelId
+            let wakePeerDeviceID =
+                wake.payload.senderDeviceId
+                ?? channelReadinessByContactID[contactID]?.peerTargetDeviceId
+                ?? recentPeerDeviceEvidence(for: contactID)?.deviceId
+            await armMediaRelayReceiveForWakeActivationIfNeeded(
+                contactID: contactID,
+                channelID: wakeChannelID,
+                peerDeviceID: wakePeerDeviceID,
+                channelUUID: wake.channelUUID
+            )
             await ensureMediaSession(
                 for: contactID,
                 activationMode: .systemActivated,

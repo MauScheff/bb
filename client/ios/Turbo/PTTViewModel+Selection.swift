@@ -31,6 +31,7 @@ private enum AbsentBackendMembershipRepairAction: String {
 private enum AbsentBackendMembershipSuppressionReason: String {
     case backendJoinSettling = "backend-join-settling"
     case unresolvedLocalJoinAttempt = "unresolved-local-join-attempt"
+    case backendLeaveTombstone = "backend-leave-tombstone"
 
     var message: String {
         switch self {
@@ -38,6 +39,8 @@ private enum AbsentBackendMembershipSuppressionReason: String {
             return "Deferred absent backend membership recovery while backend join is settling"
         case .unresolvedLocalJoinAttempt:
             return "Deferred absent backend membership recovery while local join is unresolved"
+        case .backendLeaveTombstone:
+            return "Deferred absent backend membership recovery while backend leave is settling"
         }
     }
 }
@@ -645,12 +648,45 @@ extension PTTViewModel {
             staleSystemRejoinSuppressions.values.contains { suppression in
                 suppression.contactID == contactID
             }
-        let pendingLeaveIsComplete =
+        let pendingLeaveCanAppearComplete =
             conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID)
             && !backendLeaveCommandInFlight
             && !recentSystemLeaveIsAwaitingBackendConvergence
             && (backendHasNoObservedLocalMembership || backendChannelReferenceAbsent)
+        let pendingLeaveIsAwaitingBackendConvergence =
+            pendingLeaveCanAppearComplete && disconnectRecoveryTask != nil
+        let pendingLeaveIsComplete =
+            pendingLeaveCanAppearComplete && !pendingLeaveIsAwaitingBackendConvergence
         guard beepThreadIsNone || pendingJoinContradictsOutgoingBeep else { return }
+
+        if pendingLeaveIsAwaitingBackendConvergence {
+            let suppressionReason: AbsentBackendMembershipSuppressionReason = .backendLeaveTombstone
+            let noticeKey = [
+                contactID.uuidString,
+                suppressionReason.rawValue,
+                selectedChannel.map { String(describing: $0.membership) } ?? "none",
+                selectedChannel?.status?.rawValue ?? "none",
+                String(describing: conversationActionCoordinator.pendingAction),
+            ].joined(separator: "|")
+            if !deferredAbsentMembershipRecoveryNoticeKeys.contains(noticeKey) {
+                deferredAbsentMembershipRecoveryNoticeKeys.insert(noticeKey)
+                diagnostics.record(
+                    .state,
+                    message: suppressionReason.message,
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "invariantID": AbsentBackendMembershipRecovery.invariantID,
+                        "repairDecision": "suppressed",
+                        "repairSuppressionReason": suppressionReason.rawValue,
+                        "backendMembership": selectedChannel.map { String(describing: $0.membership) } ?? "none",
+                        "backendStatus": selectedChannel?.status?.rawValue ?? "none",
+                        "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
+                    ]
+                )
+            }
+            return
+        }
+
         guard pendingJoinIsStale || pendingLeaveIsComplete else { return }
 
         let recoveryDecision: AbsentBackendMembershipRecoveryDecision
@@ -1130,18 +1166,17 @@ extension PTTViewModel {
     }
 
     var transportPathBadgeState: MediaTransportPathState? {
-        if let activeMediaEpochPathState = mediaRuntime.activeMediaEpochPathState,
-           activeConversationContactID ?? mediaSessionContactID ?? selectedContactId != nil {
-            return activeMediaEpochPathState
-        }
-
-        guard let contactID = activeConversationContactID ?? mediaSessionContactID else {
+        guard let contactID = activeConversationContactID ?? mediaSessionContactID ?? selectedContactId else {
             return nil
         }
 
         let phase = selectedConversationProjection(for: contactID).selectedConversationState.phase
         guard phase.showsTransportPathBadge else {
             return nil
+        }
+        if phase.showsActiveMediaEpochPathBadge,
+           let activeMediaEpochPathState = mediaRuntime.activeMediaEpochPathState {
+            return activeMediaEpochPathState
         }
 
         switch mediaTransportPathState {
@@ -1830,8 +1865,59 @@ extension PTTViewModel {
                     channel: nil
                 )
             )
+            reconcileOrphanedDevicePTTSessionIfNeeded(reason: "status-update-without-selected-contact")
         }
         reconcileLiveConversationActivity()
+    }
+
+    private func reconcileOrphanedDevicePTTSessionIfNeeded(reason: String) {
+        guard selectedContactId == nil else { return }
+        guard let contactID = activeConversationContactID,
+              let contact = contacts.first(where: { $0.id == contactID }) else {
+            return
+        }
+        guard devicePTTEvidenceExists(for: contactID) || systemSessionState != .none else {
+            return
+        }
+        guard conversationActionCoordinator.pendingAction.pendingTeardownContactID != contactID else {
+            return
+        }
+
+        let channelSnapshot = selectedChannelSnapshot(for: contactID)
+        let hasAuthoritativeLeave =
+            conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID)
+            || channelSnapshot?.membership.hasLocalMembership == false
+            || channelSnapshot?.readinessStatus == .inactive
+            || beepThreadProjection(for: contactID).hasPendingBeep
+        guard hasAuthoritativeLeave else { return }
+
+        diagnostics.recordInvariantViolation(
+            invariantID: "selected.orphaned_device_ptt_session_without_selected_conversation",
+            scope: .local,
+            message: "Device PTT session remained active without a selected Conversation owner after leave or membership loss",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "handle": contact.handle,
+                "reason": reason,
+                "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
+                "systemSession": String(describing: systemSessionState),
+                "backendMembership": channelSnapshot.map { String(describing: $0.membership) } ?? "none",
+                "backendReadiness": channelSnapshot?.readinessStatus?.kind ?? "none",
+                "beepThreadProjection": String(describing: beepThreadProjection(for: contactID)),
+            ]
+        )
+        prepareReconciledTeardownState(for: contactID)
+        diagnostics.record(
+            .state,
+            message: "Repairing orphaned Device PTT session without selected Conversation",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "handle": contact.handle,
+                "reason": reason,
+            ]
+        )
+        captureDiagnosticsState("selected-conversation:orphaned-device-ptt-repair")
+        performReconciledTeardown(for: contactID)
     }
 
     func reconcileLiveConversationActivity() {

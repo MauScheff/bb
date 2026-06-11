@@ -96,11 +96,49 @@ struct ConversationParticipantTelemetry: Codable, Equatable {
         }
     }
 
+    struct LivenessPulse: Codable, Equatable {
+        let sentAtMilliseconds: Int64
+        let nonce: String
+
+        static func current(sentAt: Date = Date()) -> LivenessPulse {
+            LivenessPulse(
+                sentAtMilliseconds: Int64((sentAt.timeIntervalSince1970 * 1_000).rounded()),
+                nonce: UUID().uuidString.lowercased()
+            )
+        }
+    }
+
     let audio: Audio?
     let connection: Connection?
+    let livenessPulse: LivenessPulse?
+
+    init(
+        audio: Audio?,
+        connection: Connection?,
+        livenessPulse: LivenessPulse? = nil
+    ) {
+        self.audio = audio
+        self.connection = connection
+        self.livenessPulse = livenessPulse
+    }
 
     var hasVisibleContext: Bool {
         audio != nil || connection?.displayName != nil
+    }
+
+    func withLivenessPulse(sentAt: Date = Date()) -> ConversationParticipantTelemetry {
+        ConversationParticipantTelemetry(
+            audio: audio,
+            connection: connection,
+            livenessPulse: .current(sentAt: sentAt)
+        )
+    }
+
+    static func == (
+        lhs: ConversationParticipantTelemetry,
+        rhs: ConversationParticipantTelemetry
+    ) -> Bool {
+        lhs.audio == rhs.audio && lhs.connection == rhs.connection
     }
 
     static func current(

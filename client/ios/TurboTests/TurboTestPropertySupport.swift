@@ -147,6 +147,7 @@ struct ConversationProjectionPropertySample {
             contactID: contactID,
             selectedContactID: selectedContactID,
             baseState: randomBaseState(rng: &rng),
+            relationship: relationship,
             contactName: "Blake",
             contactIsOnline: rng.nextBool(),
             isJoined: isJoined,
@@ -180,6 +181,86 @@ struct ConversationProjectionPropertySample {
                 "pending=\(pendingAction)",
                 "localTransmit=\(localTransmit)",
                 "channel=\(String(describing: channel?.readinessStatus?.kind))",
+            ].joined(separator: " ")
+        )
+    }
+
+    @MainActor
+    static func generatePendingBeepDominanceFault(rng: inout SeededRNG) -> ConversationProjectionPropertySample {
+        let contactID = rng.uuid()
+        let requestCount = rng.nextInt(in: 1...4)
+        let relationship = rng.pick([
+            BeepThreadProjection.outgoingBeep(requestCount: requestCount),
+            .incomingBeep(requestCount: requestCount),
+            .mutualBeep(requestCount: requestCount),
+        ])
+        let selfJoined = rng.nextBool()
+        let peerJoined = rng.nextBool()
+        let peerDeviceConnected = false
+        let readinessStatus = rng.pick([
+            TurboChannelReadinessStatus.inactive,
+            .waitingForSelf,
+            .waitingForPeer,
+        ])
+        let conversationStatus = rng.pick([
+            ConversationState.waitingForPeer,
+            .ready,
+            relationship.fallbackConversationState,
+        ])
+        let channel = ChannelReadinessSnapshot(
+            channelState: makeChannelState(
+                status: conversationStatus,
+                canTransmit: false,
+                selfJoined: selfJoined,
+                peerJoined: peerJoined,
+                peerDeviceConnected: peerDeviceConnected,
+                hasIncomingBeep: relationship.hasIncomingBeep,
+                hasOutgoingBeep: relationship.hasOutgoingBeep
+            ),
+            readiness: makeChannelReadiness(
+                status: readinessStatus,
+                selfHasActiveDevice: selfJoined,
+                peerHasActiveDevice: peerDeviceConnected,
+                remoteAudioReadiness: rng.pick([.unknown, .waiting, .wakeCapable]),
+                remoteWakeCapability: rng.nextBool()
+                    ? .wakeCapable(targetDeviceId: "peer-device")
+                    : .unavailable
+            )
+        )
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: rng.pick([.idle, .waitingForPeer, .ready, relationship.fallbackConversationState]),
+            relationship: relationship,
+            contactName: "Blake",
+            contactIsOnline: rng.nextBool(),
+            isJoined: false,
+            activeChannelID: nil,
+            systemSessionMatchesContact: false,
+            systemSessionState: .none,
+            pendingAction: .connect(.joiningLocal(contactID: contactID)),
+            pendingConnectAcceptedIncomingBeep: false,
+            localJoinFailure: nil,
+            mediaState: rng.pick([.idle, .preparing, .connected]),
+            localMediaWarmupState: rng.pick([.cold, .prewarming, .ready]),
+            localRelayTransportReady: rng.nextBool(),
+            directMediaPathActive: rng.nextBool(),
+            firstTalkStartupProfile: rng.pick([.directQuicWarming, .relayWarm, .relayWarming]),
+            incomingWakeActivationState: nil,
+            hadConnectedDevicePTTContinuity: rng.nextBool(),
+            channel: channel
+        )
+        return ConversationProjectionPropertySample(
+            context: context,
+            relationship: relationship,
+            summary: [
+                "fault=pending-beep-dominance",
+                "relationship=\(relationship)",
+                "base=\(context.baseState.rawValue)",
+                "selfJoined=\(selfJoined)",
+                "peerJoined=\(peerJoined)",
+                "readiness=\(readinessStatus.kind)",
+                "conversationStatus=\(conversationStatus.rawValue)",
             ].joined(separator: " ")
         )
     }

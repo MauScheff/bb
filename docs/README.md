@@ -4,6 +4,7 @@ This directory keeps BeepBeep's larger memory without making every historical no
 
 | Area | Path | Use |
 | --- | --- | --- |
+| Architecture | `docs/architecture/` | Agent-native structure doctrine, module boundaries, effect surfaces, and verification strategy. |
 | Client | `docs/client/` | iOS, Swift, PushToTalk, audio, simulator, and device notes. |
 | Backend | `docs/backend/` | Runtime, kernel, infra, storage, deploy, and backend reliability notes. |
 | Reliability | `docs/reliability/` | Invariants, fuzzing, telemetry, TLA+, repair, and incident workflows. |

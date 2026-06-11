@@ -584,6 +584,7 @@ extension PTTViewModel {
         lastPublishedConversationParticipantTelemetryByContactID = [:]
         lastPublishedConversationParticipantTelemetryAtByContactID = [:]
         conversationParticipantTelemetryByContactID = [:]
+        conversationParticipantTelemetryReceivedAtByContactID = [:]
         clearTrackedContacts()
         resetTransportFaults()
         contacts = []

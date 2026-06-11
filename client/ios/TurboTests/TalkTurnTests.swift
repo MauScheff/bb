@@ -19713,7 +19713,7 @@ struct TalkTurnTests {
     }
 
     @MainActor
-    @Test func clearStaleBackendMembershipDropsLocalProjectionWithoutBackendLeave() async {
+    @Test func clearStaleBackendMembershipRequestsBackendLeaveAndDropsLocalProjection() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         viewModel.contacts = [
@@ -19758,20 +19758,33 @@ struct TalkTurnTests {
         }
 
         await viewModel.runSelectedConversationEffect(.clearStaleBackendMembership(contactID: contactID))
+        await Task.yield()
+        await Task.yield()
 
-        #expect(capturedEffects.isEmpty)
+        #expect(
+            capturedEffects == [
+                .leave(
+                    BackendLeaveRequest(contactID: contactID, backendChannelID: "channel-1")
+                )
+            ]
+        )
         #expect(viewModel.backendSyncCoordinator.state.syncState.channelStates[contactID] == nil)
         #expect(viewModel.backendSyncCoordinator.state.syncState.channelReadiness[contactID] == nil)
-        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
+        #expect(
+            viewModel.conversationActionCoordinator.pendingAction
+                == .leave(.explicit(contactID: contactID))
+        )
         #expect(
             viewModel.diagnostics.entries.contains {
-                $0.message == "Cleared local stale backend membership projection without propagating backend leave"
+                $0.message == "Cleared local stale backend membership projection and requested backend leave"
             }
         )
+
+        viewModel.replaceDisconnectRecoveryTask(with: nil)
     }
 
     @MainActor
-    @Test func recentSystemLeaveWithPeerGoneClearsSelfOnlyBackendProjectionWithoutBackendLeave() async {
+    @Test func recentSystemLeaveWithPeerGoneRequestsBackendLeaveForStaleSelfMembership() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         let channelUUID = UUID()
@@ -19830,16 +19843,29 @@ struct TalkTurnTests {
         )
 
         await viewModel.reconcileSelectedConversationIfNeeded()
+        await Task.yield()
+        await Task.yield()
 
-        #expect(capturedEffects.isEmpty)
+        #expect(
+            capturedEffects == [
+                .leave(
+                    BackendLeaveRequest(contactID: contactID, backendChannelID: "channel")
+                )
+            ]
+        )
         #expect(viewModel.backendSyncCoordinator.state.syncState.channelStates[contactID] == nil)
         #expect(viewModel.backendSyncCoordinator.state.syncState.channelReadiness[contactID] == nil)
-        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
-        #expect(viewModel.selectedConversationState(for: contactID).phase == .idle)
+        #expect(
+            viewModel.conversationActionCoordinator.pendingAction
+                == .leave(.explicit(contactID: contactID))
+        )
+        #expect(viewModel.selectedConversationState(for: contactID).detail == .waitingForPeer(reason: .disconnecting))
+
+        viewModel.replaceDisconnectRecoveryTask(with: nil)
     }
 
     @MainActor
-    @Test func clearStaleBackendMembershipClearsUnexpectedReconciledTeardown() async {
+    @Test func clearStaleBackendMembershipPreservesBackendLeaveTombstoneUntilBackendLeaveCompletes() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
         viewModel.contacts = [
@@ -19880,9 +19906,22 @@ struct TalkTurnTests {
         )
 
         await viewModel.runSelectedConversationEffect(.clearStaleBackendMembership(contactID: contactID))
+        await Task.yield()
+        await Task.yield()
 
-        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
-        #expect(viewModel.disconnectRecoveryTask == nil)
+        #expect(
+            viewModel.conversationActionCoordinator.pendingAction
+                == .leave(.explicit(contactID: contactID))
+        )
+        #expect(viewModel.disconnectRecoveryTask != nil)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Deferred absent backend membership recovery while backend leave is settling"
+                    && $0.metadata["repairSuppressionReason"] == "backend-leave-tombstone"
+            }
+        )
+
+        viewModel.replaceDisconnectRecoveryTask(with: nil)
     }
 
     @MainActor

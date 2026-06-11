@@ -3379,6 +3379,93 @@ struct DeviceTests {
         }
     }
 
+    @MainActor
+    @Test func pttWakeAudioActivationArmsMediaRelayReceiveIngress() async throws {
+        let previousMediaRelayForced = TurboMediaRelayDebugOverride.isForced()
+        let previousMediaRelayEnabled = TurboMediaRelayDebugOverride.isEnabled()
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboMediaRelayDebugOverride.setEnabled(false)
+        TurboMediaRelayDebugOverride.setForced(false)
+        TurboMediaRelayDebugOverride.setConfig(
+            host: "relay.example.test",
+            quicPort: 9443,
+            tcpPort: 9444,
+            token: "token"
+        )
+        defer {
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+            TurboMediaRelayDebugOverride.setForced(previousMediaRelayForced)
+            TurboMediaRelayDebugOverride.setEnabled(previousMediaRelayEnabled)
+            TurboMediaRelayDebugOverride.clearConfig()
+        }
+
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.replaceBackendConfig(with: makeUnreachableBackendConfig())
+        viewModel.applicationStateOverride = .background
+        viewModel.isPTTAudioSessionActive = true
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-123",
+                remoteUserId: "peer-user"
+            )
+        ]
+        viewModel.pttWakeRuntime.store(
+            PendingIncomingPTTPush(
+                contactID: contactID,
+                channelUUID: channelUUID,
+                payload: TurboPTTPushPayload(
+                    event: .transmitStart,
+                    channelId: "channel-123",
+                    activeSpeaker: "Blake",
+                    senderUserId: "peer-user",
+                    senderDeviceId: "peer-device"
+                ),
+                hasConfirmedIncomingPush: true,
+                activationState: .awaitingSystemActivation
+            )
+        )
+
+        var connectRequests: [(contactID: UUID, channelID: String, peerDeviceID: String, localDeviceID: String)] = []
+        viewModel.mediaRelayConnectOverride = { _, _, contactID, channelID, peerDeviceID, localDeviceID in
+            connectRequests.append((contactID, channelID, peerDeviceID, localDeviceID))
+            return .quicDatagram
+        }
+
+        await viewModel.handleActivatedAudioSession(.sharedInstance())
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(connectRequests.count == 1)
+        #expect(connectRequests.first?.contactID == contactID)
+        #expect(connectRequests.first?.channelID == "channel-123")
+        #expect(connectRequests.first?.peerDeviceID == "peer-device")
+        #expect(connectRequests.first?.localDeviceID == "test-device")
+        #expect(viewModel.mediaRuntime.hasActiveMediaRelayClient)
+        #expect(viewModel.diagnosticsTranscript.contains("Arming media relay receive for PTT wake activation"))
+        #expect(viewModel.diagnosticsTranscript.contains("Media relay receive prejoin selected"))
+
+        let messages = viewModel.diagnostics.entries.map(\.message)
+        let recreateIndex = messages.lastIndex(of: "Recreating media session after PTT audio activation")
+        let armIndex = messages.lastIndex(of: "Arming media relay receive for PTT wake activation")
+        let selectedIndex = messages.lastIndex(of: "Media relay receive prejoin selected")
+        let mediaStartIndex = messages.lastIndex(of: "Media session start await completed")
+        #expect(recreateIndex != nil)
+        #expect(armIndex != nil)
+        #expect(selectedIndex != nil)
+        #expect(mediaStartIndex != nil)
+        if let recreateIndex, let armIndex, let selectedIndex, let mediaStartIndex {
+            #expect(recreateIndex > armIndex)
+            #expect(armIndex >= selectedIndex)
+            #expect(selectedIndex > mediaStartIndex)
+        }
+    }
+
     @Test func systemActivatedPlaybackOnlyPreservesExistingAudioSessionConfiguration() {
         let configuration = MediaSessionAudioPolicy.configuration(
             activationMode: .systemActivated,

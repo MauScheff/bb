@@ -1646,7 +1646,7 @@ actor LiveAudioReceiveExecutor {
                 let localQueueDelayNanoseconds
             )
         ):
-            scheduleDropDiagnostic(
+            await recordDropDiagnostic(
                 decision: decision,
                 sequenceNumber: sequenceNumber,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
@@ -2195,11 +2195,8 @@ actor LiveAudioReceiveExecutor {
         onDiagnosticSummary: @escaping @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
         onDropDiagnostic: @escaping @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void
     ) {
-        let postAdmissionExecutor = postAdmissionExecutor(
-            for: receiveAuthorityKey(for: packet, context: context)
-        )
         Task {
-            await postAdmissionExecutor.recordDrop(
+            await recordDropDiagnostic(
                 decision: decision,
                 sequenceNumber: sequenceNumber,
                 senderSentAtMilliseconds: senderSentAtMilliseconds,
@@ -2211,6 +2208,33 @@ actor LiveAudioReceiveExecutor {
                 onDropDiagnostic: onDropDiagnostic
             )
         }
+    }
+
+    private func recordDropDiagnostic(
+        decision: IncomingAudioPlaybackDecision,
+        sequenceNumber: UInt64?,
+        senderSentAtMilliseconds: Int64?,
+        localQueueDelayNanoseconds: UInt64,
+        packet: LiveAudioReceivePacket,
+        context: LiveAudioReceiveContext,
+        diagnosticsSink: LiveMediaDiagnosticsSink,
+        onDiagnosticSummary: @escaping @Sendable (LiveAudioReceiveDiagnosticSummary) async -> Void,
+        onDropDiagnostic: @escaping @Sendable (LiveAudioReceiveDropDiagnostic) async -> Void
+    ) async {
+        let postAdmissionExecutor = postAdmissionExecutor(
+            for: receiveAuthorityKey(for: packet, context: context)
+        )
+        await postAdmissionExecutor.recordDrop(
+            decision: decision,
+            sequenceNumber: sequenceNumber,
+            senderSentAtMilliseconds: senderSentAtMilliseconds,
+            localQueueDelayNanoseconds: localQueueDelayNanoseconds,
+            packet: packet,
+            context: context,
+            diagnosticsSink: diagnosticsSink,
+            onDiagnosticSummary: onDiagnosticSummary,
+            onDropDiagnostic: onDropDiagnostic
+        )
     }
 
     private func playbackDeadlineNanoseconds(
@@ -3649,6 +3673,7 @@ final class MediaRuntimeState {
     private var voiceMediaCapabilitiesByContactID: [UUID: VoiceMediaPeerCapabilityEvidence] = [:]
     private var engineLocalAudioSequenceByContactID: [UUID: Int] = [:]
     private var engineRemoteAudioSequenceByContactID: [UUID: Int] = [:]
+    private var engineRemoteAudioSourceSequenceBaseByContactID: [UUID: Int] = [:]
     private var pendingEncryptedAudioPayloadsByContactID: [UUID: [PendingEncryptedAudioPayload]] = [:]
     private var encryptedAudioRecoveryTasksByContactID: [UUID: Task<Void, Never>] = [:]
     private var foregroundSystemReceiveBufferedAudioChunksByContactID:
@@ -4645,6 +4670,8 @@ final class MediaRuntimeState {
         recentIncomingPlaintextAudioPayloads = [:]
         incomingAudioPlaybackGateByContactID = [:]
         incomingAudioReceiveEpochByContactID = [:]
+        engineRemoteAudioSequenceByContactID = [:]
+        engineRemoteAudioSourceSequenceBaseByContactID = [:]
         foregroundSystemReceiveBufferedAudioChunksByContactID = [:]
         foregroundSystemReceivePlaybackFallbackTasksByContactID.values.forEach { $0.cancel() }
         foregroundSystemReceivePlaybackFallbackTasksByContactID = [:]
@@ -4696,6 +4723,31 @@ final class MediaRuntimeState {
     func nextEngineRemoteAudioSequence(for contactID: UUID) -> Int {
         let sequence = engineRemoteAudioSequenceByContactID[contactID] ?? 0
         engineRemoteAudioSequenceByContactID[contactID] = sequence + 1
+        return sequence
+    }
+
+    func engineRemoteAudioSequence(
+        for contactID: UUID,
+        sourceSequence: Int?
+    ) -> Int {
+        guard let sourceSequence else {
+            return nextEngineRemoteAudioSequence(for: contactID)
+        }
+
+        guard let base = engineRemoteAudioSourceSequenceBaseByContactID[contactID] else {
+            engineRemoteAudioSourceSequenceBaseByContactID[contactID] = sourceSequence
+            engineRemoteAudioSequenceByContactID[contactID] = max(
+                engineRemoteAudioSequenceByContactID[contactID] ?? 0,
+                1
+            )
+            return 0
+        }
+
+        let sequence = max(0, sourceSequence - base)
+        engineRemoteAudioSequenceByContactID[contactID] = max(
+            engineRemoteAudioSequenceByContactID[contactID] ?? 0,
+            sequence + 1
+        )
         return sequence
     }
 
@@ -4770,6 +4822,7 @@ final class MediaRuntimeState {
         mediaEncryptionReceiveSequenceByContactID[contactID] = nil
         mediaEncryptionRecentReceiveSequencesByContactID[contactID] = nil
         engineRemoteAudioSequenceByContactID[contactID] = nil
+        engineRemoteAudioSourceSequenceBaseByContactID[contactID] = nil
         incomingAudioPlaybackGateByContactID[contactID] = nil
         incomingAudioReceiveEpochByContactID[contactID] =
             (incomingAudioReceiveEpochByContactID[contactID] ?? 0) + 1

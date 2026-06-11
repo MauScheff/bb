@@ -857,6 +857,17 @@ struct ConversationTests {
         #expect(coordinator.localJoinAttempt == nil)
     }
 
+    @Test func acceptedIncomingBeepOriginSurvivesLocalJoinPhase() {
+        var coordinator = ConversationActionCoordinatorState()
+        let contactID = UUID()
+
+        coordinator.queueConnect(contactID: contactID, origin: .acceptingIncomingBeep)
+        coordinator.queueJoin(contactID: contactID, channelUUID: UUID())
+
+        #expect(coordinator.pendingJoinContactID == contactID)
+        #expect(coordinator.pendingConnectAcceptedIncomingBeepContactID == contactID)
+    }
+
     @Test func clearingPendingJoinWithoutSessionStopsWaitingTransition() {
         var coordinator = ConversationActionCoordinatorState()
         let contactID = UUID()
@@ -1413,7 +1424,7 @@ struct ConversationTests {
         #expect(state.statusMessage == "Beep sent to Avery")
     }
 
-    @Test func acceptedIncomingBeepRequestSubmissionKeepsBeepProjectionOutOfWaiting() {
+    @Test func acceptedIncomingBeepRequestSubmissionProjectsConnecting() {
         let contactID = UUID()
         let context = ConversationDerivationContext(
             contactID: contactID,
@@ -1445,9 +1456,9 @@ struct ConversationTests {
             relationship: .incomingBeep(requestCount: 1)
         )
 
-        #expect(projection.selectedConversationState.phase == .incomingBeep)
-        #expect(projection.selectedConversationState.conversationState == .incomingBeep)
-        #expect(projection.selectedConversationState.statusMessage == "Avery wants to talk")
+        #expect(projection.selectedConversationState.phase == .waitingForPeer)
+        #expect(projection.selectedConversationState.conversationState == .waitingForPeer)
+        #expect(projection.selectedConversationState.statusMessage == "Connecting...")
         #expect(!projection.selectedConversationState.canTransmitNow)
         #expect(!projection.selectedConversationState.allowsHoldToTalk)
         #expect(projection.reconciliationAction == .none)
@@ -1532,6 +1543,44 @@ struct ConversationTests {
         #expect(!projection.selectedConversationState.canTransmitNow)
         #expect(!projection.selectedConversationState.allowsHoldToTalk)
         #expect(projection.reconciliationAction == .none)
+    }
+
+    @Test func pendingOutgoingBeepDominatesStaleLocalJoinProjection() {
+        let contactID = UUID()
+        let context = ConversationDerivationContext(
+            contactID: contactID,
+            selectedContactID: contactID,
+            baseState: .waitingForPeer,
+            contactName: "Avery",
+            contactIsOnline: true,
+            isJoined: false,
+            activeChannelID: nil,
+            systemSessionMatchesContact: false,
+            systemSessionState: .none,
+            pendingAction: .connect(.joiningLocal(contactID: contactID)),
+            localJoinFailure: nil,
+            channel: ChannelReadinessSnapshot(
+                channelState: makeChannelState(
+                    status: .waitingForPeer,
+                    canTransmit: false,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false,
+                    hasOutgoingBeep: true
+                )
+            )
+        )
+
+        let projection = ConversationStateMachine.projection(
+            for: context,
+            relationship: .outgoingBeep(requestCount: 1)
+        )
+
+        #expect(projection.selectedConversationState.phase == .outgoingBeep)
+        #expect(projection.selectedConversationState.conversationState == .outgoingBeep)
+        #expect(projection.selectedConversationState.statusMessage == "Beep sent to Avery")
+        #expect(!projection.selectedConversationState.canTransmitNow)
+        #expect(!projection.selectedConversationState.allowsHoldToTalk)
     }
 
     @Test func pendingIncomingBeepDominatesStaleJoinedLocalSession() {
@@ -2752,6 +2801,26 @@ struct ConversationTests {
         #expect(action.style == .accent)
     }
 
+    @Test func mutualBeepPrimaryActionConnectsEvenWhenPresenceIsStale() {
+        let action = ConversationStateMachine.primaryAction(
+            selectedConversationState: SelectedConversationState(
+                contactPresence: .unavailable,
+                relationship: .mutualBeep(requestCount: 2),
+                phase: .incomingBeep,
+                statusMessage: "Blake wants to talk",
+                canTransmitNow: false
+            ),
+            isSelectedChannelJoined: false,
+            isTransmitting: false,
+            beepCooldownRemaining: nil
+        )
+
+        #expect(action.kind == .connect)
+        #expect(action.label == "Connect Now")
+        #expect(action.isEnabled)
+        #expect(action.style == .accent)
+    }
+
     @Test func idleSelectedConversationPrimaryActionUsesBeepLabel() {
         let action = ConversationStateMachine.primaryAction(
             selectedConversationState: SelectedConversationState(
@@ -3793,6 +3862,76 @@ struct ConversationTests {
     }
 
     @MainActor
+    @Test func callScreenLeaveClearsPendingBackendConnectWithoutSession() async throws {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let contact = Contact(
+            id: contactID,
+            name: "Blake",
+            handle: "@blake",
+            isOnline: true,
+            channelId: UUID(),
+            backendChannelId: "channel-1",
+            remoteUserId: "user-blake"
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.conversationActionCoordinator.queueConnect(
+            contactID: contactID,
+            origin: .acceptingIncomingBeep
+        )
+
+        await viewModel.disconnectSelectedConversationAndReturnToContactList(from: contact)
+
+        #expect(viewModel.selectedContactId == nil)
+        #expect(viewModel.selectedConversationCoordinator.state.selection == nil)
+        #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Cleared pending backend connect for user exit"
+                    && $0.metadata["invariantID"] == "selected.pending_backend_connect_requires_owner"
+            }
+        )
+    }
+
+    @Test func disconnectEffectCancelsPendingBackendConnectBeforeLocalJoinExists() {
+        let contactID = UUID()
+        let snapshot = SelectedConversationSyncSnapshot(
+            selection: SelectedConversationSelection(
+                contactID: contactID,
+                contactName: "Blake",
+                contactIsOnline: true
+            ),
+            relationship: .incomingBeep(requestCount: 1),
+            baseState: .idle,
+            channel: nil,
+            localSession: .absent,
+            pendingAction: .connect(.requestingBackend(contactID: contactID)),
+            pendingConnectAcceptedIncomingBeep: true,
+            senderAutoJoinOnBeepAcceptanceEnabled: false,
+            localTransmit: .idle,
+            remoteParticipantSignalIsTransmitting: false,
+            systemSessionState: .none,
+            systemSessionMatchesContact: false,
+            mediaState: .idle,
+            incomingWakeActivationState: nil,
+            localJoinFailure: nil
+        )
+        var state = SelectedConversationProjectionState.initial
+        state = SelectedConversationReducer.reduce(
+            state: state,
+            event: .syncUpdated(snapshot)
+        ).state
+
+        let transition = SelectedConversationReducer.reduce(
+            state: state,
+            event: .disconnectRequested
+        )
+
+        #expect(transition.effects == [.disconnect(contactID: contactID)])
+    }
+
+    @MainActor
     @Test func reconciledTeardownWithoutSystemSessionClearsPendingLeave() async {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -3814,6 +3953,49 @@ struct ConversationTests {
         #expect(viewModel.conversationActionCoordinator.pendingAction == .none)
         #expect(viewModel.isJoined == false)
         #expect(viewModel.systemSessionState == .none)
+    }
+
+    @MainActor
+    @Test func orphanedDevicePTTSessionWithoutSelectedConversationRepairsWhenLeaveInFlight() async {
+        let pttClient = RecordingPTTSystemClient()
+        let viewModel = PTTViewModel(pttSystemClient: pttClient)
+        let contactID = UUID()
+        let channelUUID = UUID()
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel-1",
+                remoteUserId: "user-blake"
+            )
+        ]
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(
+                channelUUID: channelUUID,
+                contactID: contactID,
+                reason: "stale-session"
+            )
+        )
+        viewModel.conversationActionCoordinator.markExplicitLeave(contactID: contactID)
+        viewModel.selectedContactId = nil
+
+        viewModel.updateStatusForSelectedContact()
+
+        #expect(pttClient.leaveRequests == [channelUUID])
+        #expect(viewModel.conversationActionCoordinator.pendingAction.pendingTeardownContactID == contactID)
+        #expect(
+            viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "selected.orphaned_device_ptt_session_without_selected_conversation"
+            }
+        )
+        #expect(
+            viewModel.diagnostics.entries.contains {
+                $0.message == "Repairing orphaned Device PTT session without selected Conversation"
+            }
+        )
     }
 
     @MainActor
@@ -4415,12 +4597,13 @@ struct ConversationTests {
             )
         )
 
-        #expect(viewModel.conversationActionCoordinator.pendingAction.isExplicitLeaveInFlight(for: contactID))
+        #expect(viewModel.conversationActionCoordinator.pendingAction.pendingTeardownContactID == contactID)
         #expect(
             viewModel.diagnostics.entries.contains {
-                $0.message == "Armed explicit leave barrier for incoming PTT leave push"
+                $0.message == "Tearing down Device PTT session for incoming PTT leave push"
             }
         )
+        #expect(client.leaveRequests == [channelUUID])
 
         viewModel.handleDidLeaveChannel(
             channelUUID,
@@ -4434,7 +4617,7 @@ struct ConversationTests {
         viewModel.handleDidJoinChannel(channelUUID, reason: "stale-rejoin")
         try? await Task.sleep(nanoseconds: 50_000_000)
 
-        #expect(client.leaveRequests == [channelUUID])
+        #expect(client.leaveRequests == [channelUUID, channelUUID])
         #expect(viewModel.pttCoordinator.state.isJoined == false)
         #expect(viewModel.isJoined == false)
         #expect(viewModel.statusMessage == "Disconnecting...")

@@ -145,6 +145,7 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     private(set) var isWebSocketSuspended = false
     private let webSocketConnectTimeoutNanoseconds: UInt64 = 12_000_000_000
     private let webSocketControlCommandTimeoutNanoseconds: UInt64 = 3_000_000_000
+    private var runtimePersistentControlCommandTimeoutNanoseconds: UInt64 = 2_000_000_000
     private var controlCommandHedgeDelayNanoseconds: UInt64 = 150_000_000
     private let webSocketPingIntervalNanoseconds: UInt64 = 20_000_000_000
     private var capturesSentSignalsForTesting = false
@@ -232,6 +233,10 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
 
     func setControlCommandHedgeDelayForTesting(nanoseconds: UInt64) {
         controlCommandHedgeDelayNanoseconds = nanoseconds
+    }
+
+    func setRuntimePersistentControlCommandTimeoutForTesting(nanoseconds: UInt64) {
+        runtimePersistentControlCommandTimeoutNanoseconds = nanoseconds
     }
 
     func setWebSocketConnectedForControlCommandTesting(sessionID: String = "test-session") {
@@ -1136,9 +1141,11 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private enum RuntimeControlCommandPriority: Int, Comparable {
-        case normal = 0
-        case directSignalDrain = 10
-        case directSignalSend = 20
+        case signalMaintenance = 0
+        case runtimeTelemetry = 10
+        case directSignalSend = 30
+        case lifecyclePresence = 80
+        case authoritative = 100
 
         static func < (lhs: RuntimeControlCommandPriority, rhs: RuntimeControlCommandPriority) -> Bool {
             lhs.rawValue < rhs.rawValue
@@ -1565,57 +1572,84 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
         )
         defer { releaseRuntimeControlCommandSlot() }
 
-        if let controlCommandRuntimePersistentResponseForTesting {
-            let frameData = try await controlCommandRuntimePersistentResponseForTesting(lane, envelope)
-            return try decodeRuntimeControlResponseBody(
-                frameData,
-                requestID: nil,
-                body: envelope,
-                transport: transport
-            )
-        }
+        return try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { @MainActor in
+                if let controlCommandRuntimePersistentResponseForTesting = self.controlCommandRuntimePersistentResponseForTesting {
+                    let frameData = try await controlCommandRuntimePersistentResponseForTesting(lane, envelope)
+                    return try self.decodeRuntimeControlResponseBody(
+                        frameData,
+                        requestID: nil,
+                        body: envelope,
+                        transport: transport
+                    )
+                }
 
-        let connection = try await activeRuntimeControlConnection(
-            lane: lane,
-            endpoint: endpoint,
-            identity: RuntimeControlConnectionIdentity(
-                userHandle: envelope.userHandle,
-                deviceID: envelope.deviceId
-            )
-        )
-        do {
-            try await sendRuntimeControlFrame(frameData, on: connection)
-            emitControlCommandTrace(
-                commandKind: envelope.commandKind,
-                transport: transport.trace,
-                phase: .sendCompleted,
-                operationId: envelope.operationId,
-                channelId: envelope.channelId,
-                requestId: requestID,
-                startedAtNanoseconds: requestStartedAt,
-                detail: nil
-            )
-            let responseData = try await receiveRuntimeControlLine(on: connection)
-            return try decodeRuntimeControlResponseBody(
-                responseData,
-                requestID: requestID,
-                body: envelope,
-                transport: transport
-            )
-        } catch {
-            invalidateRuntimeControlConnection(connection)
-            throw error
+                let connection = try await self.activeRuntimeControlConnection(
+                    lane: lane,
+                    endpoint: endpoint,
+                    identity: RuntimeControlConnectionIdentity(
+                        userHandle: envelope.userHandle,
+                        deviceID: envelope.deviceId
+                    )
+                )
+                do {
+                    try await self.sendRuntimeControlFrame(frameData, on: connection)
+                    self.emitControlCommandTrace(
+                        commandKind: envelope.commandKind,
+                        transport: transport.trace,
+                        phase: .sendCompleted,
+                        operationId: envelope.operationId,
+                        channelId: envelope.channelId,
+                        requestId: requestID,
+                        startedAtNanoseconds: requestStartedAt,
+                        detail: nil
+                    )
+                    let responseData = try await self.receiveRuntimeControlLine(on: connection)
+                    return try self.decodeRuntimeControlResponseBody(
+                        responseData,
+                        requestID: requestID,
+                        body: envelope,
+                        transport: transport
+                    )
+                } catch {
+                    self.invalidateRuntimeControlConnection(connection)
+                    throw error
+                }
+            }
+            let timeoutNanoseconds = runtimePersistentControlCommandTimeoutNanoseconds
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw TurboBackendError.server("runtime control command timed out")
+            }
+
+            do {
+                guard let data = try await group.next() else {
+                    throw TurboBackendError.invalidResponse
+                }
+                group.cancelAll()
+                return data
+            } catch {
+                group.cancelAll()
+                invalidateRuntimeControlConnection()
+                throw error
+            }
         }
     }
 
     private func runtimeControlCommandPriority(for commandKind: String) -> RuntimeControlCommandPriority {
         switch commandKind {
+        case "join-channel", "leave-channel", "connect-request":
+            return .authoritative
+        case "presence-foreground", "presence-offline", "presence-background":
+            return .lifecyclePresence
         case "direct-quic-signal-send":
             return .directSignalSend
-        case "direct-quic-signal-drain":
-            return .directSignalDrain
+        case "runtime-control-signal-send":
+            return .runtimeTelemetry
+        case "direct-quic-signal-drain", "runtime-control-signal-drain", "presence-keepalive":
+            return .signalMaintenance
         default:
-            return .normal
+            return .authoritative
         }
     }
 
@@ -1834,18 +1868,31 @@ final class TurboBackendClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func startRuntimeControlConnection(_ connection: NWConnection) async throws {
+        let timeoutNanoseconds = runtimePersistentControlCommandTimeoutNanoseconds
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let gate = TurboRuntimeControlContinuationGate()
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                gate.resumeOnce(
+                    .failure(TurboBackendError.server("runtime control connection timed out")),
+                    continuation: continuation
+                )
+                connection.cancel()
+            }
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    timeoutTask.cancel()
                     gate.resumeOnce(.success(()), continuation: continuation)
                 case .failed(let error):
+                    timeoutTask.cancel()
                     gate.resumeOnce(.failure(error), continuation: continuation)
                 case .cancelled:
+                    timeoutTask.cancel()
                     gate.resumeOnce(.failure(CancellationError()), continuation: continuation)
                 case .waiting(let error):
+                    timeoutTask.cancel()
                     gate.resumeOnce(.failure(error), continuation: continuation)
                 case .setup, .preparing:
                     break

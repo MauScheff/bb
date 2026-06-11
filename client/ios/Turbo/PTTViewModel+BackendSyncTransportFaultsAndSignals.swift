@@ -137,16 +137,60 @@ extension PTTViewModel {
 
     func applyDirectQuicUpgradeTransition(
         _ transition: DirectQuicUpgradeTransition,
-        for contactID: UUID
+        for contactID: UUID,
+        cancelProbeControllerOnFallback: Bool = true
     ) {
+        if case .fellBackToRelay = transition {
+            cancelDirectQuicPromotionTimeout()
+            if mediaRuntime.directQuicProbeController != nil {
+                diagnostics.record(
+                    .media,
+                    message: "Cleared Direct QUIC probe controller during fallback transition",
+                    metadata: [
+                        "contactId": contactID.uuidString,
+                        "attemptId": transition.attemptId ?? "none",
+                        "reason": transition.reason ?? "none",
+                        "cancelled": String(cancelProbeControllerOnFallback),
+                    ]
+                )
+            }
+            if cancelProbeControllerOnFallback {
+                mediaRuntime.directQuicProbeController?.cancel(
+                    reason: transition.reason ?? "direct-quic-fallback"
+                )
+            }
+            mediaRuntime.directQuicProbeController = nil
+        }
+
         guard shouldSurfaceDirectTransportPath(for: contactID) else { return }
 
-        let surfacedPathState = mediaRuntime.surfacedTransportPathState(
-            for: transition,
-            surfaceDirectActivated: canSurfaceDirectAsSelectedAudioLane(for: contactID)
-        )
+        let holdBackgroundWakeReceiveLane =
+            transition.pathState == .direct
+            && shouldHoldBackgroundWakeReceiveLane(for: contactID)
+        let surfacedPathState =
+            holdBackgroundWakeReceiveLane
+            ? (mediaRuntime.activeMediaEpochPathState ?? mediaRuntime.activeMediaRelayPathState())
+            : mediaRuntime.surfacedTransportPathState(
+                for: transition,
+                surfaceDirectActivated: canSurfaceDirectAsSelectedAudioLane(for: contactID)
+            )
         let suppressedByActiveMediaRelay =
             surfacedPathState != transition.pathState && mediaRuntime.hasActiveMediaRelayClient
+
+        if holdBackgroundWakeReceiveLane {
+            diagnostics.record(
+                .media,
+                message: "Held background wake receive on proven media lane during Direct QUIC transition",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "directQuicPathState": transition.pathState.rawValue,
+                    "surfacedPathState": surfacedPathState.rawValue,
+                    "activeMediaEpochPath": mediaRuntime.activeMediaEpochPathState?.rawValue ?? "none",
+                    "attemptId": transition.attemptId ?? "none",
+                    "reason": transition.reason ?? "none",
+                ]
+            )
+        }
 
         if suppressedByActiveMediaRelay {
             diagnostics.record(
@@ -1957,7 +2001,28 @@ extension PTTViewModel {
             activationMode: activationMode,
             startupMode: .playbackOnly
         )
-        guard preparedShell || mediaConnectionState != .connected else { return }
+        let currentSession = mediaServices.session()
+        let currentReadiness = currentSession?.receivePlaybackReadiness
+        let shouldStartOrRepairSession =
+            preparedShell
+            || currentSession == nil
+            || mediaConnectionState != .connected
+            || currentReadiness?.isReady == false
+        guard shouldStartOrRepairSession else { return }
+        if !preparedShell,
+           mediaConnectionState == .connected,
+           currentReadiness?.isReady == false {
+            diagnostics.record(
+                .media,
+                level: .notice,
+                message: "Repairing foreground packet receive session readiness",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "activationMode": String(describing: activationMode),
+                    "readiness": currentReadiness?.diagnosticsValue ?? "missing",
+                ]
+            )
+        }
         guard !mediaServices.isStartupInFlight(startupContext) else { return }
         Task { [weak self] in
             guard let self else { return }
@@ -2043,6 +2108,17 @@ extension PTTViewModel {
         _ admittedPacket: IncomingAudioIngressAcceptedPacket,
         packet: LiveAudioReceivePacket
     ) async {
+        _ = recordAcceptedIncomingAudioBookkeeping(
+            incomingMediaPayload: admittedPacket.incomingMediaPayload,
+            audioPayload: admittedPacket.audioPayload,
+            channelID: packet.channelID,
+            fromDeviceID: packet.fromDeviceID,
+            contactID: packet.contactID,
+            incomingAudioTransport: packet.transport,
+            playbackSequenceNumber: admittedPacket.sequenceNumber,
+            receivedAtNanoseconds: admittedPacket.ingressReceivedAtNanoseconds,
+            frameDurationNanoseconds: admittedPacket.frameDurationNanoseconds
+        )
         let ackIdentityPayload = MediaEncryptedAudioPacket.isEncodedPacket(admittedPacket.incomingMediaPayload)
             ? admittedPacket.incomingMediaPayload
             : admittedPacket.audioPayload
@@ -2193,7 +2269,6 @@ extension PTTViewModel {
     private func scheduleLiveAudioContractObservability(
         _ operation: @escaping @Sendable (DiagnosticsStore) -> Void
     ) {
-        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let diagnostics = diagnostics
         mediaRuntime.voiceObservabilityQueue.enqueue(
             workClass: .observability,
@@ -2206,7 +2281,15 @@ extension PTTViewModel {
     private func recordLiveAudioReceiveDropDiagnostic(
         _ drop: LiveAudioReceiveDropDiagnostic
     ) {
-        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
+        handleDirectQuicStalePlaybackDropIfNeeded(
+            contactID: drop.contactID,
+            channelID: drop.channelID,
+            fromDeviceID: drop.fromDeviceID,
+            incomingAudioTransport: drop.transport,
+            dropReason: drop.reason,
+            sequenceNumber: drop.sequenceNumber,
+            localQueueDelayNanoseconds: drop.localQueueDelayNanoseconds
+        )
         var metadata = [
             "contactId": drop.contactID.uuidString,
             "channelId": drop.channelID,
@@ -3174,7 +3257,6 @@ extension PTTViewModel {
         playbackAccepted: Bool,
         source: String
     ) {
-        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         guard let summary = mediaRuntime.observeIncomingAudioIngress(
             contactID: contactID,
             transport: incomingAudioTransport,

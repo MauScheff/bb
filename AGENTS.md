@@ -16,6 +16,7 @@ Humans mostly use [`README.md`](/Users/mau/Development/bb/README.md). All other 
 - The previous Turbo checkout at `/Users/mau/Development/Turbo` is the recovery archive. Do not route active work there unless explicitly doing archaeology.
 - Repeated operational flows should go through [`justfile`](/Users/mau/Development/bb/justfile) recipes when available.
 - The invariant registry is [`shared/invariants/registry.json`](/Users/mau/Development/bb/shared/invariants/registry.json); app hot-path runtime contract annotations are catalogued in [`shared/contracts/app_contract_manifest.json`](/Users/mau/Development/bb/shared/contracts/app_contract_manifest.json) and emitted through [`client/ios/Turbo/DiagnosticsContracts.swift`](/Users/mau/Development/bb/client/ios/Turbo/DiagnosticsContracts.swift).
+- Agent-native structure doctrine lives in [`docs/architecture/AGENT_NATIVE_SYSTEM_STRUCTURE.md`](/Users/mau/Development/bb/docs/architecture/AGENT_NATIVE_SYSTEM_STRUCTURE.md). Use it for new modules, structural refactors, state-machine/workflow design, effect boundaries, and verification design; do not load it for every small task.
 
 # Default Workflow
 
@@ -81,6 +82,7 @@ Load the smallest row that covers the task.
 | Mixed app/backend bug | `WORKFLOW.md`, `TOOLING.md`, `docs/client/ENGINE.md`, `docs/client/SWIFT.md`, `docs/client/SWIFT_DEBUGGING.md`, `backend/docs/ARCHITECTURE.md` | Inspect backend projection/route ownership and client projection before fixing. A frontend-only patch is incomplete when backend truth is wrong. |
 | Invariants/diagnostics/reliability | `WORKFLOW.md`, `docs/reliability/INVARIANTS.md`; add `docs/reliability/fuzz.md` for the reliability discovery loop, `docs/reliability/SELF_HEALING.md` for repair, `docs/reliability/STATE_MACHINE_TESTING.md` for scenario proofs, `docs/reliability/PRODUCTION_TELEMETRY.md` for telemetry/shake intake, `docs/reliability/RELIABILITY_PLAN.md` for active reliability sprint work | Name the invariant, choose the narrowest detector, keep production-capable evidence machine-readable, and promote fuzz failures into durable proof. |
 | Scenario/fuzz/protocol | `WORKFLOW.md`, `docs/reliability/fuzz.md`, `docs/reliability/STATE_MACHINE_TESTING.md`, `docs/reliability/SIMULATOR_FUZZING.md`, `docs/reliability/TLA_PLUS.md`, `shared/scenarios/README.md` | Prefer engine tests/headless scenarios first. Escalate to simulator when app/backend integration or merged diagnostics are required. Stop on first serious fuzz failure, replay/shrink, classify, promote, then resume. |
+| Architecture/module structure | `docs/architecture/AGENT_NATIVE_SYSTEM_STRUCTURE.md`, `WORKFLOW.md`; add the smallest owner docs for the touched area | Use typed domain state, explicit commands/events/reducers, effect capabilities, algebraic laws, manifests/contracts, and generated verification. Keep the doc as doctrine; do not paste it into task context. |
 | Semantic refactor/terminology | `GLOSSARY.md`, `WORKFLOW.md`; add the smallest owner docs for the touched area | Start with an 80/20 concept map when the target is broad. Refactor one concept at a time, update glossary/rename ledger before code renames, and prove semantic equivalence through the narrowest proof lane. |
 | Product/copy/brand | `docs/product/Beep-Beep-Product-Thesis.md`, `GLOSSARY.md`, `docs/product/PRODUCT_BRIEF.md`, `docs/product/BRAND.md` | Treat the thesis as the latest product/brand/marketing source, then use glossary terms and narrower product/brand docs for implementation-facing precision. Keep product-facing text in `README.md` or explicit product docs; other `.md` files are agent-facing. |
 
@@ -105,6 +107,7 @@ Except for [`README.md`](/Users/mau/Development/bb/README.md), markdown docs sho
 - Prefer structural fixes over tactical patches that increase coupling.
 - Do not avoid refactors when the model is wrong: changing the backend model or shared contract is better than preserving a brittle shape and compensating in the client.
 - Prefer type-level and model-level prevention over runtime compensation: encode ownership, phases, permissions, and readiness in domain types where practical.
+- Use the agent-native structure doctrine for nontrivial design: vertical semantic modules, pure cores, explicit effect capabilities, commands/events/reducers, algebraic laws, replayable evidence, and risk-matched verification.
 - Prefer existing repo interfaces before inventing bespoke flows: `just`, Unison MCP/UCM, Xcode/simulator tooling, and checked-in scripts.
 - Treat observability, verification, and repeatable debug loops as part of implementation.
 - Treat documentation and testing as part of the definition of done for core Unison/backend work.

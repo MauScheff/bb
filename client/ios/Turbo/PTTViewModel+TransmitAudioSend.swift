@@ -2293,6 +2293,45 @@ extension PTTViewModel {
         )
     }
 
+    func armMediaRelayReceiveForWakeActivationIfNeeded(
+        contactID: UUID,
+        channelID: String?,
+        peerDeviceID: String?,
+        channelUUID: UUID
+    ) async {
+        guard let channelID, !channelID.isEmpty,
+              let peerDeviceID, !peerDeviceID.isEmpty else {
+            diagnostics.record(
+                .media,
+                message: "Skipped media relay wake receive arm because sender route is incomplete",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": channelID ?? "none",
+                    "peerDeviceId": peerDeviceID ?? "none",
+                    "channelUUID": channelUUID.uuidString,
+                ]
+            )
+            return
+        }
+        guard canScheduleReadyChannelMediaRelayPrejoin(contactID: contactID) else { return }
+        diagnostics.record(
+            .media,
+            message: "Arming media relay receive for PTT wake activation",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "channelId": channelID,
+                "peerDeviceId": peerDeviceID,
+                "channelUUID": channelUUID.uuidString,
+            ]
+        )
+        await connectMediaRelayForReceiveIfNeeded(
+            contactID: contactID,
+            channelID: channelID,
+            peerDeviceID: peerDeviceID,
+            allowConfiguredReceiveWithoutLocalToggle: true
+        )
+    }
+
     func mediaRelayClientIfEnabled(
         contactID: UUID,
         channelID: String,
@@ -4297,9 +4336,10 @@ extension PTTViewModel {
             )
             media.markStartupSucceeded()
             applyPreferredAudioOutputRouteIfPossible()
-            await maybeStartAutomaticDirectQuicProbe(
+            scheduleAutomaticDirectQuicProbe(
                 for: contactID,
-                reason: "media-session-started"
+                reason: "media-session-started",
+                minimumDelayMilliseconds: 0
             )
         } catch {
             let message = error.localizedDescription

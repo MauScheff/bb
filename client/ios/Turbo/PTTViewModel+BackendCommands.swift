@@ -126,7 +126,7 @@ extension PTTViewModel {
         existingConversationSnapshot: ChannelReadinessSnapshot?
     ) -> BackendJoinExecutionPlan {
         if request.relationship.hasIncomingBeep {
-            return request.contactIsOnline ? .joinConversation : .beepOnly
+            return shouldAcceptIncomingBeepForJoin(request) ? .joinConversation : .beepOnly
         }
         if createdBeep?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "connected" {
             return .joinConversation
@@ -151,6 +151,11 @@ extension PTTViewModel {
             return .joinConversation
         }
         return .beepOnly
+    }
+
+    func shouldAcceptIncomingBeepForJoin(_ request: BackendJoinRequest) -> Bool {
+        request.relationship.hasIncomingBeep
+            && (request.contactIsOnline || request.relationship.isMutualBeep)
     }
 
     func backendJoinNeedsExistingConversationSnapshot(request: BackendJoinRequest) -> Bool {
@@ -285,7 +290,7 @@ extension PTTViewModel {
             captureDiagnosticsState("backend-join:unreachable-contact-rejected")
             return
         }
-        if relationship.hasIncomingBeep {
+        if relationship.hasIncomingBeep, !relationship.isMutualBeep, !friendIsForeground {
             markIncomingBeepHandledLocally(
                 contactID: contact.id,
                 beep: incomingBeep,
@@ -339,7 +344,7 @@ extension PTTViewModel {
             contactIsOnline: friendIsForeground
         )
         if intent == .requestConnection,
-           (!relationship.hasIncomingBeep || !friendIsForeground),
+           (!relationship.hasIncomingBeep || (!relationship.isMutualBeep && !friendIsForeground)),
            request.beepCooldownRemaining == nil {
             markOptimisticOutgoingBeepStarted(
                 contactID: contact.id,
@@ -984,7 +989,13 @@ extension PTTViewModel {
                 )
                 continue
             }
-            if acceptedBeep.pendingJoin != false {
+            if acceptedIncomingBeepShouldAdvanceJoin(acceptedBeep) {
+                markIncomingBeepHandledLocally(
+                    contactID: request.contactID,
+                    beep: acceptedBeep,
+                    relationship: request.relationship,
+                    reason: "accepted-\(String(describing: request.intent))"
+                )
                 Task(priority: .userInitiated) { @MainActor [weak self] in
                     await self?.publishJoinAcceptedControlSignalIfPossible(
                         request: request,
@@ -1016,6 +1027,13 @@ extension PTTViewModel {
         }
 
         return nil
+    }
+
+    func acceptedIncomingBeepShouldAdvanceJoin(_ beep: TurboBeepResponse) -> Bool {
+        let status = beep.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return beep.accepted == true
+            || status == "connected"
+            || beep.pendingJoin != false
     }
 
     func publishJoinAcceptedControlSignalIfPossible(
@@ -1213,11 +1231,11 @@ extension PTTViewModel {
             )
         }
 
-        let shouldAcceptIncomingBeep = request.relationship.hasIncomingBeep && request.contactIsOnline
+        let shouldAcceptIncomingBeep = shouldAcceptIncomingBeepForJoin(request)
         if shouldAcceptIncomingBeep,
            let beep = try await acceptIncomingBeepForJoinRequest(request, backend: backend) {
             applyBeepMetadata(beep, to: &contact)
-        } else if request.relationship.hasIncomingBeep && request.contactIsOnline {
+        } else if request.relationship.hasIncomingBeep && shouldAcceptIncomingBeep {
             diagnostics.record(
                 .backend,
                 message: "Proceeding without incoming beep metadata",
@@ -1253,6 +1271,7 @@ extension PTTViewModel {
            let beep = try await resolveOutgoingBeep(for: request, backend: backend) {
             applyBeepMetadata(beep, to: &contact)
         } else if request.intent == .requestConnection,
+                  !shouldAcceptIncomingBeep,
                   (!request.relationship.hasIncomingBeep || !request.contactIsOnline),
                   request.beepCooldownRemaining == nil {
             let identityQuery = backendPeerIdentityQuery(
@@ -1428,6 +1447,19 @@ extension PTTViewModel {
         _ backend: BackendServices,
         request: BackendJoinRequest
     ) async throws {
+        if shouldBypassPreJoinControlPlaneReadiness(for: request) {
+            diagnostics.record(
+                .backend,
+                message: "Skipped pre-join control-plane readiness for accepted Beep rendezvous",
+                metadata: [
+                    "contactId": request.contactID.uuidString,
+                    "handle": request.handle,
+                    "intent": String(describing: request.intent),
+                    "relationship": String(describing: request.relationship),
+                ]
+            )
+            return
+        }
         if shouldRefreshBackendJoinConversationEvidenceBeforeJoin(
             request: request,
             supportsWebSocket: backend.supportsWebSocket,
@@ -1487,12 +1519,19 @@ extension PTTViewModel {
         }
     }
 
+    func shouldBypassPreJoinControlPlaneReadiness(for request: BackendJoinRequest) -> Bool {
+        shouldAcceptIncomingBeepForJoin(request) || request.intent == .joinAcceptedOutgoingBeep
+    }
+
     func shouldRefreshBackendJoinConversationEvidenceBeforeJoin(
         request: BackendJoinRequest,
         supportsWebSocket: Bool,
         isWebSocketConnected: Bool
     ) -> Bool {
-        !(request.intent == .joinAcceptedOutgoingBeep
+        guard !shouldBypassPreJoinControlPlaneReadiness(for: request) else {
+            return false
+        }
+        return !(request.intent == .joinAcceptedOutgoingBeep
             && supportsWebSocket
             && isWebSocketConnected)
     }

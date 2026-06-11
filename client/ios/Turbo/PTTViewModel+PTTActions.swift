@@ -924,6 +924,7 @@ extension PTTViewModel {
 
     private func clearSelectionAfterCallLeave(contactID: UUID) {
         guard selectedContactId == contactID else { return }
+        clearPendingBackendConnectForUserExit(contactID: contactID, reason: "call-screen-leave")
         selectedContactId = nil
         syncEngineSelectedFriend(nil, reason: "call-screen-leave")
         selectedContactPrewarmedSelectionContactID = nil
@@ -937,10 +938,48 @@ extension PTTViewModel {
         captureDiagnosticsState("call-screen-leave:return-home")
     }
 
+    func clearPendingBackendConnectForUserExit(contactID: UUID, reason: String) {
+        guard conversationActionCoordinator.pendingAction.pendingConnectContactID == contactID else {
+            return
+        }
+        conversationActionCoordinator.clearPendingConnect(for: contactID)
+        cancelSelectedConnectionAttemptTimeout()
+
+        let activeBackendJoinMatches: Bool = {
+            guard case .join(let request) = backendCommandCoordinator.state.activeOperation else {
+                return false
+            }
+            return request.contactID == contactID
+        }()
+        let queuedBackendJoinMatches =
+            backendCommandCoordinator.state.queuedJoinRequest?.contactID == contactID
+        if activeBackendJoinMatches || queuedBackendJoinMatches {
+            backendCommandCoordinator.send(.reset)
+        }
+
+        diagnostics.record(
+            .state,
+            message: "Cleared pending backend connect for user exit",
+            metadata: [
+                "contactId": contactID.uuidString,
+                "reason": reason,
+                "invariantID": "selected.pending_backend_connect_requires_owner",
+                "activeBackendOperation": String(describing: backendCommandCoordinator.state.activeOperation),
+                "queuedJoinRequest": String(describing: backendCommandCoordinator.state.queuedJoinRequest),
+            ]
+        )
+    }
+
     func performDisconnect() {
         let disconnectContactID = selectedContactId
         let disconnectChannelUUID = activeChannelId.flatMap { channelUUID(for: $0) }
         let disconnectBackendChannelID = selectedContact?.backendChannelId
+        if let disconnectContactID {
+            clearPendingBackendConnectForUserExit(
+                contactID: disconnectContactID,
+                reason: "disconnect"
+            )
+        }
         let immediateBackendLeaveRequest: BackendLeaveRequest? = {
             guard let disconnectContactID,
                   let disconnectBackendChannelID else {
@@ -1174,7 +1213,7 @@ extension PTTViewModel {
             )
         }
         let incomingBeepIsLiveConnectable =
-            !relationship.hasIncomingBeep || contact.isOnline
+            !relationship.hasIncomingBeep || contact.isOnline || relationship.isMutualBeep
         let friendReadyJoinIsAuthoritative =
             intent == .joinReadyFriend && canQueueReadyFriendLocalConnect(for: contact.id)
         let shouldQueueLocalConnect =
@@ -1384,37 +1423,49 @@ extension PTTViewModel {
             performReconciledTeardown(for: contactID)
         case .clearStaleBackendMembership(let contactID):
             guard selectedContactId == contactID else { return }
-            let backendChannelId = contacts.first(where: { $0.id == contactID })?.backendChannelId ?? "none"
+            let backendChannelID = contacts.first(where: { $0.id == contactID })?.backendChannelId
             backendRuntime.clearBackendJoinSettling(for: contactID)
             recentOutgoingJoinAcceptedTokensByContactID.removeValue(forKey: contactID)
             recentOutgoingBeepEvidenceByContactID.removeValue(forKey: contactID)
             recentPeerDeviceEvidenceByContactID.removeValue(forKey: contactID)
             conversationActionCoordinator.clearPendingJoin(for: contactID)
-            conversationActionCoordinator.clearLeaveAction(for: contactID)
-            replaceDisconnectRecoveryTask(with: nil)
+            if backendChannelID != nil {
+                conversationActionCoordinator.markExplicitLeave(contactID: contactID)
+                scheduleDisconnectRecovery(
+                    contactID: contactID,
+                    channelUUID: channelUUID(for: contactID),
+                    backendChannelID: backendChannelID
+                )
+            } else {
+                conversationActionCoordinator.clearLeaveAction(for: contactID)
+                replaceDisconnectRecoveryTask(with: nil)
+            }
             diagnostics.record(
                 .state,
-                message: "Cleared local stale backend membership projection without propagating backend leave",
+                message: backendChannelID == nil
+                    ? "Cleared local stale backend membership projection without backend channel"
+                    : "Cleared local stale backend membership projection and requested backend leave",
                 metadata: [
                     "contactId": contactID.uuidString,
-                    "channelId": backendChannelId,
+                    "channelId": backendChannelID ?? "none",
                 ]
             )
             backendSyncCoordinator.send(.channelStateCleared(contactID: contactID))
             controlPlaneCoordinator.send(.receiverAudioReadinessCacheCleared(contactID: contactID))
             updateStatusForSelectedContact()
-            if conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) {
-                diagnostics.record(
-                    .state,
-                    message: "Suppressed reconciled teardown after clearing stale backend membership",
-                    metadata: [
-                        "contactId": contactID.uuidString,
-                        "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
-                    ]
+            if let backendChannelID {
+                let request = BackendLeaveRequest(
+                    contactID: contactID,
+                    backendChannelID: backendChannelID,
+                    operationID: BackendCommandOperationID.make(prefix: "leave-stale-membership")
                 )
-                conversationActionCoordinator.clearLeaveAction(for: contactID)
-                replaceDisconnectRecoveryTask(with: nil)
-                updateStatusForSelectedContact()
+                Task {
+                    await ingestBackendCommandEvent(
+                        .leaveRequested(request),
+                        contactID: contactID,
+                        channelID: backendChannelID
+                    )
+                }
             }
             captureDiagnosticsState("selected-conversation-effect:clear-stale-backend-membership")
         }

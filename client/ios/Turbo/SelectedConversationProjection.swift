@@ -995,6 +995,7 @@ enum SelectedConversationReducer {
             state.isJoined
             || state.activeChannelID == contactID
             || state.devicePTT.systemSessionState != .none
+            || state.pendingAction.pendingConnectContactID == contactID
             || state.pendingAction.pendingJoinContactID == contactID
 
         guard hasLocalOrSystemSession else { return nil }

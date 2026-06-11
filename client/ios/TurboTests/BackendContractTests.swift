@@ -1880,6 +1880,8 @@ struct BackendContractTests {
             from: Data(first.payload.utf8)
         )
         #expect(firstPayload.connection?.interface == .wifi)
+        #expect(firstPayload.audio != nil)
+        #expect(firstPayload.livenessPulse != nil)
 
         viewModel.localConversationNetworkInterface = .cellular
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "network-change")
@@ -1913,9 +1915,11 @@ struct BackendContractTests {
             )
         )
         var sentSignals: [TurboSignalEnvelope] = []
+        var operationIDs: [String] = []
         client.controlCommandHTTPResponseForTesting = { path, command in
             #expect(path == "/v1/runtime-control/signals/send")
             #expect(command.commandKind == "runtime-control-signal-send")
+            operationIDs.append(try #require(command.operationId))
             let subject = try #require(command.subject)
             sentSignals.append(try JSONDecoder().decode(TurboSignalEnvelope.self, from: Data(subject.utf8)))
             return Data(#"{"status":"stored","deduplicated":false,"sequence":1}"#.utf8)
@@ -1946,6 +1950,21 @@ struct BackendContractTests {
         await viewModel.publishConversationParticipantTelemetryIfNeeded(reason: "liveness")
 
         #expect(sentSignals.count == 2)
+        #expect(operationIDs.count == 2)
+        #expect(operationIDs[0] != operationIDs[1])
+        let firstPayload = try JSONDecoder().decode(
+            ConversationParticipantTelemetry.self,
+            from: Data(try #require(sentSignals.first?.payload).utf8)
+        )
+        let secondPayload = try JSONDecoder().decode(
+            ConversationParticipantTelemetry.self,
+            from: Data(try #require(sentSignals.last?.payload).utf8)
+        )
+        #expect(firstPayload == secondPayload)
+        #expect(firstPayload.livenessPulse != nil)
+        #expect(secondPayload.livenessPulse != nil)
+        #expect(firstPayload.livenessPulse != secondPayload.livenessPulse)
+        #expect(sentSignals[0].payload != sentSignals[1].payload)
         #expect(viewModel.diagnosticsTranscript.contains("republished=true"))
     }
 
@@ -2039,6 +2058,57 @@ struct BackendContractTests {
         )
 
         #expect(viewModel.conversationParticipantTelemetry(for: contactID) == telemetry)
+    }
+
+    @MainActor
+    @Test func conversationParticipantTelemetryFreshnessRefreshesOnEquivalentPayload() {
+        let contactID = UUID()
+        let viewModel = PTTViewModel()
+        let telemetry = ConversationParticipantTelemetry(
+            audio: .init(routeName: "Bluetooth", volumePercent: 42),
+            connection: .init(interface: .wifi)
+        )
+        let receivedAt = Date(timeIntervalSince1970: 1_000)
+
+        viewModel.applyRemoteConversationParticipantTelemetry(
+            telemetry,
+            for: contactID,
+            source: "test",
+            receivedAt: receivedAt
+        )
+
+        #expect(
+            viewModel.freshConversationParticipantTelemetry(
+                for: contactID,
+                now: receivedAt.addingTimeInterval(14)
+            ) == telemetry
+        )
+        #expect(
+            viewModel.freshConversationParticipantTelemetry(
+                for: contactID,
+                now: receivedAt.addingTimeInterval(16)
+            ) == nil
+        )
+
+        viewModel.applyRemoteConversationParticipantTelemetry(
+            telemetry,
+            for: contactID,
+            source: "test-refresh",
+            receivedAt: receivedAt.addingTimeInterval(10)
+        )
+
+        #expect(
+            viewModel.freshConversationParticipantTelemetry(
+                for: contactID,
+                now: receivedAt.addingTimeInterval(24)
+            ) == telemetry
+        )
+        #expect(
+            viewModel.freshConversationParticipantTelemetry(
+                for: contactID,
+                now: receivedAt.addingTimeInterval(26)
+            ) == nil
+        )
     }
 
     @MainActor

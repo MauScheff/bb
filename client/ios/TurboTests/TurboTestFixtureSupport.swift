@@ -620,7 +620,9 @@ func makeBeep(
     requestCount: Int = 1,
     createdAt: String = "2026-04-08T00:00:00Z",
     updatedAt: String? = nil,
-    subject: String? = nil
+    subject: String? = nil,
+    accepted: Bool? = nil,
+    pendingJoin: Bool? = nil
 ) -> TurboBeepResponse {
     TurboBeepResponse(
         beepId: beepId,
@@ -637,8 +639,8 @@ func makeBeep(
         subject: subject,
         targetAvailability: nil,
         shouldAutoJoinFriend: nil,
-        accepted: nil,
-        pendingJoin: nil
+        accepted: accepted,
+        pendingJoin: pendingJoin
     )
 }
 

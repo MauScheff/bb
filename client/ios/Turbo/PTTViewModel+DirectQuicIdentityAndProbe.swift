@@ -176,6 +176,7 @@ extension PTTViewModel {
     func shouldUseDirectQuicTransport(for contactID: UUID) -> Bool {
         guard !isDirectPathRelayOnlyForced else { return false }
         guard !TurboMediaRelayDebugOverride.isForced() else { return false }
+        guard !shouldHoldBackgroundWakeReceiveLane(for: contactID) else { return false }
         guard mediaRuntime.directQuicProbeController != nil else { return false }
         return mediaRuntime.directQuicUpgrade.attempt(for: contactID)?.isDirectActive == true
     }
@@ -213,6 +214,30 @@ extension PTTViewModel {
             return true
         }
         return false
+    }
+
+    func isBackgroundSystemWakeReceiveActive(for contactID: UUID) -> Bool {
+        guard currentApplicationState() != .active else { return false }
+        guard !isTransmitting,
+              !transmitCoordinator.state.isPressingTalk,
+              !pttCoordinator.state.isTransmitting else {
+            return false
+        }
+        guard pttWakeRuntime.incomingWakeActivationState(for: contactID) == .systemActivated else {
+            return false
+        }
+        if remoteTransmittingContactIDs.contains(contactID) {
+            return true
+        }
+        if selectedConversationState(for: contactID).phase == .receiving {
+            return true
+        }
+        return pttWakeRuntime.pendingIncomingPush?.contactID == contactID
+    }
+
+    func shouldHoldBackgroundWakeReceiveLane(for contactID: UUID) -> Bool {
+        guard isBackgroundSystemWakeReceiveActive(for: contactID) else { return false }
+        return mediaRuntime.activeMediaEpochPathState != .direct
     }
 
     func shouldRetireIdleDirectQuicForBackgroundTransition(
@@ -281,11 +306,11 @@ extension PTTViewModel {
             for: contactID,
             fallbackReason: reason
         )
-        applyDirectQuicUpgradeTransition(fallback, for: contactID)
-        if !didBeginPathClosing {
-            controller?.cancel(reason: reason)
-        }
-        mediaRuntime.directQuicProbeController = nil
+        applyDirectQuicUpgradeTransition(
+            fallback,
+            for: contactID,
+            cancelProbeControllerOnFallback: !didBeginPathClosing
+        )
 
         if configureActiveRoute,
            let activeTarget = transmitProjection.activeTarget,
@@ -871,6 +896,9 @@ extension PTTViewModel {
            !shouldAllowDirectQuicDebugBypassForAutomaticProbe() {
             return "backend-capability-disabled"
         }
+        if shouldHoldBackgroundWakeReceiveLane(for: contactID) {
+            return "background-wake-receive-lane-held"
+        }
         if currentApplicationState() != .active,
            !hasActiveBackgroundPTTFlowOwningDirectQuic(for: contactID) {
             return "background-idle"
@@ -1028,6 +1056,9 @@ extension PTTViewModel {
         }
         if !backendAdvertisesDirectQuicUpgrade {
             return "backend-capability-disabled"
+        }
+        if shouldHoldBackgroundWakeReceiveLane(for: contactID) {
+            return "background-wake-receive-lane-held"
         }
         if currentApplicationState() != .active,
            !hasActiveBackgroundPTTFlowOwningDirectQuic(for: contactID) {
@@ -1241,6 +1272,9 @@ extension PTTViewModel {
         }
         if isDirectQuicAutoUpgradeDisabledForDebug {
             return "auto-upgrade-disabled"
+        }
+        if shouldHoldBackgroundWakeReceiveLane(for: contactID) {
+            return "background-wake-receive-lane-held"
         }
         if currentApplicationState() != .active,
            !hasActiveBackgroundPTTFlowOwningDirectQuic(for: contactID) {
@@ -1472,7 +1506,8 @@ extension PTTViewModel {
 
     func scheduleAutomaticDirectQuicProbe(
         for contactID: UUID,
-        reason: String
+        reason: String,
+        minimumDelayMilliseconds: Int = 250
     ) {
         if isDirectQuicAutoUpgradeDisabledForDebug {
             diagnostics.record(
@@ -1490,11 +1525,13 @@ extension PTTViewModel {
         let retryRemainingMilliseconds = mediaRuntime.directQuicUpgrade
             .retryBackoffRemaining(for: contactID)
             .map { max(Int($0 * 1_000), 0) } ?? 0
-        let delayMilliseconds = max(retryRemainingMilliseconds, 250)
+        let delayMilliseconds = max(retryRemainingMilliseconds, minimumDelayMilliseconds)
 
         mediaRuntime.replaceDirectQuicAutoProbeTask(with: Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+            if delayMilliseconds > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+            }
             guard !Task.isCancelled else { return }
             await self.maybeStartAutomaticDirectQuicProbe(
                 for: contactID,

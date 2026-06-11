@@ -1,6 +1,6 @@
 # Workflow Model
 
-Canonical agent model. Use `AGENTS.md` for read routing, `ENGINE.md` for the engine contract, and `TOOLING.md` for commands.
+Canonical agent model. Use `AGENTS.md` for read routing, `ENGINE.md` for the engine contract, `TOOLING.md` for commands, and `docs/architecture/AGENT_NATIVE_SYSTEM_STRUCTURE.md` for structural design doctrine when changing module boundaries, state machines, workflows, effects, or verification strategy.
 
 ## Core Loop
 
@@ -102,6 +102,8 @@ State + Event -> NewState + Commands
 - Fail closed when a capability cannot be proven.
 
 Avoid boolean bundles, string status values, UI latches, duplicated projections, and precedence rules that hide distributed states. If the model is wrong, redesign the model before adding conditionals.
+
+For nontrivial structural work, use [`AGENT_NATIVE_SYSTEM_STRUCTURE.md`](/Users/mau/Development/bb/docs/architecture/AGENT_NATIVE_SYSTEM_STRUCTURE.md) as the doctrine: vertical semantic modules, ADTs for shape, state machines for time, explicit effect capabilities for reality, algebraic laws for composition, and generated verification for trust.
 
 ## Invariants
 

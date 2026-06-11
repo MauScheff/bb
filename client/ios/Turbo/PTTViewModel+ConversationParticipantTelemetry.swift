@@ -7,9 +7,22 @@ import UIKit
 extension PTTViewModel {
     var conversationParticipantTelemetryRepublishIntervalSeconds: TimeInterval { 5 }
     var conversationParticipantTelemetryMissingRemoteRepublishIntervalSeconds: TimeInterval { 2 }
+    var conversationParticipantTelemetryFreshnessSeconds: TimeInterval { 15 }
 
     func conversationParticipantTelemetry(for contactID: UUID) -> ConversationParticipantTelemetry? {
         conversationParticipantTelemetryByContactID[contactID]
+    }
+
+    func freshConversationParticipantTelemetry(
+        for contactID: UUID,
+        now: Date = Date()
+    ) -> ConversationParticipantTelemetry? {
+        guard let telemetry = conversationParticipantTelemetryByContactID[contactID],
+              let receivedAt = conversationParticipantTelemetryReceivedAtByContactID[contactID],
+              now.timeIntervalSince(receivedAt) <= conversationParticipantTelemetryFreshnessSeconds else {
+            return nil
+        }
+        return telemetry
     }
 
     func currentLocalConversationParticipantTelemetry(includeAudio: Bool) -> ConversationParticipantTelemetry {
@@ -26,9 +39,11 @@ extension PTTViewModel {
     func applyRemoteConversationParticipantTelemetry(
         _ telemetry: ConversationParticipantTelemetry?,
         for contactID: UUID,
-        source: String
+        source: String,
+        receivedAt: Date = Date()
     ) {
         guard let telemetry else { return }
+        conversationParticipantTelemetryReceivedAtByContactID[contactID] = receivedAt
         guard conversationParticipantTelemetryByContactID[contactID] != telemetry else { return }
         conversationParticipantTelemetryByContactID[contactID] = telemetry
         diagnostics.record(
@@ -213,8 +228,7 @@ extension PTTViewModel {
         }
 
         let telemetry = currentLocalConversationParticipantTelemetry(
-            includeAudio: desiredLocalReceiverAudioReadiness(for: contactID)
-                || localReceiverAudioReadinessPublications[contactID] != nil
+            includeAudio: true
         )
         guard telemetry.hasVisibleContext else { return }
         let now = Date()
@@ -227,7 +241,8 @@ extension PTTViewModel {
            now.timeIntervalSince(lastPublishedAt) < republishInterval {
             return
         }
-        guard let payloadData = try? JSONEncoder().encode(telemetry),
+        let payloadTelemetry = telemetry.withLivenessPulse(sentAt: now)
+        guard let payloadData = try? JSONEncoder().encode(payloadTelemetry),
               let payload = String(data: payloadData, encoding: .utf8) else {
             return
         }

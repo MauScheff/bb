@@ -815,6 +815,33 @@ struct SimulatorScenarioPlannerTests {
         }
     }
 
+    @Test func pendingBeepDominanceProjectionFaultHarness() throws {
+        try runProperty(
+            PropertyRunConfig(seed: 0xBEE0_D0A1, iterations: 160),
+            name: "pendingBeepDominanceProjectionFaultHarness"
+        ) { rng, iteration, seed in
+            let sample = ConversationProjectionPropertySample.generatePendingBeepDominanceFault(rng: &rng)
+            let projection = ConversationStateMachine.projection(
+                for: sample.context,
+                relationship: sample.relationship
+            )
+            let expectedPhase: SelectedConversationPhase =
+                sample.relationship.hasIncomingBeep ? .incomingBeep : .outgoingBeep
+            let observed = ConversationProjectionObserved(projection: projection)
+
+            try requireProperty(
+                projection.selectedConversationState.phase == expectedPhase
+                    && !projection.selectedConversationState.canTransmitNow
+                    && !projection.selectedConversationState.allowsHoldToTalk,
+                seed: seed,
+                iteration: iteration,
+                inputSummary: sample.summary,
+                expectedInvariant: "selected.pending_beep_dominates_live_projection",
+                observed: observed.summary
+            )
+        }
+    }
+
     @Test func pttReadinessAdapterFuzz() throws {
         try runProperty(
             PropertyRunConfig(seed: 424_242, iterations: 500),

@@ -256,8 +256,12 @@ struct ConversationActionCoordinatorState: Equatable {
            pendingContactID == nil || pendingContactID == contactID {
             return
         }
+        let preservedOrigin =
+            pendingAction.pendingConnectContactID == contactID
+            ? pendingConnectOrigin
+            : nil
         pendingAction = .connect(.joiningLocal(contactID: contactID))
-        pendingConnectOrigin = nil
+        pendingConnectOrigin = preservedOrigin
         guard let channelUUID else { return }
         if var attempt = localJoinAttempt,
            attempt.contactID == contactID,
@@ -354,8 +358,7 @@ struct ConversationActionCoordinatorState: Equatable {
 
     var pendingConnectAcceptedIncomingBeepContactID: UUID? {
         guard pendingConnectOrigin == .acceptingIncomingBeep else { return nil }
-        guard case .connect(.requestingBackend(let contactID)) = pendingAction else { return nil }
-        return contactID
+        return pendingAction.pendingConnectContactID
     }
 
     mutating func reconcileAfterChannelRefresh(
@@ -525,6 +528,15 @@ enum BeepThreadProjection: Equatable {
         hasIncomingBeep || hasOutgoingBeep
     }
 
+    var isMutualBeep: Bool {
+        switch self {
+        case .mutualBeep:
+            return true
+        case .none, .outgoingBeep, .incomingBeep:
+            return false
+        }
+    }
+
     var fallbackConversationState: ConversationState {
         switch self {
         case .none:
@@ -661,6 +673,16 @@ enum SelectedConversationPhase: Equatable {
             return true
         case .idle, .outgoingBeep, .incomingBeep, .friendReady, .wakeReady, .waitingForPeer,
              .localJoinFailed, .blockedByOtherSession, .systemMismatch:
+            return false
+        }
+    }
+
+    var showsActiveMediaEpochPathBadge: Bool {
+        switch self {
+        case .startingTransmit, .transmitting, .receiving:
+            return true
+        case .idle, .outgoingBeep, .incomingBeep, .friendReady, .wakeReady, .waitingForPeer,
+             .localJoinFailed, .ready, .blockedByOtherSession, .systemMismatch:
             return false
         }
     }
@@ -2146,9 +2168,6 @@ enum ConversationStateMachine {
             guard !context.pendingConnectAcceptedIncomingBeep else {
                 return nil
             }
-            guard context.pendingAction.pendingJoinContactID != context.contactID else {
-                return nil
-            }
             guard (!context.rawLocalDevicePTTEvidencePresent || !context.backendShowsEstablishedReadyConversation),
                   !context.backendJoinSettling else {
                 return nil
@@ -2721,7 +2740,8 @@ enum ConversationStateMachine {
             )
         case .idle, .incomingBeep, .startingTransmit, .transmitting, .receiving:
             if selectedConversationState.phase == .incomingBeep {
-                let label = selectedConversationState.contactPresence?.isForeground == true
+                let label = selectedConversationState.relationship.isMutualBeep
+                    || selectedConversationState.contactPresence?.isForeground == true
                     ? "Connect Now"
                     : "Beep Back"
                 return ConversationPrimaryAction(

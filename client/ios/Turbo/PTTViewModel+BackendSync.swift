@@ -1385,7 +1385,9 @@ extension PTTViewModel {
         channelID: String,
         senderDeviceID: String,
         source: RemoteReceiveActivitySource,
-        controlTransport: String
+        controlTransport: String,
+        resetLiveAudioRuntime: Bool = true,
+        shouldResetIncomingPacketAudioPayloadQueues: Bool = true
     ) -> Bool {
         guard receiveExecutionCoordinator.state.shouldBeginRemoteAudioEpoch(
             contactID: contactID,
@@ -1416,8 +1418,12 @@ extension PTTViewModel {
         mediaRuntime.resetMediaEncryptionReceiveSequence(for: contactID)
         mediaRuntime.clearIncomingAudioContinuity(for: contactID)
         mediaRuntime.clearIncomingAudioSequence(for: contactID)
-        resetIncomingPacketAudioPayloadQueues(reason: "remote-receive-epoch-start")
-        resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-receive-epoch-start")
+        if shouldResetIncomingPacketAudioPayloadQueues {
+            resetIncomingPacketAudioPayloadQueues(reason: "remote-receive-epoch-start")
+        }
+        if resetLiveAudioRuntime {
+            resetLiveAudioReceiveRuntime(for: contactID, reason: "remote-receive-epoch-start")
+        }
         mediaServices.session()?.beginRemoteAudioReceiveEpoch()
         Task { [voiceTurnRuntime] in
             await voiceTurnRuntime.beginReceive(
@@ -1462,16 +1468,42 @@ extension PTTViewModel {
         resetLiveAudioReceiveRuntime(for: contactID, reason: reason)
     }
 
-    func resetLiveAudioReceiveRuntime(for contactID: UUID, reason _: String) {
+    func resetLiveAudioReceiveRuntime(for contactID: UUID, reason: String) {
         Task { [
             incomingAudioIngressExecutor,
             liveAudioReceiveExecutor,
             liveMediaDiagnosticsSink,
         ] in
-            await incomingAudioIngressExecutor.reset(contactID: contactID)
-            await liveAudioReceiveExecutor.reset(contactID: contactID)
-            await liveMediaDiagnosticsSink.reset(contactID: contactID)
+            await resetLiveAudioReceiveRuntimeNow(
+                contactID: contactID,
+                reason: reason,
+                incomingAudioIngressExecutor: incomingAudioIngressExecutor,
+                liveAudioReceiveExecutor: liveAudioReceiveExecutor,
+                liveMediaDiagnosticsSink: liveMediaDiagnosticsSink
+            )
         }
+    }
+
+    func resetLiveAudioReceiveRuntimeNow(for contactID: UUID, reason: String) async {
+        await resetLiveAudioReceiveRuntimeNow(
+            contactID: contactID,
+            reason: reason,
+            incomingAudioIngressExecutor: incomingAudioIngressExecutor,
+            liveAudioReceiveExecutor: liveAudioReceiveExecutor,
+            liveMediaDiagnosticsSink: liveMediaDiagnosticsSink
+        )
+    }
+
+    nonisolated private func resetLiveAudioReceiveRuntimeNow(
+        contactID: UUID,
+        reason _: String,
+        incomingAudioIngressExecutor: IncomingAudioIngressExecutor,
+        liveAudioReceiveExecutor: LiveAudioReceiveExecutor,
+        liveMediaDiagnosticsSink: LiveMediaDiagnosticsSink
+    ) async {
+        await incomingAudioIngressExecutor.reset(contactID: contactID)
+        await liveAudioReceiveExecutor.reset(contactID: contactID)
+        await liveMediaDiagnosticsSink.reset(contactID: contactID)
     }
 
     func isExpectedBackendSyncCancellation(_ error: Error) -> Bool {

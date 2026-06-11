@@ -317,6 +317,28 @@ extension PTTViewModel {
             cancelDirectQuicPromotionTimeout()
             return
         }
+        let conversationStillActive = selectedContactId == contactID
+            || selectedContact?.id == contactID
+            || activeChannelId == contactID
+        if !conversationStillActive {
+            diagnostics.record(
+                .media,
+                message: "Ignored Direct QUIC promotion timeout after conversation ended",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": activeAttempt.channelID,
+                    "attemptId": attemptID,
+                    "timeoutMilliseconds": "\(timeoutMilliseconds)",
+                ]
+            )
+            await finishDirectQuicAttempt(
+                for: contactID,
+                reason: "promotion-timeout-stale-conversation",
+                sendHangup: false,
+                applyRetryBackoff: false
+            )
+            return
+        }
         let elapsedSinceProgressMilliseconds = Int(Date().timeIntervalSince(activeAttempt.lastUpdatedAt) * 1_000)
         if elapsedSinceProgressMilliseconds < max(timeoutMilliseconds - 250, 0) {
             diagnostics.record(
@@ -423,6 +445,26 @@ extension PTTViewModel {
         let channelID = attempt.channelID
         let fromDeviceID = attempt.peerDeviceID ?? "direct-quic"
         let fromUserID = contacts.first(where: { $0.id == contactID })?.remoteUserId ?? ""
+
+        if shouldHoldBackgroundWakeReceiveLane(for: contactID) {
+            diagnostics.record(
+                .media,
+                message: "Deferred Direct QUIC media activation during background wake receive",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": attempt.channelID,
+                    "attemptId": attemptID,
+                    "activeMediaEpochPath": mediaRuntime.activeMediaEpochPathState?.rawValue ?? "none",
+                ]
+            )
+            await finishDirectQuicAttempt(
+                for: contactID,
+                reason: "background-wake-receive-lane-held",
+                sendHangup: true,
+                applyRetryBackoff: false
+            )
+            return
+        }
 
         do {
             try await controller.activateMediaTransport(
@@ -1529,14 +1571,24 @@ extension PTTViewModel {
             directQuicIncomingAudioLiveBacklogDropNanoseconds,
             incomingLiveAudioBacklogExpirationNanoseconds
         )
-        if liveBacklogDropThresholdNanoseconds > 0,
-           localQueueDelayNanoseconds >= liveBacklogDropThresholdNanoseconds {
+        let activeReceiveDropThresholdNanoseconds =
+            receiveExecutionCoordinator.state.remoteActivityByContactID[contactID]?.phase == .receivingAudio
+            ? directQuicIncomingAudioQueueSevereDelayNanoseconds
+            : 0
+        let directQuicDropThresholdNanoseconds: UInt64 = ([
+            liveBacklogDropThresholdNanoseconds,
+            activeReceiveDropThresholdNanoseconds,
+        ]
+        .filter { $0 > 0 }
+        .min()) ?? 0
+        if directQuicDropThresholdNanoseconds > 0,
+           localQueueDelayNanoseconds >= directQuicDropThresholdNanoseconds {
             recordDirectQuicIncomingAudioQueueDelayIfNeeded(
                 contactID: contactID,
                 channelID: attempt.channelID,
                 attemptID: attemptID,
                 timingMetadata: timingMetadata,
-                thresholdNanoseconds: liveBacklogDropThresholdNanoseconds,
+                thresholdNanoseconds: directQuicDropThresholdNanoseconds,
                 action: "dropped-expired-live-backlog"
             )
             recordIncomingAudioIngressSummaryIfNeeded(
@@ -1584,9 +1636,24 @@ extension PTTViewModel {
             attemptID: attemptID,
             reason: "incoming-audio"
         )
-        let receiveEpoch = mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
         let remoteUserID = contacts.first(where: { $0.id == contactID })?.remoteUserId ?? ""
         let fromDeviceID = attempt.peerDeviceID ?? "direct-quic"
+        if beginRemoteAudioReceiveEpochIfNeeded(
+            contactID: contactID,
+            channelID: attempt.channelID,
+            senderDeviceID: fromDeviceID,
+            source: .transmitStartSignal,
+            controlTransport: "direct-quic-audio",
+            resetLiveAudioRuntime: false,
+            shouldResetIncomingPacketAudioPayloadQueues: false
+        ) {
+            markRemoteAudioActivity(for: contactID, source: .transmitStartSignal)
+            await resetLiveAudioReceiveRuntimeNow(
+                for: contactID,
+                reason: "direct-quic-implicit-audio-epoch-start"
+            )
+        }
+        let receiveEpoch = mediaRuntime.incomingAudioReceiveEpoch(for: contactID)
 
         recordIncomingDirectQuicAudioPayloadDiagnosticIfNeeded(
             contactID: contactID,
@@ -1862,7 +1929,6 @@ extension PTTViewModel {
         thresholdNanoseconds: UInt64,
         action: String
     ) {
-        guard TurboAudioDiagnosticsDebugOverride.isLiveAudioDiagnosticsEnabled() else { return }
         let detailedReportLimit = incomingAudioDiagnosticDetailedReportLimit()
         switch mediaRuntime.consumeDirectQuicIncomingAudioQueueDelayDiagnosticDisposition(
             for: contactID,
@@ -2167,6 +2233,18 @@ extension PTTViewModel {
             diagnostics.record(
                 .backend,
                 message: "Direct QUIC hangup sent",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": attempt.channelID,
+                    "attemptId": attempt.attemptId,
+                    "peerDeviceId": peerDeviceID,
+                    "reason": reason,
+                ]
+            )
+        } catch is CancellationError {
+            diagnostics.record(
+                .backend,
+                message: "Direct QUIC hangup send cancelled",
                 metadata: [
                     "contactId": contactID.uuidString,
                     "channelId": attempt.channelID,

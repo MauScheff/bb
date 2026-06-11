@@ -457,17 +457,18 @@ extension PTTViewModel {
                 || mediaSessionContactID == contactID
             if devicePTTEvidenceTouchesContact,
                !conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID) {
-                conversationActionCoordinator.markExplicitLeave(contactID: contactID)
+                prepareReconciledTeardownState(for: contactID)
                 backendRuntime.clearBackendJoinSettling(for: contactID)
                 diagnostics.record(
                     .pushToTalk,
-                    message: "Armed explicit leave barrier for incoming PTT leave push",
+                    message: "Tearing down Device PTT session for incoming PTT leave push",
                     metadata: [
                         "contactId": contactID.uuidString,
                         "channelUUID": channelUUID.uuidString,
                         "event": payload.event.rawValue,
                     ]
                 )
+                performReconciledTeardown(for: contactID)
             }
             pttWakeRuntime.suppressProvisionalWakeCandidate(for: contactID)
             clearRemoteAudioActivity(for: contactID)
@@ -477,9 +478,9 @@ extension PTTViewModel {
         updateStatusForSelectedContact()
         captureDiagnosticsState("ptt-callback:incoming-push")
 
-        if shouldArmWakeFlowForIncomingPush {
-            switch payload.event {
-            case .transmitStart:
+        switch payload.event {
+        case .transmitStart:
+            if shouldArmWakeFlowForIncomingPush {
                 if let backendServices,
                    backendServices.supportsWebSocket {
                     resumeWebSocketForIncomingPTTPushIfNeeded(
@@ -498,22 +499,23 @@ extension PTTViewModel {
                         "event": payload.event.rawValue,
                     ]
                 )
-            case .leaveChannel:
-                diagnostics.record(
-                    .pushToTalk,
-                    message: "Synchronizing backend state for incoming PTT leave push",
-                    metadata: [
-                        "contactId": contactID.uuidString,
-                        "channelUUID": channelUUID.uuidString,
-                        "event": payload.event.rawValue,
-                    ]
-                )
-                Task { [weak self] in
-                    await self?.refreshChannelState(for: contactID)
-                    await self?.refreshContactSummaries()
-                    await self?.reconcileSelectedConversationIfNeeded()
-                    self?.captureDiagnosticsState("ptt-callback:incoming-leave-push-sync")
-                }
+            }
+        case .leaveChannel:
+            diagnostics.record(
+                .pushToTalk,
+                message: "Synchronizing backend state for incoming PTT leave push",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelUUID": channelUUID.uuidString,
+                    "event": payload.event.rawValue,
+                    "wakeFlowArmed": String(shouldArmWakeFlowForIncomingPush),
+                ]
+            )
+            Task { [weak self] in
+                await self?.refreshChannelState(for: contactID)
+                await self?.refreshContactSummaries()
+                await self?.reconcileSelectedConversationIfNeeded()
+                self?.captureDiagnosticsState("ptt-callback:incoming-leave-push-sync")
             }
         }
     }

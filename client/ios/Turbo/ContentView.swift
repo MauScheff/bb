@@ -826,38 +826,43 @@ struct ContentView: View {
         primaryAction: ConversationPrimaryAction,
         onClose: @escaping () -> Void
     ) -> some View {
-        TurboCallPrototypeView(
-            contact: contact,
-            selectedConversationState: selectedConversationState,
-            primaryAction: primaryAction,
-            isTransmitPressActive: viewModel.isTransmitPressActive,
-            isPTTAudioSessionActive: viewModel.isPTTAudioSessionActive,
-            mediaConnectionState: viewModel.mediaConnectionState,
-            mediaSessionContactID: viewModel.mediaSessionContactID,
-            transportPathState: viewModel.transportPathBadgeState,
-            audioEncryptionStatus: viewModel.mediaEndToEndEncryptionIsActive(
-                contactID: contact.id,
-                channelID: contact.backendChannelId
-            ) ? .endToEndEncrypted : .unavailable,
-            localAudioLevel: viewModel.localAudioLevel,
-            localTelemetry: viewModel.localConversationParticipantTelemetry,
-            remoteParticipantTelemetry: viewModel.conversationParticipantTelemetry(for: contact.id),
-            onClose: onClose,
-            onLeave: {
-                leaveCallScreen(for: contact)
-                viewModel.disconnectAndReturnToContactList(from: contact)
-            },
-            onJoin: {
-                ensureContactSelected(contact, reason: "call-screen-action")
-                viewModel.joinChannel()
-            },
-            onBeginTransmit: {
-                ensureContactSelected(contact, reason: "call-screen-action")
-                viewModel.beginTransmit()
-            },
-            onTransmitTouchReleased: viewModel.noteTransmitTouchReleased,
-            onEndTransmit: { reason in viewModel.endTransmit(reason: reason) }
-        )
+        TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+            TurboCallPrototypeView(
+                contact: contact,
+                selectedConversationState: selectedConversationState,
+                primaryAction: primaryAction,
+                isTransmitPressActive: viewModel.isTransmitPressActive,
+                isPTTAudioSessionActive: viewModel.isPTTAudioSessionActive,
+                mediaConnectionState: viewModel.mediaConnectionState,
+                mediaSessionContactID: viewModel.mediaSessionContactID,
+                transportPathState: viewModel.transportPathBadgeState,
+                audioEncryptionStatus: viewModel.mediaEndToEndEncryptionIsActive(
+                    contactID: contact.id,
+                    channelID: contact.backendChannelId
+                ) ? .endToEndEncrypted : .unavailable,
+                localAudioLevel: viewModel.localAudioLevel,
+                localTelemetry: viewModel.localConversationParticipantTelemetry,
+                remoteParticipantTelemetry: viewModel.freshConversationParticipantTelemetry(
+                    for: contact.id,
+                    now: timeline.date
+                ),
+                onClose: onClose,
+                onLeave: {
+                    leaveCallScreen(for: contact)
+                    viewModel.disconnectAndReturnToContactList(from: contact)
+                },
+                onJoin: {
+                    ensureContactSelected(contact, reason: "call-screen-action")
+                    viewModel.joinChannel()
+                },
+                onBeginTransmit: {
+                    ensureContactSelected(contact, reason: "call-screen-action")
+                    viewModel.beginTransmit()
+                },
+                onTransmitTouchReleased: viewModel.noteTransmitTouchReleased,
+                onEndTransmit: { reason in viewModel.endTransmit(reason: reason) }
+            )
+        }
     }
 
     private func shouldShowCallScreen(for contact: Contact) -> Bool {
@@ -963,7 +968,7 @@ struct ContentView: View {
         for contactID: UUID,
         contactName: String?
     ) -> ConversationHoldToTalkBlocker? {
-        guard viewModel.conversationParticipantTelemetry(for: contactID)?.audio?.isVolumeOff == true else {
+        guard viewModel.freshConversationParticipantTelemetry(for: contactID)?.audio?.isVolumeOff == true else {
             return nil
         }
         return .receiverVolumeOff(contactName: contactName)

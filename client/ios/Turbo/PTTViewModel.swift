@@ -446,6 +446,7 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var lastPublishedConversationParticipantTelemetryByContactID: [UUID: ConversationParticipantTelemetry] = [:]
     var lastPublishedConversationParticipantTelemetryAtByContactID: [UUID: Date] = [:]
     var conversationParticipantTelemetryByContactID: [UUID: ConversationParticipantTelemetry] = [:]
+    var conversationParticipantTelemetryReceivedAtByContactID: [UUID: Date] = [:]
 
 #if DEBUG
     private static var automaticDiagnosticsPublishDefaultEnabled: Bool {

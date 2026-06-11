@@ -880,10 +880,10 @@ extension PTTViewModel {
             }
             .first
 
-        if let voiceFrameIndex {
-            return engineAudioSequence(voiceFrameIndex)
-        }
-        return mediaRuntime.nextEngineRemoteAudioSequence(for: contactID)
+        return mediaRuntime.engineRemoteAudioSequence(
+            for: contactID,
+            sourceSequence: voiceFrameIndex.map(engineAudioSequence)
+        )
     }
 
     private func handleEngineTransition(

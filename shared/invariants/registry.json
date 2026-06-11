@@ -30,6 +30,20 @@
       "status": "active"
     },
     {
+      "id": "control.authoritative_command_not_starved_by_signal_maintenance",
+      "scope": "local",
+      "owner": "app",
+      "authoritativeSeam": "Turbo/BackendClient.swift runtime-control scheduler",
+      "predicate": "Authoritative user and lifecycle control commands must not wait behind runtime signal drains, telemetry sends, or an unbounded persistent runtime-control lane before HTTP recovery.",
+      "evidenceFields": ["commandKind", "queuedCommandKind", "runtimeLane", "elapsedMs", "fallbackTransport", "operationId", "channelId"],
+      "detectors": ["Turbo/BackendClient.swift"],
+      "regressions": ["TurboTests/ConnectionTests.swift"],
+      "repairPolicy": "app repair",
+      "repairAction": "Prioritize authoritative commands above runtime signal maintenance and bound persistent runtime-control attempts so deterministic HTTP recovery can run within the user action window.",
+      "alertPolicy": "diagnostics",
+      "status": "active"
+    },
+    {
       "id": "backend.ptt_push_target_missing_token",
       "scope": "backend",
       "owner": "backend",

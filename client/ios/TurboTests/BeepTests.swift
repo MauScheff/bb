@@ -2324,6 +2324,53 @@ struct BeepTests {
 
         #expect(viewModel.transportPathBadgeState == .direct)
 
+        viewModel.mediaRuntime.markActiveMediaEpochPathState(.fastRelay)
+
+        #expect(viewModel.transportPathBadgeState == .direct)
+
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .receiving,
+                    canTransmit: false,
+                    activeTransmitId: "transmit-1",
+                    activeTransmitterUserId: "user-blake"
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .peerTransmitting(activeTransmitterUserId: "user-blake")
+                )
+            )
+        )
+        viewModel.markRemoteAudioActivity(for: contactID, source: .audioChunk)
+        viewModel.syncSelectedConversationProjection()
+
+        #expect(viewModel.selectedConversationState(for: contactID).phase == .receiving)
+        #expect(viewModel.transportPathBadgeState == .fastRelay)
+
+        viewModel.remoteTransmittingContactIDs = []
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(status: .ready, canTransmit: true)
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(status: .ready)
+            )
+        )
+        viewModel.syncSelectedConversationProjection()
+
+        #expect(viewModel.selectedConversationState(for: contactID).phase == .ready)
+        #expect(viewModel.transportPathBadgeState == .direct)
+
         viewModel.mediaRuntime.updateTransportPathState(.promoting)
 
         #expect(viewModel.transportPathBadgeState == .relay)
@@ -2824,6 +2871,67 @@ struct BeepTests {
     }
 
     @MainActor
+    @Test func offlineMutualBeepQueuesJoinWithoutAskBackProjection() async {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let incomingBeep = makeBeep(
+            direction: "incoming",
+            beepId: "incoming-beep",
+            fromHandle: "@avery",
+            toHandle: "@self",
+            requestCount: 8
+        )
+        let outgoingBeep = makeBeep(
+            direction: "outgoing",
+            beepId: "outgoing-beep",
+            fromHandle: "@self",
+            toHandle: "@avery",
+            requestCount: 7
+        )
+        let contact = Contact(
+            id: contactID,
+            name: "Avery",
+            handle: "@avery",
+            isOnline: false,
+            channelId: UUID(),
+            backendChannelId: incomingBeep.channelId,
+            remoteUserId: incomingBeep.fromUserId
+        )
+        viewModel.contacts = [contact]
+        viewModel.selectedContactId = contactID
+        viewModel.backendSyncCoordinator.send(
+            .beepsUpdated(
+                incoming: [BackendBeepUpdate(contactID: contactID, beep: incomingBeep)],
+                outgoing: [BackendBeepUpdate(contactID: contactID, beep: outgoingBeep)],
+                now: .now
+            )
+        )
+        let client = TurboBackendClient(config: makeUnreachableBackendConfig())
+        viewModel.applyAuthenticatedBackendSession(client: client, userID: "user-self", mode: "cloud")
+
+        var capturedEffects: [BackendCommandEffect] = []
+        viewModel.backendCommandCoordinator.effectHandler = { effect in
+            capturedEffects.append(effect)
+        }
+
+        viewModel.performConnect(to: contact, intent: .requestConnection)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(viewModel.beepThreadProjection(for: contactID) == .mutualBeep(requestCount: 8))
+        #expect(viewModel.conversationActionCoordinator.pendingAction.pendingConnectContactID == contactID)
+        #expect(viewModel.pendingConnectAcceptedIncomingBeepContactId == contactID)
+        #expect(!viewModel.diagnosticsTranscript.contains("Projected outgoing Beep optimistically"))
+        #expect(
+            capturedEffects.contains {
+                guard case let .join(request) = $0 else { return false }
+                return request.contactID == contactID
+                    && request.relationship == .mutualBeep(requestCount: 8)
+                    && request.contactIsOnline == false
+            }
+        )
+    }
+
+    @MainActor
     @Test func backendJoinExecutionPlanTreatsConnectedCreatedBeepAsJoinConversation() {
         let viewModel = PTTViewModel()
         let contactID = UUID()
@@ -2847,6 +2955,40 @@ struct BeepTests {
         )
 
         #expect(plan == .joinConversation)
+    }
+
+    @MainActor
+    @Test func connectedAcceptedIncomingBeepAdvancesJoin() {
+        let viewModel = PTTViewModel()
+        let connected = makeBeep(
+            direction: "incoming",
+            status: "connected",
+            accepted: true,
+            pendingJoin: false
+        )
+        let connectedByStatusOnly = makeBeep(
+            direction: "incoming",
+            status: "connected",
+            accepted: nil,
+            pendingJoin: false
+        )
+        let pending = makeBeep(
+            direction: "incoming",
+            status: "pending",
+            accepted: false,
+            pendingJoin: true
+        )
+        let cancelled = makeBeep(
+            direction: "incoming",
+            status: "cancelled",
+            accepted: false,
+            pendingJoin: false
+        )
+
+        #expect(viewModel.acceptedIncomingBeepShouldAdvanceJoin(connected))
+        #expect(viewModel.acceptedIncomingBeepShouldAdvanceJoin(connectedByStatusOnly))
+        #expect(viewModel.acceptedIncomingBeepShouldAdvanceJoin(pending))
+        #expect(!viewModel.acceptedIncomingBeepShouldAdvanceJoin(cancelled))
     }
 
     @MainActor
@@ -3084,6 +3226,90 @@ struct BeepTests {
         )
 
         #expect(plan == .beepOnly)
+    }
+
+    @MainActor
+    @Test func backendJoinExecutionPlanTreatsOfflineMutualBeepAsJoinConversation() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let request = BackendJoinRequest(
+            contactID: contactID,
+            handle: "@avery",
+            intent: .requestConnection,
+            relationship: .mutualBeep(requestCount: 8),
+            existingRemoteUserID: "user-avery",
+            existingBackendChannelID: "channel-avery",
+            incomingBeep: makeBeep(direction: "incoming", requestCount: 8),
+            outgoingBeep: makeBeep(direction: "outgoing", requestCount: 7),
+            beepCooldownRemaining: nil,
+            usesLocalHTTPBackend: false,
+            contactIsOnline: false
+        )
+
+        let plan = viewModel.backendJoinExecutionPlan(
+            request: request,
+            createdBeep: nil,
+            existingConversationSnapshot: nil
+        )
+
+        #expect(viewModel.shouldAcceptIncomingBeepForJoin(request))
+        #expect(plan == .joinConversation)
+    }
+
+    @MainActor
+    @Test func acceptedBeepRendezvousBypassesPreJoinControlPlaneReadiness() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let acceptedIncoming = BackendJoinRequest(
+            contactID: contactID,
+            handle: "@avery",
+            intent: .requestConnection,
+            relationship: .incomingBeep(requestCount: 1),
+            existingRemoteUserID: "user-avery",
+            existingBackendChannelID: "channel-avery",
+            incomingBeep: makeBeep(direction: "incoming"),
+            outgoingBeep: nil,
+            beepCooldownRemaining: nil,
+            usesLocalHTTPBackend: false,
+            contactIsOnline: true
+        )
+        let acceptedOutgoing = BackendJoinRequest(
+            contactID: contactID,
+            handle: "@avery",
+            intent: .joinAcceptedOutgoingBeep,
+            relationship: .outgoingBeep(requestCount: 1),
+            existingRemoteUserID: "user-avery",
+            existingBackendChannelID: "channel-avery",
+            incomingBeep: nil,
+            outgoingBeep: makeBeep(direction: "outgoing"),
+            beepCooldownRemaining: nil,
+            usesLocalHTTPBackend: false,
+            contactIsOnline: true
+        )
+        let offlineAskBack = BackendJoinRequest(
+            contactID: contactID,
+            handle: "@avery",
+            intent: .requestConnection,
+            relationship: .incomingBeep(requestCount: 1),
+            existingRemoteUserID: "user-avery",
+            existingBackendChannelID: "channel-avery",
+            incomingBeep: makeBeep(direction: "incoming"),
+            outgoingBeep: nil,
+            beepCooldownRemaining: nil,
+            usesLocalHTTPBackend: false,
+            contactIsOnline: false
+        )
+
+        #expect(viewModel.shouldBypassPreJoinControlPlaneReadiness(for: acceptedIncoming))
+        #expect(viewModel.shouldBypassPreJoinControlPlaneReadiness(for: acceptedOutgoing))
+        #expect(!viewModel.shouldBypassPreJoinControlPlaneReadiness(for: offlineAskBack))
+        #expect(
+            !viewModel.shouldRefreshBackendJoinConversationEvidenceBeforeJoin(
+                request: acceptedIncoming,
+                supportsWebSocket: true,
+                isWebSocketConnected: false
+            )
+        )
     }
 
     @MainActor
