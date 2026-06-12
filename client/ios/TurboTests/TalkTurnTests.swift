@@ -2123,6 +2123,64 @@ struct TalkTurnTests {
     }
 
     @MainActor
+    @Test func standbyRelayAckDoesNotDemoteActiveDirectMediaEpoch() {
+        let viewModel = PTTViewModel()
+        let contactID = UUID()
+        let completedKey = FirstAudioPlaybackAckSentKey(
+            contactID: contactID,
+            channelID: "channel-1",
+            senderDeviceID: "sender-device",
+            receiverDeviceID: "receiver-device"
+        )
+        viewModel.mediaRuntime.directQuicProbeController = DirectQuicProbeController()
+        _ = viewModel.mediaRuntime.directQuicUpgrade.beginLocalAttempt(
+            contactID: contactID,
+            channelID: "channel-1",
+            attemptID: "attempt-1",
+            peerDeviceID: "receiver-device"
+        )
+        _ = viewModel.mediaRuntime.directQuicUpgrade.markDirectPathActivated(
+            for: contactID,
+            attemptID: "attempt-1",
+            nominatedPath: makeDirectQuicNominatedPath(attemptID: "attempt-1")
+        )
+        viewModel.mediaRuntime.updateTransportPathState(.direct)
+        viewModel.mediaRuntime.markActiveMediaEpochPathState(.direct)
+        viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] =
+            FirstAudioPlaybackAckExpectation(
+                ackID: "expected-ack",
+                contactID: contactID,
+                channelID: "channel-1",
+                senderDeviceID: "sender-device",
+                receiverDeviceID: "receiver-device",
+                transportDigest: "direct-packet-digest",
+                encryptedSequenceNumber: nil,
+                queuedAt: Date(),
+                deliveredTransports: ["direct-quic", "media-relay-packet"]
+            )
+
+        viewModel.handleAudioPlaybackStartedAck(
+            TurboAudioPlaybackStartedPayload(
+                ackId: "ack-relay",
+                channelId: "channel-1",
+                senderDeviceId: "sender-device",
+                receiverDeviceId: "receiver-device",
+                transport: "media-relay-packet",
+                transportDigest: "relay-packet-digest",
+                encryptedSequenceNumber: nil
+            ),
+            contactID: contactID,
+            source: .backendWebSocket
+        )
+
+        #expect(viewModel.firstAudioPlaybackAckExpectationsByContactID[contactID] == nil)
+        #expect(viewModel.firstAudioPlaybackAckCompletedKeys.contains(completedKey))
+        #expect(viewModel.mediaRuntime.activeMediaEpochPathState == .direct)
+        #expect(viewModel.diagnosticsTranscript.contains("Preserved Direct media epoch after standby relay playback ACK"))
+        #expect(viewModel.diagnosticsTranscript.contains("First audio playback ACK received"))
+    }
+
+    @MainActor
     @Test func firstAudioPlaybackAckAcceptsLaterPlaintextDirectPacketDigest() {
         let viewModel = PTTViewModel()
         let contactID = UUID()

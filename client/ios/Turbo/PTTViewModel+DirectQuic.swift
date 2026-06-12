@@ -2936,6 +2936,20 @@ extension PTTViewModel {
                     requireSelectedContact: false
                 )
             }
+            if blockReason == "peer-device-not-connected",
+               shouldAcceptDirectQuicUpgradeRequestDuringPeerDeviceConnectivityRace(
+                envelope: envelope,
+                contactID: contactID,
+                peerDeviceID: envelope.fromDeviceId
+               ) {
+                metadata["blockReason"] = blockReason
+                diagnostics.record(
+                    .websocket,
+                    message: "Accepted Direct QUIC upgrade request while backend peer device connectivity is catching up",
+                    metadata: metadata
+                )
+                blockReason = nil
+            }
             if allowsSelectionPrewarmRequest, blockReason == "attempt-active" {
                 metadata["blockReason"] = blockReason
                 diagnostics.record(

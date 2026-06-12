@@ -176,7 +176,29 @@ extension PTTViewModel {
         )
         firstAudioPlaybackAckCompletedKeys.insert(completedKey)
         firstAudioPlaybackAckRecentlyClearedKeys.removeValue(forKey: completedKey)
-        mediaRuntime.markActiveMediaEpochTransport(payload.transport)
+        let selectedTransport = selectedMediaTransportState(for: contactID)
+        let relayStandbyAckForDirectPath =
+            selectedTransport.directMediaPathActive
+            && payload.transport == "media-relay-packet"
+        if relayStandbyAckForDirectPath {
+            mediaRuntime.markActiveMediaEpochPathState(.direct)
+            diagnostics.record(
+                .media,
+                message: "Preserved Direct media epoch after standby relay playback ACK",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "channelId": payload.channelId,
+                    "senderDeviceId": payload.senderDeviceId,
+                    "receiverDeviceId": payload.receiverDeviceId,
+                    "transport": payload.transport,
+                    "selectedTransport": selectedTransport.diagnosticsValue,
+                    "fallback": selectedTransport.fallbackDiagnosticsValue,
+                    "reason": reason,
+                ]
+            )
+        } else {
+            mediaRuntime.markActiveMediaEpochTransport(payload.transport)
+        }
         if payload.transport == "direct-quic" {
             directAudioPlaybackVerifiedKeys.insert(completedKey)
         }

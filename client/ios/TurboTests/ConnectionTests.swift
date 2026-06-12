@@ -8588,6 +8588,235 @@ struct ConnectionTests {
     }
 
     @MainActor
+    @Test func directQuicUpgradeRequestIsAcceptedWhilePeerDeviceConnectivityCatchesUp() throws {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "aaa-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+
+        let viewModel = PTTViewModel()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    peerDirectQuicIdentity: TurboDirectQuicPeerIdentityPayload(
+                        fingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        status: "active",
+                        createdAt: nil,
+                        updatedAt: nil
+                    ),
+                    peerTargetDeviceId: "zzz-device"
+                )
+            )
+        )
+
+        #expect(viewModel.automaticDirectQuicProbeBlockReason(for: contactID) == "peer-device-not-connected")
+
+        let requestPayload = TurboDirectQuicUpgradeRequestPayload(
+            requestId: "request-race",
+            channelId: "channel",
+            fromDeviceId: "zzz-device",
+            toDeviceId: "aaa-device",
+            reason: "media-session-started-scheduled",
+            roleIntent: .listener
+        )
+        let requestEnvelope = try TurboSignalEnvelope.directQuicUpgradeRequest(
+            channelId: "channel",
+            fromUserId: "peer",
+            fromDeviceId: "zzz-device",
+            toUserId: "user-self",
+            toDeviceId: "aaa-device",
+            payload: requestPayload
+        )
+
+        viewModel.handleIncomingDirectQuicUpgradeRequest(
+            requestEnvelope,
+            contactID: contactID
+        )
+
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Accepted Direct QUIC upgrade request while backend peer device connectivity is catching up"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("Direct QUIC upgrade request accepted"))
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Ignored Direct QUIC upgrade request because automatic probe is blocked"
+            )
+        )
+    }
+
+    @MainActor
+    @Test func directQuicOfferIsAcceptedWhilePeerDeviceConnectivityCatchesUp() throws {
+        TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+        defer {
+            TurboDirectPathDebugOverride.setAutoUpgradeDisabled(false)
+            TurboDirectPathDebugOverride.setRelayOnlyForced(false)
+        }
+
+        let contactID = UUID()
+        let channelUUID = UUID()
+        let client = TurboBackendClient(
+            config: TurboBackendConfig(
+                baseURL: URL(string: "http://127.0.0.1:9")!,
+                devUserHandle: "@self",
+                deviceID: "aaa-device"
+            )
+        )
+        client.setRuntimeConfigForTesting(
+            TurboBackendRuntimeConfig(
+                mode: "cloud",
+                supportsWebSocket: true,
+                supportsDirectQuicUpgrade: true
+            )
+        )
+
+        let viewModel = PTTViewModel()
+        viewModel.applyAuthenticatedBackendSession(
+            client: client,
+            userID: "user-self",
+            mode: "cloud"
+        )
+        viewModel.applicationStateOverride = .active
+        viewModel.contacts = [
+            Contact(
+                id: contactID,
+                name: "Blake",
+                handle: "@blake",
+                isOnline: true,
+                channelId: channelUUID,
+                backendChannelId: "channel",
+                remoteUserId: "peer"
+            )
+        ]
+        viewModel.selectedContactId = contactID
+        viewModel.pttCoordinator.send(
+            .didJoinChannel(channelUUID: channelUUID, contactID: contactID, reason: "test")
+        )
+        viewModel.syncPTTState()
+        viewModel.backendSyncCoordinator.send(
+            .channelStateUpdated(
+                contactID: contactID,
+                channelState: makeChannelState(
+                    status: .ready,
+                    canTransmit: true,
+                    selfJoined: true,
+                    peerJoined: false,
+                    peerDeviceConnected: false
+                )
+            )
+        )
+        viewModel.backendSyncCoordinator.send(
+            .channelReadinessUpdated(
+                contactID: contactID,
+                readiness: makeChannelReadiness(
+                    status: .ready,
+                    peerDirectQuicIdentity: TurboDirectQuicPeerIdentityPayload(
+                        fingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        status: "active",
+                        createdAt: nil,
+                        updatedAt: nil
+                    ),
+                    peerTargetDeviceId: "zzz-device"
+                )
+            )
+        )
+
+        let offerPayload = TurboDirectQuicOfferPayload(
+            attemptId: "attempt-race",
+            channelId: "channel",
+            fromDeviceId: "zzz-device",
+            toDeviceId: "aaa-device",
+            quicAlpn: "turbo-ptt-v2",
+            certificateFingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            candidates: [],
+            roleIntent: .listener
+        )
+        let offerEnvelope = try TurboSignalEnvelope.directQuicOffer(
+            channelId: "channel",
+            fromUserId: "peer",
+            fromDeviceId: "zzz-device",
+            toUserId: "user-self",
+            toDeviceId: "aaa-device",
+            payload: offerPayload
+        )
+
+        viewModel.handleIncomingDirectQuicControlSignal(
+            offerEnvelope,
+            contactID: contactID
+        )
+
+        #expect(viewModel.mediaRuntime.directQuicUpgrade.attempt(for: contactID)?.attemptId == "attempt-race")
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Accepted Direct QUIC signal while backend peer device connectivity is catching up"
+            )
+        )
+        #expect(viewModel.diagnosticsTranscript.contains("Direct QUIC offer received"))
+        #expect(
+            !viewModel.diagnosticsTranscript.contains(
+                "Ignored stale Direct QUIC signal because local Conversation is not eligible"
+            )
+        )
+    }
+
+    @MainActor
     @Test func directQuicSetupLivenessResendsUnansweredListenerOfferWithoutControlPlaneReconnect() async throws {
         let contactID = UUID()
         let client = TurboBackendClient(

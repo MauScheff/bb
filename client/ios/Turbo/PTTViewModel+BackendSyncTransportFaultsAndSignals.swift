@@ -532,7 +532,6 @@ extension PTTViewModel {
         }
         guard let channel = selectedChannelSnapshot(for: contactID),
               channel.membership.hasLocalMembership,
-              channel.membership.hasPeerMembership,
               !channel.membership.peerDeviceConnected else {
             return false
         }
@@ -561,6 +560,39 @@ extension PTTViewModel {
         case .hangup:
             return false
         }
+    }
+
+    func shouldAcceptDirectQuicUpgradeRequestDuringPeerDeviceConnectivityRace(
+        envelope: TurboSignalEnvelope,
+        contactID: UUID,
+        peerDeviceID: String
+    ) -> Bool {
+        guard let backend = backendServices,
+              !envelope.fromDeviceId.isEmpty,
+              !envelope.toDeviceId.isEmpty,
+              envelope.toDeviceId == backend.deviceID,
+              peerDeviceID == envelope.fromDeviceId else {
+            return false
+        }
+        guard let contact = contacts.first(where: { $0.id == contactID }),
+              let backendChannelID = contact.backendChannelId,
+              backendChannelID == envelope.channelId,
+              contact.remoteUserId == envelope.fromUserId else {
+            return false
+        }
+        guard let channel = selectedChannelSnapshot(for: contactID),
+              channel.membership.hasLocalMembership,
+              !channel.membership.peerDeviceConnected else {
+            return false
+        }
+        guard let expectedPeerDeviceID = directQuicPeerDeviceID(
+            for: contactID,
+            fallback: peerDeviceID
+        ),
+              expectedPeerDeviceID == peerDeviceID else {
+            return false
+        }
+        return true
     }
 
     func shouldAcceptIncomingDirectQuicSignal(

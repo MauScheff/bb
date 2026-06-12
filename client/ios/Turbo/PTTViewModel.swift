@@ -295,8 +295,8 @@ final class PTTViewModel: NSObject, MediaSessionDelegate {
     var activeConversationPrewarmRetryIntervalSeconds: TimeInterval = 5
     var selectedContactPrewarmInFlight: Set<UUID> = []
     var selectedContactPrewarmedSelectionContactID: UUID?
-    var selectedContactPrewarmPipelineEnabled: Bool = false
-    var selectedContactDirectQuicPrewarmEnabled: Bool = false
+    var selectedContactPrewarmPipelineEnabled: Bool = true
+    var selectedContactDirectQuicPrewarmEnabled: Bool = true
     var localTransmitStopProjectionGraceStartedAtNanosecondsByContactID: [UUID: UInt64] = [:]
     var localTransmitStopProjectionGraceStartedAtMillisecondsByContactID: [UUID: Int64] = [:]
     var firstAudioPlaybackAckExpectationsByContactID: [UUID: FirstAudioPlaybackAckExpectation] = [:]
