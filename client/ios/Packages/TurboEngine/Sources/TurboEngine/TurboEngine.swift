@@ -1849,6 +1849,7 @@ public enum TurboEngineEvent: Equatable, Codable, Sendable {
 public enum BackendEngineEvent: Equatable, Codable, Sendable {
     case joined(JoinedConversationEvidence)
     case joinFailed(ConversationRecoveryReason)
+    case membershipLost(EngineChannelID)
     case receiverAddressabilityChanged(ReceiverAddressability)
     case activeTransmitCleared(EngineTransmitID, ActiveTransmitClearReason)
     case beginTransmitAccepted(EngineTransmitID)
@@ -2551,6 +2552,14 @@ private enum EngineReducer {
             if case .joined(let joined) = next.conversation {
                 next.conversation = .recovering(ConversationRecoveryEvidence(previous: joined, reason: reason))
             }
+
+        case .event(.backend(.membershipLost(let channelID))):
+            applyBackendMembershipLost(
+                channelID: channelID,
+                state: &next,
+                effects: &effects,
+                record: record
+            )
 
         case .event(.backend(.receiverAddressabilityChanged(let addressability))):
             applyReceiverAddressability(
@@ -3273,6 +3282,59 @@ private enum EngineReducer {
             effects.append(.backend(.endTransmit(updatedJoined.channelID, updatedEpoch.transmitID)))
             effects.append(.ptt(.requestStopTransmit(updatedJoined.channelID)))
         }
+    }
+
+    private static func applyBackendMembershipLost(
+        channelID: EngineChannelID,
+        state: inout TurboEngineState,
+        effects: inout [TurboEngineEffect],
+        record: (String, [String: String]) -> Void
+    ) {
+        let conversationChannelID: EngineChannelID?
+        switch state.conversation {
+        case .joined(let joined):
+            conversationChannelID = joined.channelID
+        case .disconnecting(let disconnect):
+            conversationChannelID = disconnect.conversation.channelID
+        case .recovering(let recovery):
+            conversationChannelID = recovery.previous.channelID
+        case .joining(let attempt):
+            conversationChannelID = attempt.channelID
+        case .none, .selected, .requesting, .incomingBeep:
+            conversationChannelID = nil
+        }
+
+        guard conversationChannelID == channelID else {
+            record(
+                "Ignored backend membership loss for inactive Conversation",
+                [
+                    "channelID": channelID.rawValue,
+                    "conversation": String(describing: state.conversation),
+                ]
+            )
+            return
+        }
+
+        switch state.transmit {
+        case .active(let epoch) where epoch.conversation.channelID == channelID:
+            effects.append(.media(.stopCapture(epoch)))
+            effects.append(.ptt(.requestStopTransmit(channelID)))
+        case .beginning(let attempt) where attempt.conversation.channelID == channelID:
+            effects.append(.ptt(.requestStopTransmit(channelID)))
+        case .stopping, .idle, .failed, .active, .beginning:
+            break
+        }
+
+        state.conversation = .none
+        state.transmit = .idle
+        state.receive = .idle
+        state.mediaEpochDelivery = nil
+        state.pttAudio = .inactive
+        state.scheduledPlayback.removeAll()
+        record(
+            "Settled Conversation after backend membership loss",
+            ["channelID": channelID.rawValue]
+        )
     }
 
     private static func applyActiveTransmitCleared(

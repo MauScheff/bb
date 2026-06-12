@@ -313,6 +313,46 @@ struct TurboEngineCoreTests {
         #expect(cleared.invariantViolations.isEmpty)
     }
 
+    @Test func backendMembershipLossCompletesDisconnectingConversation() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .directQuic))))
+        _ = engine.send(.disconnect("blake"))
+
+        let settled = engine.receive(.backend(.membershipLost("channel-a-b")))
+
+        #expect(settled.state.conversation == .none)
+        #expect(settled.state.transmit == .idle)
+        #expect(settled.state.receive == .idle)
+        #expect(settled.state.pttAudio == .inactive)
+        #expect(settled.state.mediaEpochDelivery == nil)
+        #expect(settled.state.scheduledPlayback.isEmpty)
+        #expect(settled.invariantViolations.isEmpty)
+
+        let duplicate = engine.receive(.backend(.membershipLost("channel-a-b")))
+        #expect(duplicate.state.conversation == .none)
+        #expect(duplicate.invariantViolations.isEmpty)
+    }
+
+    @Test func backendMembershipLossStopsActiveTransmitLocally() {
+        var engine = TurboEngine(localDeviceID: "sender-device")
+        _ = engine.receive(.backend(.joined(joinedEvidence(transport: .directQuic))))
+        _ = engine.send(.beginTalk)
+        _ = engine.receive(.backend(.beginTransmitAccepted("tx-active")))
+        _ = engine.receive(.ptt(.systemTransmitBegan("system-channel-a-b")))
+
+        let settled = engine.receive(.backend(.membershipLost("channel-a-b")))
+        let stoppedEpochs = settled.effects.compactMap { effect -> TransmitEpoch? in
+            guard case .media(.stopCapture(let epoch)) = effect else { return nil }
+            return epoch
+        }
+
+        #expect(settled.state.conversation == .none)
+        #expect(settled.state.transmit == .idle)
+        #expect(stoppedEpochs.map(\.transmitID).contains("tx-active"))
+        #expect(settled.effects.contains(.ptt(.requestStopTransmit("channel-a-b"))))
+        #expect(settled.invariantViolations.isEmpty)
+    }
+
     @Test func localAudioRequiresMatchingActiveTransmitEpoch() {
         var engine = TurboEngine(localDeviceID: "sender-device")
         let chunk = EngineAudioChunk(

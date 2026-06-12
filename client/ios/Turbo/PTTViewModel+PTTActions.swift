@@ -922,8 +922,27 @@ extension PTTViewModel {
         clearSelectionAfterCallLeave(contactID: contact.id)
     }
 
-    private func clearSelectionAfterCallLeave(contactID: UUID) {
+    private func clearSelectionAfterCallLeave(
+        contactID: UUID,
+        force: Bool = false,
+        reason: String = "call-screen-leave"
+    ) {
         guard selectedContactId == contactID else { return }
+        if !force, shouldDeferSelectionClearAfterCallLeave(contactID: contactID) {
+            diagnostics.record(
+                .state,
+                message: "Deferred call leave selection clear until Device PTT session ends",
+                metadata: [
+                    "contactId": contactID.uuidString,
+                    "pendingAction": String(describing: conversationActionCoordinator.pendingAction),
+                    "systemSession": String(describing: systemSessionState),
+                    "activeChannelId": activeChannelId?.uuidString ?? "none",
+                    "reason": reason,
+                ]
+            )
+            captureDiagnosticsState("call-screen-leave:deferred-selection-clear")
+            return
+        }
         clearPendingBackendConnectForUserExit(contactID: contactID, reason: "call-screen-leave")
         selectedContactId = nil
         syncEngineSelectedFriend(nil, reason: "call-screen-leave")
@@ -936,6 +955,12 @@ extension PTTViewModel {
             metadata: ["contactId": contactID.uuidString]
         )
         captureDiagnosticsState("call-screen-leave:return-home")
+    }
+
+    private func shouldDeferSelectionClearAfterCallLeave(contactID: UUID) -> Bool {
+        return devicePTTEvidenceExists(for: contactID)
+            || activeChannelId == contactID
+            || systemSessionMatches(contactID)
     }
 
     func clearPendingBackendConnectForUserExit(contactID: UUID, reason: String) {
@@ -972,7 +997,9 @@ extension PTTViewModel {
 
     func performDisconnect() {
         let disconnectContactID = selectedContactId
-        let disconnectChannelUUID = activeChannelId.flatMap { channelUUID(for: $0) }
+        let disconnectChannelUUID =
+            pttCoordinator.state.systemChannelUUID
+            ?? activeChannelId.flatMap { channelUUID(for: $0) }
         let disconnectBackendChannelID = selectedContact?.backendChannelId
         if let disconnectContactID {
             clearPendingBackendConnectForUserExit(
@@ -993,6 +1020,7 @@ extension PTTViewModel {
         stopAutomaticAudioRouteMonitoring(reason: "disconnect")
         conversationActionCoordinator.markExplicitLeave(contactID: disconnectContactID)
         if let disconnectContactID {
+            syncEngineDisconnect(contactID: disconnectContactID, reason: "explicit-disconnect")
             backendRuntime.clearBackendJoinSettling(for: disconnectContactID)
             recentOutgoingJoinAcceptedTokensByContactID.removeValue(forKey: disconnectContactID)
             recentOutgoingBeepEvidenceByContactID.removeValue(forKey: disconnectContactID)
@@ -1032,6 +1060,13 @@ extension PTTViewModel {
                 resetTransmitSession(closeMediaSession: false)
                 conversationActionCoordinator.clearLeaveAction(for: disconnectContactID)
                 replaceDisconnectRecoveryTask(with: nil)
+                if let disconnectContactID {
+                    clearSelectionAfterCallLeave(
+                        contactID: disconnectContactID,
+                        force: true,
+                        reason: "local-disconnect-finished"
+                    )
+                }
                 updateStatusForSelectedContact()
                 statusMessage = "Disconnected"
                 captureDiagnosticsState("selected-conversation-disconnect:local-finished")
@@ -1057,8 +1092,7 @@ extension PTTViewModel {
             }
         }
 
-        guard let activeChannelId,
-              let channelUUID = channelUUID(for: activeChannelId) else {
+        guard let channelUUID = disconnectChannelUUID else {
             closeMediaSession()
             statusMessage = "Disconnected"
             if let disconnectContactID {
@@ -1149,6 +1183,11 @@ extension PTTViewModel {
             self.syncPTTState()
             self.conversationActionCoordinator.clearLeaveAction(for: contactID)
             self.backendSyncCoordinator.send(.channelStateCleared(contactID: contactID))
+            self.clearSelectionAfterCallLeave(
+                contactID: contactID,
+                force: true,
+                reason: "disconnect-self-healed"
+            )
             self.updateStatusForSelectedContact()
             self.captureDiagnosticsState("selected-conversation-disconnect:self-healed")
 
@@ -1527,6 +1566,18 @@ extension PTTViewModel {
                 }
             } else if shouldPropagateBackendLeave {
                 backendSyncCoordinator.send(.clearAllChannelStates)
+            }
+            if let contactID,
+               autoRejoinContactID == nil,
+               (
+                   shouldPropagateBackendLeave
+                   || conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID)
+               ) {
+                clearSelectionAfterCallLeave(
+                    contactID: contactID,
+                    force: true,
+                    reason: "ptt-left"
+                )
             }
             updateStatusForSelectedContact()
         case .closeMediaSession:

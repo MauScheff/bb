@@ -3830,7 +3830,7 @@ struct ConversationTests {
     }
 
     @MainActor
-    @Test func callScreenLeaveIssuesDisconnectThenReturnsToContactList() async throws {
+    @Test func callScreenLeaveKeepsOwnerUntilSystemLeaveCompletes() async throws {
         let pttClient = RecordingPTTSystemClient()
         let viewModel = PTTViewModel(pttSystemClient: pttClient)
         let contactID = UUID()
@@ -3855,9 +3855,31 @@ struct ConversationTests {
         await viewModel.disconnectSelectedConversationAndReturnToContactList(from: contact)
 
         #expect(pttClient.leaveRequests == [channelUUID])
-        #expect(viewModel.conversationActionCoordinator.pendingAction.isLeaveInFlight(for: contactID))
-        #expect(viewModel.selectedContactId == nil)
-        #expect(viewModel.selectedConversationCoordinator.state.selection == nil)
+        #expect(viewModel.selectedContactId == contactID)
+        #expect(viewModel.selectedConversationCoordinator.state.selection?.contactID == contactID)
+        #expect(
+            viewModel.diagnosticsTranscript.contains(
+                "Deferred call leave selection clear until Device PTT session ends"
+            )
+        )
+        #expect(
+            !viewModel.diagnostics.invariantViolations.contains {
+                $0.invariantID == "selected.orphaned_device_ptt_session_without_selected_conversation"
+            }
+        )
+
+        viewModel.handleDidLeaveChannel(channelUUID, reason: "test")
+
+        try await waitForScenario(
+            "call screen leave clears owner after system leave",
+            participants: [viewModel],
+            timeoutNanoseconds: 1_000_000_000,
+            pollNanoseconds: 10_000_000
+        ) {
+            viewModel.selectedContactId == nil
+                && viewModel.selectedConversationCoordinator.state.selection == nil
+        }
+
         #expect(viewModel.diagnosticsTranscript.contains("Returned to contact list after call leave"))
     }
 

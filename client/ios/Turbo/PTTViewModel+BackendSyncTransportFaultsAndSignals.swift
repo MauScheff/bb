@@ -4366,6 +4366,11 @@ extension PTTViewModel {
                         "channelId": backendChannelId,
                     ]
                 )
+                syncEngineBackendMembershipLost(
+                    contactID: contactID,
+                    channelID: backendChannelId,
+                    reason: "channel-refresh-authoritative-loss"
+                )
             }
             let existingDevicePTTSessionWasRoutable =
                 devicePTTEvidenceExists(for: contactID)

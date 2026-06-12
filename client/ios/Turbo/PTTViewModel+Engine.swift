@@ -272,6 +272,13 @@ extension PTTViewModel {
         sendEngineIntent(.disconnect(ContactID(contactID.uuidString)), source: "disconnect:\(reason)")
     }
 
+    func syncEngineBackendMembershipLost(contactID: UUID, channelID: String, reason: String) {
+        receiveEngineEvent(
+            .backend(.membershipLost(EngineChannelID(channelID))),
+            source: "backend-membership-lost:\(reason):\(contactID.uuidString)"
+        )
+    }
+
     func clearEngineTransmitIfActive(reason: String) {
         guard let transmitID = engine.snapshot.transmit.activeEpoch?.transmitID else { return }
         sendEngineIntent(.endTalk, source: "transmit-clear:\(reason)")
